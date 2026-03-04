@@ -26,10 +26,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     logger = Logger()
 
     # Get dataset
-    x_ref, y_ref, z_ref, t_star = get_dataset()
-    x0 = x_ref[0, :]
-    y0 = y_ref[0, :]
-    z0 = z_ref[0, :]
+    xyz_ref, t_star = get_dataset()
+    xyz0 = xyz_ref[0, :]
 
     t0 = t_star[0]
     t1 = t_star[-1]
@@ -41,10 +39,10 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     res_sampler = iter(UniformSampler(dom, config.training.batch_size_per_device))
 
     # Initialize model
-    model = models.Burgers(config, u0, t_star, x_star) #P#
+    model = models.L63(config, xyz0, t_star)
 
     # Initialize evaluator
-    evaluator = models.BurgersEvaluator(config, model) #P#
+    evaluator = models.L63Evaluator(config, model)
 
     print("Waiting for JIT...")
     start_time = time.time()
@@ -62,7 +60,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
                 # Get the first replica of the state and batch
                 state = jax.device_get(tree_map(lambda x: x[0], model.state))
                 batch = jax.device_get(tree_map(lambda x: x[0], batch))
-                log_dict = evaluator(state, batch, u_ref)
+                log_dict = evaluator(state, batch, xyz_ref)
                 wandb.log(log_dict, step)
 
                 end_time = time.time()

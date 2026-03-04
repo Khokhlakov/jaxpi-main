@@ -18,9 +18,9 @@ def get_config():
     # Arch
     config.arch = arch = ml_collections.ConfigDict()
     arch.arch_name = "Mlp"
-    arch.num_layers = 4
+    arch.num_layers = 6
     arch.hidden_dim = 256
-    arch.out_dim = 1
+    arch.out_dim = 3
     arch.activation = "tanh"
     arch.periodicity = ml_collections.ConfigDict(
         {"period": (jnp.pi,), "axis": (1,), "trainable": (False,)}
@@ -44,22 +44,22 @@ def get_config():
     # Training
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 200000
-    training.batch_size_per_device = 4096
+    training.batch_size_per_device = 8192#4096
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 1.0, "res": 1.0})
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) #1.0, "res": 1.0})
     weighting.momentum = 0.9
-    weighting.update_every_steps = 1000
+    weighting.update_every_steps = 100#1000
 
     weighting.use_causal = True
     weighting.causal_tol = 1.0
-    weighting.num_chunks = 32
+    weighting.num_chunks = 128#32
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
-    logging.log_every_steps = 100
+    logging.log_every_steps = 500#100
     logging.log_errors = True
     logging.log_losses = True
     logging.log_weights = True
@@ -73,7 +73,7 @@ def get_config():
     saving.num_keep_ckpts = 10
 
     # Input shape for initializing Flax models
-    config.input_dim = 2
+    config.input_dim = 1
 
     # Integer for PRNG random seed.
     config.seed = 42

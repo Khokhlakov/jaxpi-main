@@ -132,7 +132,7 @@ class L63Evaluator(BaseEvaluator):
         labels = ['x(t)', 'y(t)', 'z(t)']
         colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
         for i in range(3):
-            axes[i].plot(t, xyz_pred[:, i], label=f"Pred {labels[i]}", color=colors[i], lw=2)
+            axes[i].plot(t, xyz_pred[:, i], label=f"Pred {labels[i]}", color=colors[i], lw=1.5)
             axes[i].set_ylabel(labels[i])
             axes[i].grid(True, alpha=0.3)
             axes[i].legend(loc='upper right')

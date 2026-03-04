@@ -13,13 +13,11 @@ from utils import get_dataset
 
 
 def evaluate(config: ml_collections.ConfigDict, workdir: str):
-    x_ref, y_ref, z_ref, t_star = get_dataset()
-    x0 = x_ref[0, :]
-    y0 = y_ref[0, :]
-    z0 = z_ref[0, :]
+    xyz_ref, t_star = get_dataset()
+    xyz0 = xyz_ref[0, :]
 
     # Restore model
-    model = models.Burgers(config, u0, t_star, x_star) #P#
+    model = models.L63(config, xyz0, t_star)
     #ckpt_path = os.path.join(workdir, "ckpt", config.wandb.name)
     ckpt_path = os.path.join(os.getcwd(), config.wandb.name, "ckpt")
 
@@ -27,42 +25,48 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     params = model.state.params
 
     # Compute L2 error  #P#
-    l2_error = model.compute_l2_error(params, u_ref) #P#
+    l2_error = model.compute_l2_error(params, xyz_ref)
     print("L2 error: {:.3e}".format(l2_error))
 
-    u_pred = model.u_pred_fn(params, model.t_star, model.x_star)  #P#
-    TT, XX = jnp.meshgrid(t_star, x_star, indexing="ij")  #P#
+    xyz_pred = model.xyz_pred_fn(params, model.t_star)
+    TT = t_star.reshape(-1, 1) #
 
-    # plot
-    fig = plt.figure(figsize=(18, 5))
-    plt.subplot(1, 3, 1)
-    plt.pcolor(TT, XX, u_ref, cmap="jet")
-    plt.colorbar()
-    plt.xlabel("t")
-    plt.ylabel("x")
-    plt.title("Exact")
-    plt.tight_layout()
+    # Plot
+    fig, axes = plt.subplots(3, 2, figsize=(16, 10), sharex=True)
+    components = ['x', 'y', 'z']
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
 
-    plt.subplot(1, 3, 2)
-    plt.pcolor(TT, XX, u_pred, cmap="jet")
-    plt.colorbar()
-    plt.xlabel("t")
-    plt.ylabel("x")
-    plt.title("Predicted")
-    plt.tight_layout()
+    for i in range(3):
+        # Exact vs pred
+        axes[i, 0].plot(t_star, xyz_ref[:, i], label='Exact', color='black', linewidth=1.5)
+        axes[i, 0].plot(t_star, xyz_pred[:, i], label='Predicted', color=colors[i], linewidth=1)
+        axes[i, 0].set_ylabel(f"{components[i]}(t)", fontsize=14)
+        axes[i, 0].grid(True, alpha=0.3)
+        axes[i, 0].legend(loc="upper right")
+        
+        if i == 0:
+            axes[i, 0].set_title("Exact vs. Predicted Trajectory", fontsize=16)
+        if i == 2:
+            axes[i, 0].set_xlabel("Time (t)", fontsize=14)
 
-    plt.subplot(1, 3, 3)
-    plt.pcolor(TT, XX, jnp.abs(u_ref - u_pred), cmap="jet")
-    plt.colorbar()
-    plt.xlabel("t")
-    plt.ylabel("x")
-    plt.title("Absolute error")
-    plt.tight_layout()
+        # Abs error
+        abs_error = jnp.abs(xyz_ref[:, i] - xyz_pred[:, i])
+        axes[i, 1].plot(t_star, abs_error, color=colors[i], linewidth=1.5)
+        axes[i, 1].grid(True, alpha=0.3)
+        axes[i, 1].set_yscale('log') 
+        
+        if i == 0:
+            axes[i, 1].set_title("Absolute Error", fontsize=16)
+        if i == 2:
+            axes[i, 1].set_xlabel("Time (t)", fontsize=14)
+
+    fig.tight_layout()
 
     # Save the figure
     save_dir = os.path.join(workdir, "figures", config.wandb.name)
     if not os.path.isdir(save_dir):
         os.makedirs(save_dir)
 
-    fig_path = os.path.join(save_dir, "burger.pdf")
+    fig_path = os.path.join(save_dir, "l63.pdf")
     fig.savefig(fig_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
