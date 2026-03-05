@@ -12,7 +12,7 @@ def get_config():
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PINN-l63"
-    wandb.name = "default"
+    wandb.name = "conf_6"
     wandb.tag = None
 
     # Arch
