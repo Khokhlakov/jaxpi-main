@@ -32,10 +32,6 @@ class L63(ForwardIVP):
     def xyz_net(self, params, t):
         z = jnp.array([t])
         xyz = self.state.apply_fn(params, z)
-        print("Lazlo")
-        print(xyz)
-        print("\n")
-        print(xyz[0])
         return xyz
 
     def grad_net(self, params, t):
