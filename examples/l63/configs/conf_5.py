@@ -12,7 +12,7 @@ def get_config():
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PINN-l63"
-    wandb.name = "l63_causal"
+    wandb.name = "conf_5"
     wandb.tag = None
 
     # Arch
@@ -36,7 +36,7 @@ def get_config():
     optim.beta2 = 0.999
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
-    optim.decay_rate = 0.9
+    optim.decay_rate = 0.95
     optim.decay_steps = 5000
 
     # Training
