@@ -25,7 +25,7 @@ def get_config():
     arch.periodicity = None
     arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 1, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
-        {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
+        {"type": "weight_fact", "mean": 1.0, "stddev": 0.1}
     )
 
     # Optim
@@ -57,7 +57,7 @@ def get_config():
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
-    logging.log_every_steps = 10000#100
+    logging.log_every_steps = 500#100
     logging.log_errors = True
     logging.log_losses = True
     logging.log_weights = True

@@ -1,29 +1,27 @@
 import ml_collections
-
 import jax.numpy as jnp
 
-
 def get_config():
-    """Config for L63, chaotic regime"""
+    """Config for L63, chaotic regime using Time-Windowing"""
     config = ml_collections.ConfigDict()
 
     config.mode = "train"
 
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project = "PINN-l63"
-    wandb.name = "conf_5"
+    wandb.project = "PINN-l63-windowed"
+    wandb.name = "l63_windows_10_test1"  # Updated name to reflect strategy
     wandb.tag = None
 
-    # Arch
+    # Arch (Keeping L63 specific architecture)
     config.arch = arch = ml_collections.ConfigDict()
     arch.arch_name = "Mlp"
-    arch.num_layers = 6
+    arch.num_layers = 4
     arch.hidden_dim = 256
     arch.out_dim = 3
     arch.activation = "tanh"
     arch.periodicity = None
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 5, "embed_dim": 256})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 1, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
@@ -36,28 +34,30 @@ def get_config():
     optim.beta2 = 0.999
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
-    optim.decay_rate = 0.95
-    optim.decay_steps = 5000
+    optim.decay_rate = 0.9
+    optim.decay_steps = 2000 
 
-    # Training
+    # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 600000
-    training.batch_size_per_device = 8192#4096
+    training.max_steps = 100000 
+    training.batch_size_per_device = 4096
+    training.num_time_windows = 10 
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 1000.0, "res": 1.0}) #1.0, "res": 1.0})
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 1.0, "res": 1.0}) 
     weighting.momentum = 0.9
-    weighting.update_every_steps = 500#1000
+    weighting.update_every_steps = 500
 
+    # Causal Weighting
     weighting.use_causal = True
-    weighting.causal_tol = 0.001
-    weighting.num_chunks = 512#256#32
+    weighting.causal_tol = 1.0
+    weighting.num_chunks = 64 
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
-    logging.log_every_steps = 1000#100
+    logging.log_every_steps = 500
     logging.log_errors = True
     logging.log_losses = True
     logging.log_weights = True
@@ -67,10 +67,11 @@ def get_config():
 
     # Saving
     config.saving = saving = ml_collections.ConfigDict()
-    saving.save_every_steps = 50000#None
+    # Save at the end of each window automatically (managed in training script)
+    saving.save_every_steps = 5000
     saving.num_keep_ckpts = 5
 
-    # Input shape for initializing Flax models
+    # Input shape (t is the only input)
     config.input_dim = 1
 
     # Integer for PRNG random seed.
