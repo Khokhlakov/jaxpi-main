@@ -23,9 +23,9 @@ def get_config():
     arch.out_dim = 3
     arch.activation = "tanh"
     arch.periodicity = None
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 128})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
-        {"type": "weight_fact", "mean": 1.0, "stddev": 0.1}
+        {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
 
     # Optim
@@ -37,12 +37,12 @@ def get_config():
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 10000
+    optim.decay_steps = 2000
 
     # Training
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 500000
-    training.batch_size_per_device = 8192#4096
+    training.max_steps = 300000
+    training.batch_size_per_device = 4096#8192#4096
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
@@ -52,7 +52,7 @@ def get_config():
     weighting.update_every_steps = 100#1000
 
     weighting.use_causal = True
-    weighting.causal_tol = 0.1
+    weighting.causal_tol = 1.0
     weighting.num_chunks = 256#32
 
     # Logging
