@@ -69,7 +69,7 @@ def get_config():
 
     # Saving
     config.saving = saving = ml_collections.ConfigDict()
-    saving.save_every_steps = 1000#None
+    saving.save_every_steps = 10000#None
     saving.num_keep_ckpts = 10
 
     # Input shape for initializing Flax models
