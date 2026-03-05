@@ -53,7 +53,7 @@ def get_config():
 
     weighting.use_causal = True
     weighting.causal_tol = 1.0
-    weighting.num_chunks = 250#32
+    weighting.num_chunks = 256#32
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
