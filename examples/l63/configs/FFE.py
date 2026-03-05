@@ -4,7 +4,7 @@ import jax.numpy as jnp
 
 
 def get_config():
-    """Added more steps before decreasing learning rate"""
+    """Remove periodicity, embedded features and higher dimensionality to hidden layers. Greater learning rate"""
     config = ml_collections.ConfigDict()
 
     config.mode = "train"
@@ -12,22 +12,20 @@ def get_config():
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PINN-l63"
-    wandb.name = "Low_decay"
+    wandb.name = "FFE"
     wandb.tag = None
 
     # Arch
     config.arch = arch = ml_collections.ConfigDict()
     arch.arch_name = "Mlp"
     arch.num_layers = 6
-    arch.hidden_dim = 256
+    arch.hidden_dim = 512
     arch.out_dim = 3
     arch.activation = "tanh"
-    arch.periodicity = ml_collections.ConfigDict(
-        {"period": (jnp.pi,), "axis": (1,), "trainable": (False,)}
-    )
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 1, "embed_dim": 256})
+    arch.periodicity = None
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
-        {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
+        {"type": "weight_fact", "mean": 1.0, "stddev": 0.1}
     )
 
     # Optim
@@ -38,7 +36,7 @@ def get_config():
     optim.beta2 = 0.999
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
-    optim.decay_rate = 0.9
+    optim.decay_rate = 0.95
     optim.decay_steps = 5000
 
     # Training
