@@ -106,7 +106,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
             # Predict the state at the beginning of the next window
             # Using the time point t_star[end_idx]
             t_next_start = t_star[end_idx]
-            xyz0 = model.sol_fn(params, t_next_start).flatten()
+            xyz0 = model.xyz_pred_fn(params, t_next_start).flatten()
             
             # Clean up to manage memory
             del model, state, params
