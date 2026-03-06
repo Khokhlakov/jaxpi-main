@@ -34,12 +34,12 @@ def get_config():
     optim.beta2 = 0.999
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
-    optim.decay_rate = 0.95
-    optim.decay_steps = 1000 
+    optim.decay_rate = 0.9
+    optim.decay_steps = 2000 
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 20000 
+    training.max_steps = 200000 
     training.batch_size_per_device = 4096
     training.num_time_windows = 10 
 
