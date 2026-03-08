@@ -10,7 +10,7 @@ def get_config():
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PINN-l63-windowed"
-    wandb.name = "l63_10windows_test3"  # Updated name to reflect strategy
+    wandb.name = "l63_10windows_test5"  # Updated name to reflect strategy
     wandb.tag = None
 
     # Arch (Keeping L63 specific architecture)
