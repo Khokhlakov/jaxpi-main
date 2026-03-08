@@ -42,7 +42,7 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 200000 
-    training.batch_size_per_device = 4096
+    training.batch_size_per_device = 8192
     training.num_time_windows = 15
 
     # Weighting
