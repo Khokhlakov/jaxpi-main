@@ -50,7 +50,7 @@ def get_config():
     weighting.scheme = "grad_norm"
     weighting.init_weights = ml_collections.ConfigDict({"ics": 1.0, "res": 1.0}) 
     weighting.momentum = 0.9
-    weighting.update_every_steps = 500
+    weighting.update_every_steps = 1200
 
     # Causal Weighting
     weighting.use_causal = True
