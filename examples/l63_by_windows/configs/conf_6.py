@@ -23,7 +23,7 @@ def get_config():
     arch.periodicity = ml_collections.ConfigDict(
         {"period": (jnp.pi,), "axis": (1,), "trainable": (False,)}
     )
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 1, "embed_dim": 256})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 5, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
@@ -41,9 +41,9 @@ def get_config():
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 200000 
+    training.max_steps = 250000 
     training.batch_size_per_device = 4096
-    training.num_time_windows = 10
+    training.num_time_windows = 12
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
