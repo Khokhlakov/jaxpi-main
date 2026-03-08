@@ -10,7 +10,7 @@ def get_config():
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PINN-l63-windowed"
-    wandb.name = "l63_10windows_test5"  # Updated name to reflect strategy
+    wandb.name = "l63_10windows_test3"  # Updated name to reflect strategy
     wandb.tag = None
 
     # Arch (Keeping L63 specific architecture)
@@ -23,7 +23,7 @@ def get_config():
     arch.periodicity = ml_collections.ConfigDict(
         {"period": (jnp.pi,), "axis": (1,), "trainable": (False,)}
     )
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 7, "embed_dim": 256})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 5, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
@@ -43,12 +43,12 @@ def get_config():
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 250000 
     training.batch_size_per_device = 4096
-    training.num_time_windows = 12
+    training.num_time_windows = 12 
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 10.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 2.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 1000
 
