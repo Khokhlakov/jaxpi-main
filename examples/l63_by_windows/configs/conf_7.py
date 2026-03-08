@@ -43,7 +43,7 @@ def get_config():
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 200000 
     training.batch_size_per_device = 4096
-    training.num_time_windows = 11
+    training.num_time_windows = 10
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
@@ -55,7 +55,7 @@ def get_config():
     # Causal Weighting
     weighting.use_causal = True
     weighting.causal_tol = 1.0
-    weighting.num_chunks = 64 
+    weighting.num_chunks = 32 
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
