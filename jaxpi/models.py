@@ -130,6 +130,7 @@ class PINN:
 
     @partial(jit, static_argnums=(0,))
     def compute_weights(self, params, batch, *args):
+        eps = 1e-8
         if self.config.weighting.scheme == "grad_norm":
             # Compute the gradient of each loss w.r.t. the parameters
             grads = jacrev(self.losses)(params, batch, *args)
@@ -143,7 +144,7 @@ class PINN:
             # Compute the mean of grad norms over all losses
             mean_grad_norm = jnp.mean(jnp.stack(tree_leaves(grad_norm_dict)))
             # Grad Norm Weighting
-            w = tree_map(lambda x: (mean_grad_norm / x), grad_norm_dict)
+            w = tree_map(lambda x: (mean_grad_norm / (x+eps)), grad_norm_dict)
 
         elif self.config.weighting.scheme == "ntk":
             # Compute the diagonal of the NTK of each loss
@@ -155,7 +156,7 @@ class PINN:
             # Compute the average over all ntk means
             mean_ntk = jnp.mean(jnp.stack(tree_leaves(mean_ntk_dict)))
             # NTK Weighting
-            w = tree_map(lambda x: (mean_ntk / x), mean_ntk_dict)
+            w = tree_map(lambda x: (mean_ntk / (x+eps)), mean_ntk_dict)
 
         return w
 
