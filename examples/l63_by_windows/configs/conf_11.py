@@ -10,14 +10,14 @@ def get_config():
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PINN-l63-windowed"
-    wandb.name = "l63_10windows_test10"  # Updated name to reflect strategy
+    wandb.name = "l63_10windows_test11"  # Updated name to reflect strategy
     wandb.tag = None
 
     # Arch (Keeping L63 specific architecture)
     config.arch = arch = ml_collections.ConfigDict()
     arch.arch_name = "Mlp"
     arch.num_layers = 6
-    arch.hidden_dim = 256
+    arch.hidden_dim = 128
     arch.out_dim = 3
     arch.activation = "tanh"
     arch.periodicity = ml_collections.ConfigDict(
@@ -42,8 +42,8 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 200000 
-    training.batch_size_per_device = 4096
-    training.num_time_windows = 15
+    training.batch_size_per_device = 8192
+    training.num_time_windows = 10
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
@@ -55,7 +55,7 @@ def get_config():
     # Causal Weighting
     weighting.use_causal = True
     weighting.causal_tol = 1.0
-    weighting.num_chunks = 16 
+    weighting.num_chunks = 20 
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
