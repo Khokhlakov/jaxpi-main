@@ -54,7 +54,7 @@ def get_config():
     weighting.update_every_steps = 1000
 
     # Causal Weighting
-    weighting.use_causal = True
+    weighting.use_causal = False
     weighting.causal_tol = 1.0
     weighting.num_chunks = 16 
 
