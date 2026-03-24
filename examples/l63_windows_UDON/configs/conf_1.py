@@ -16,7 +16,8 @@ def get_config():
     # Arch 
     config.arch = arch = ml_collections.ConfigDict()
     arch.arch_name = "DeepONet"
-    arch.num_layers = 6
+    arch.num_branch_layers = 6 
+    arch.num_trunk_layers = 6
     arch.hidden_dim = 256
     arch.out_dim = 3
     arch.activation = "tanh"
