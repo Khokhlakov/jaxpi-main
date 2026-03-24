@@ -2,7 +2,6 @@ import ml_collections
 import jax.numpy as jnp
 
 def get_config():
-    """Config for L63, chaotic regime using Time-Windowing paired data"""
     config = ml_collections.ConfigDict()
 
     config.mode = "train"
@@ -10,7 +9,7 @@ def get_config():
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L63"
-    wandb.name = "test_1"  # Updated name to reflect strategy
+    wandb.name = "test_4"  # Updated name to reflect strategy
     wandb.tag = None
 
     # Arch 
@@ -37,13 +36,13 @@ def get_config():
     optim.beta2 = 0.999
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
-    optim.decay_rate = 0.9
-    optim.decay_steps = 2000 
+    optim.decay_rate = 0.95
+    optim.decay_steps = 5000 
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 20000#200000 
-    training.batch_size_per_device = 4096
+    training.max_steps = 200000
+    training.batch_size_per_device = 256
     training.num_time_windows = 20
 
     # Weighting
@@ -51,10 +50,10 @@ def get_config():
     weighting.scheme = "grad_norm"
     weighting.init_weights = ml_collections.ConfigDict({"ics": 1.0, "res": 1.0}) 
     weighting.momentum = 0.9
-    weighting.update_every_steps = 1000
+    weighting.update_every_steps = 100
 
     # Causal Weighting
-    weighting.use_causal = False
+    weighting.use_causal = True
     weighting.causal_tol = 1.0
     weighting.num_chunks = 16 
 
@@ -71,8 +70,8 @@ def get_config():
     # Saving
     config.saving = saving = ml_collections.ConfigDict()
     # Save at the end of each window automatically (managed in training script)
-    saving.save_every_steps = 5000
-    saving.num_keep_ckpts = 5
+    saving.save_every_steps = 10000
+    saving.num_keep_ckpts = 3
 
     # Input shape (t is the only input)
     config.input_dim = 4
