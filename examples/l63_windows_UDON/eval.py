@@ -19,8 +19,7 @@ def evaluate_prev(config: ml_collections.ConfigDict, workdir: str):
     num_windows = config.training.num_time_windows
     num_time_steps = len(t_star) // num_windows
     
-    # Initialize model (using the first window's time and initial condition)
-    # Note: t must match the training window size for proper internal scaling
+    # Initialize model 
     t_window_init = t_star[:num_time_steps]
     xyz0 = xyz_ref[0, :]
     model = models.L63(config, xyz0, t_window_init)
@@ -28,20 +27,18 @@ def evaluate_prev(config: ml_collections.ConfigDict, workdir: str):
     xyz_pred_list = []
 
     for idx in range(num_windows):
-        # Determine the time slice for this window
         start_idx = idx * num_time_steps
         end_idx = (idx + 1) * num_time_steps
         t_window = t_star[start_idx:end_idx]
         
-        # Restore checkpoint for the specific window
+        # Checkpoint
         ckpt_path = os.path.join(
             os.getcwd(), config.wandb.name, "ckpt", "time_window_{}".format(idx + 1)
         )
         model.state = restore_checkpoint(model.state, ckpt_path)
         params = model.state.params
 
-        # Predict for this window's time segment
-        # We pass the specific t_window to the prediction function
+        # Predict for window
         xyz_pred_window = model.xyz_pred_fn(params, t_window)
         xyz_pred_list.append(xyz_pred_window)
 
@@ -50,7 +47,7 @@ def evaluate_prev(config: ml_collections.ConfigDict, workdir: str):
         window_error = jnp.linalg.norm(xyz_pred_window - window_ref) / jnp.linalg.norm(window_ref)
         logging.info(f"Window {idx + 1} L2 Error: {window_error:.3e}")
 
-    # Concatenate all window predictions into one full trajectory
+    # Concatenate into one full trajectory
     xyz_pred_full = jnp.concatenate(xyz_pred_list, axis=0)
     
     # Slicing xyz_ref to match xyz_pred_full in case of rounding in num_time_steps
@@ -110,15 +107,9 @@ def evaluate_prev(config: ml_collections.ConfigDict, workdir: str):
 
 def evaluate(config: ml_collections.ConfigDict, workdir: str):
     # 1. Load dataset (xyz_ref is 3D: [num_ics, num_points, 3])
-    # Assuming xyz_ref_all contains the full trajectory up to t=20
     xyz_ref_all, u0_ref_all, t_star_window = get_dataset()
-    
-    # Pick the first trajectory (IC 0) for the long-term rollout evaluation
-    u_current = u0_ref_all[0, :] 
-    xyz_ref_trajectory = xyz_ref_all[0, :, :] 
 
-    # 2. Setup Model & Load Checkpoint
-    # DeepONets are time-invariant for their trained horizon. We just need the single trained model.
+    # 2. Setup Model & Load Checkpoint once (no need to reload per trajectory)
     model = models.L63UDON(config, t_star_window)
     ckpt_path = os.path.join(
         os.getcwd(), config.wandb.name, "ckpt", "udon_model"
@@ -128,105 +119,106 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     model.state = restore_checkpoint(model.state, ckpt_path)
     params = model.state.params
 
-    # 3. Rollout Loop
-    xyz_pred_list = []
-    t_full_list = []
-    
-    # If trained on [0,1] and rolling out to [0,20], num_windows should be 20
-    num_windows = config.training.num_time_windows 
-    dt_window = t_star_window[-1] - t_star_window[0]
+    # Define the Initial Condition (IC) indices you want to plot 
+    # (e.g., 0 for the first trajectory, 1 for the second)
+    ic_indices = [0, 1]
 
-    for idx in range(num_windows):
-        # Predict: Output is likely (1, num_points, 3)
-        preds = model.xyz_pred_fn(params, u_current, t_star_window)
-        xyz_pred_window = jnp.squeeze(preds)
-
-        # Handle the overlapping boundary (t=1.0, t=2.0, etc.)
-        if idx == 0:
-            # For the first window, keep all points
-            xyz_pred_list.append(xyz_pred_window)
-            t_full_list.append(t_star_window)
-        else:
-            # For subsequent windows, drop the first point to avoid duplication
-            xyz_pred_list.append(xyz_pred_window[1:])
-            t_offset = idx * dt_window
-            t_full_list.append(t_star_window[1:] + t_offset)
-
-        # Autoregressive step: use the LAST point of this prediction as the next IC
-        u_current = xyz_pred_window[-1, :]
-
-    xyz_pred_full = jnp.concatenate(xyz_pred_list, axis=0)
-    t_star_full = jnp.concatenate(t_full_list, axis=0)
-    
-    # --- NEW: Generate Exact Reference on the fly ---
-    # Define the standard Lorenz 63 system
-    def lorenz_63(t, state, sigma=10.0, rho=28.0, beta=8.0/3.0):
-        x, y, z = state
-        return [sigma * (y - x), x * (rho - z) - y, x * y - beta * z]
-
-    logging.info("Generating exact long-term reference trajectory via SciPy...")
-    
-    # We need numpy arrays for scipy, not JAX arrays
-    t_eval_np = np.array(t_star_full)
-    u0_np = np.array(u0_ref_all[0, :])
-    
-    # Solve the ODE over the full rollout time
-    sol = solve_ivp(
-        lorenz_63, 
-        t_span=[t_eval_np[0], t_eval_np[-1]], 
-        y0=u0_np, 
-        t_eval=t_eval_np,
-        rtol=1e-8, # High tolerance for an "exact" reference
-        atol=1e-10
-    )
-    
-    # SciPy returns shape (3, N), so we transpose it to (N, 3) to match UDON
-    xyz_ref_matched = jnp.array(sol.y.T) 
-    # ------------------------------------------------
-
-    # Compute total L2 error (Shapes should now both be (2001, 3))
-    total_l2_error = jnp.linalg.norm(xyz_pred_full - xyz_ref_matched) / jnp.linalg.norm(xyz_ref_matched)
-    print(f"Full Rollout Trajectory L2 error: {total_l2_error:.3e}")
-
-    # --- Plotting Logic ---
-    fig, axes = plt.subplots(3, 2, figsize=(16, 10), sharex=True)
-    components = ['x', 'y', 'z']
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
-
-    for i in range(3):
-        # Time-series plot
-        axes[i, 0].plot(t_star_full, xyz_ref_matched[:, i], label='Exact', color='black', linewidth=1.5)
-        axes[i, 0].plot(t_star_full, xyz_pred_full[:, i], label='UDON Rollout', color=colors[i], linestyle='--', linewidth=1.2)
-        axes[i, 0].set_ylabel(f"{components[i]}(t)", fontsize=14)
-        axes[i, 0].grid(True, alpha=0.3)
-        axes[i, 0].legend(loc="upper right")
+    for ic_idx in ic_indices:
+        logging.info(f"--- Evaluating Trajectory for IC index {ic_idx} ---")
         
-        # Window boundaries - adjusted to point to the actual split indices
-        for w in range(1, num_windows):
-            boundary_time = w * dt_window
-            axes[i, 0].axvline(x=boundary_time, color='gray', linestyle=':', alpha=0.4)
+        # Pick the trajectory for the current IC
+        u_current = u0_ref_all[ic_idx, :] 
 
-        if i == 0:
-            axes[i, 0].set_title("Long-term Autoregressive Rollout", fontsize=16)
-
-        # Absolute Error (Log Scale)
-        abs_error = jnp.abs(xyz_ref_matched[:, i] - xyz_pred_full[:, i])
-        axes[i, 1].plot(t_star_full, abs_error, color=colors[i], linewidth=1.5)
-        axes[i, 1].set_yscale('log')
-        axes[i, 1].grid(True, which="both", alpha=0.2)
+        # 3. Rollout Loop
+        xyz_pred_list = []
+        t_full_list = []
         
-        if i == 0:
-            axes[i, 1].set_title("Log Absolute Error", fontsize=16)
+        num_windows = config.training.num_time_windows 
+        dt_window = t_star_window[-1] - t_star_window[0]
 
-    axes[2, 0].set_xlabel("Time (t)", fontsize=14)
-    axes[2, 1].set_xlabel("Time (t)", fontsize=14)
-    fig.tight_layout()
+        for idx in range(num_windows):
+            # Predict
+            preds = model.xyz_pred_fn(params, u_current, t_star_window)
+            xyz_pred_window = jnp.squeeze(preds)
 
-    # Save results
-    save_dir = os.path.join(workdir, "figures", config.wandb.name)
-    os.makedirs(save_dir, exist_ok=True)
-    fig_path = os.path.join(save_dir, "udon_rollout_analysis.pdf")
-    fig.savefig(fig_path, bbox_inches="tight", dpi=300)
-    plt.close(fig)
-    
-    logging.info(f"Evaluation plot saved to: {fig_path}")
+            # Handle the overlapping boundary 
+            if idx == 0:
+                xyz_pred_list.append(xyz_pred_window)
+                t_full_list.append(t_star_window)
+            else:
+                xyz_pred_list.append(xyz_pred_window[1:])
+                t_offset = idx * dt_window
+                t_full_list.append(t_star_window[1:] + t_offset)
+
+            # Use last point of this prediction as the next IC
+            u_current = xyz_pred_window[-1, :]
+
+        xyz_pred_full = jnp.concatenate(xyz_pred_list, axis=0)
+        t_star_full = jnp.concatenate(t_full_list, axis=0)
+        
+        # Generate Exact Reference on the fly 
+        def lorenz_63(t, state, sigma=10.0, rho=28.0, beta=8.0/3.0):
+            x, y, z = state
+            return [sigma * (y - x), x * (rho - z) - y, x * y - beta * z]
+        
+        t_eval_np = np.array(t_star_full)
+        u0_np = np.array(u0_ref_all[ic_idx, :]) # Use the correct IC
+        
+        # Solve the ODE over the full rollout time
+        sol = solve_ivp(
+            lorenz_63, 
+            t_span=[t_eval_np[0], t_eval_np[-1]], 
+            y0=u0_np, 
+            t_eval=t_eval_np,
+            rtol=1e-8, 
+            atol=1e-10
+        )
+        xyz_ref_matched = jnp.array(sol.y.T) 
+        # ------------------------------------------------
+
+        # Compute total L2 error 
+        total_l2_error = jnp.linalg.norm(xyz_pred_full - xyz_ref_matched) / jnp.linalg.norm(xyz_ref_matched)
+        print(f"IC {ic_idx} | Full Rollout Trajectory L2 error: {total_l2_error:.3e}")
+
+        # --- Plotting Logic ---
+        fig, axes = plt.subplots(3, 2, figsize=(16, 10), sharex=True)
+        components = ['x', 'y', 'z']
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+
+        for i in range(3):
+            # Time-series plot
+            axes[i, 0].plot(t_star_full, xyz_ref_matched[:, i], label='Exact', color='black', linewidth=1.5)
+            axes[i, 0].plot(t_star_full, xyz_pred_full[:, i], label='UDON Rollout', color=colors[i], linestyle='--', linewidth=1.2)
+            axes[i, 0].set_ylabel(f"{components[i]}(t)", fontsize=14)
+            axes[i, 0].grid(True, alpha=0.3)
+            axes[i, 0].legend(loc="upper right")
+            
+            # Window boundaries
+            for w in range(1, num_windows):
+                boundary_time = w * dt_window
+                axes[i, 0].axvline(x=boundary_time, color='gray', linestyle=':', alpha=0.4)
+
+            if i == 0:
+                axes[i, 0].set_title(f"Long-term Autoregressive Rollout (IC {ic_idx})", fontsize=16)
+
+            # Absolute Error (Log Scale)
+            abs_error = jnp.abs(xyz_ref_matched[:, i] - xyz_pred_full[:, i])
+            axes[i, 1].plot(t_star_full, abs_error, color=colors[i], linewidth=1.5)
+            axes[i, 1].set_yscale('log')
+            axes[i, 1].grid(True, which="both", alpha=0.2)
+            
+            if i == 0:
+                axes[i, 1].set_title(f"Log Absolute Error (IC {ic_idx})", fontsize=16)
+
+        axes[2, 0].set_xlabel("Time (t)", fontsize=14)
+        axes[2, 1].set_xlabel("Time (t)", fontsize=14)
+        fig.tight_layout()
+
+        # Save results with dynamically named files
+        save_dir = os.path.join(workdir, "figures", config.wandb.name)
+        os.makedirs(save_dir, exist_ok=True)
+        fig_path = os.path.join(save_dir, f"udon_rollout_analysis_ic_{ic_idx}.pdf")
+        fig.savefig(fig_path, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+        
+        logging.info(f"Evaluation plot for IC {ic_idx} saved to: {fig_path}")
