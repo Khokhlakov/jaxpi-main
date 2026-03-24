@@ -3,7 +3,7 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    # Config 11 with grid training
+    # Config 11 with grid training and sin activation f
     config.mode = "train"
 
     # Weights & Biases
@@ -19,7 +19,7 @@ def get_config():
     arch.num_trunk_layers = 6
     arch.hidden_dim = 256
     arch.out_dim = 3
-    arch.activation = "tanh"
+    arch.activation = "sin"
     arch.periodicity = None
     arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
