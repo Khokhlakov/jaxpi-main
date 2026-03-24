@@ -178,7 +178,7 @@ class L63UDON(ForwardIVP):
 
     def xyz_net(self, params, u, t):
         inputs = jnp.concatenate([u, t], axis=-1)
-        return self.arch.apply("params": params, inputs)
+        return self.arch.apply(params, inputs)
     
     def r_net(self, params, u, t):
         xyz = self.xyz_net(params, u, t)
