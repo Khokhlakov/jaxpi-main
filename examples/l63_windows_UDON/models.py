@@ -177,8 +177,8 @@ class L63UDON(ForwardIVP):
         self.r_pred_fn = vmap(self.r_net, (None, None, 0))
 
     def xyz_net(self, params, u, t):
-        t_arr = jnp.array([t])
-        return self.state.apply_fn(params, u, t_arr)
+        inputs = jnp.concatenate([u, t], axis=-1)
+        return self.arch.apply("params": params, inputs)
     
     def r_net(self, params, u, t):
         xyz = self.xyz_net(params, u, t)

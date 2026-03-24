@@ -230,7 +230,9 @@ class DeepONet(nn.Module):
         self.activation_fn = _get_activation(self.activation)
 
     @nn.compact
-    def __call__(self, u, x):
+    def __call__(self, inputs):
+        u = inputs[..., :3] 
+        x = inputs[..., 3:]
         u = MlpBlock(
             num_layers=self.num_branch_layers,
             hidden_dim=self.hidden_dim,
