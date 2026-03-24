@@ -107,22 +107,21 @@ def evaluate_prev(config: ml_collections.ConfigDict, workdir: str):
 
 def evaluate(config: ml_collections.ConfigDict, workdir: str):
     # 1. Load dataset (xyz_ref is 3D: [num_ics, num_points, 3])
+    # Assuming xyz_ref_all contains the full trajectory up to t=20
     xyz_ref_all, u0_ref_all, t_star_window = get_dataset()
     
     # Pick the first trajectory (IC 0) for the long-term rollout evaluation
     u_current = u0_ref_all[0, :] 
-    # Reference for the first IC: shape (num_points, 3)
     xyz_ref_trajectory = xyz_ref_all[0, :, :] 
 
     # 2. Setup Model & Load Checkpoint
-    # Use the checkpoint from the final window to represent the "trained" model
+    # DeepONets are time-invariant for their trained horizon. We just need the single trained model.
     model = models.L63UDON(config, t_star_window)
-    last_window_idx = config.training.num_time_windows
     ckpt_path = os.path.join(
-        os.getcwd(), config.wandb.name, "ckpt", f"udon_model"
+        os.getcwd(), config.wandb.name, "ckpt", "udon_model"
     )
     
-    logging.info(f"Restored model from window {last_window_idx} for rollout.")
+    logging.info(f"Restored trained DeepONet model for autoregressive rollout.")
     model.state = restore_checkpoint(model.state, ckpt_path)
     params = model.state.params
 
@@ -130,30 +129,35 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     xyz_pred_list = []
     t_full_list = []
     
-    num_windows = config.training.num_time_windows
+    # If trained on [0,1] and rolling out to [0,20], num_windows should be 20
+    num_windows = config.training.num_time_windows 
     dt_window = t_star_window[-1] - t_star_window[0]
 
     for idx in range(num_windows):
         # Predict: Output is likely (1, num_points, 3)
         preds = model.xyz_pred_fn(params, u_current, t_star_window)
-        
-        # Squeeze to get (num_points, 3) for storage and next IC
         xyz_pred_window = jnp.squeeze(preds)
-        xyz_pred_list.append(xyz_pred_window)
 
-        # Autoregressive step: use the end of this prediction as the next IC
+        # Handle the overlapping boundary (t=1.0, t=2.0, etc.)
+        if idx == 0:
+            # For the first window, keep all points
+            xyz_pred_list.append(xyz_pred_window)
+            t_full_list.append(t_star_window)
+        else:
+            # For subsequent windows, drop the first point to avoid duplication
+            xyz_pred_list.append(xyz_pred_window[1:])
+            t_offset = idx * dt_window
+            t_full_list.append(t_star_window[1:] + t_offset)
+
+        # Autoregressive step: use the LAST point of this prediction as the next IC
         u_current = xyz_pred_window[-1, :]
-        
-        # Track global time
-        t_offset = idx * dt_window
-        t_full_list.append(t_star_window + t_offset)
 
     # 4. Finalize results
     xyz_pred_full = jnp.concatenate(xyz_pred_list, axis=0)
     t_star_full = jnp.concatenate(t_full_list, axis=0)
     
     # Ensure reference matches the total rollout length
-    # Note: we index into the time dimension (axis 0 of the squeezed ref)
+    # This assumes your get_dataset() loaded a long enough reference trajectory
     xyz_ref_matched = xyz_ref_trajectory[:xyz_pred_full.shape[0], :]
 
     # Compute total L2 error
@@ -173,15 +177,15 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         axes[i, 0].grid(True, alpha=0.3)
         axes[i, 0].legend(loc="upper right")
         
-        # Window boundaries
+        # Window boundaries - adjusted to point to the actual split indices
         for w in range(1, num_windows):
-            axes[i, 0].axvline(x=t_star_full[w * len(t_star_window)], color='gray', linestyle=':', alpha=0.4)
+            boundary_time = w * dt_window
+            axes[i, 0].axvline(x=boundary_time, color='gray', linestyle=':', alpha=0.4)
 
         if i == 0:
-            axes[i, 0].set_title("Long-term Rollout: Exact vs. UDON", fontsize=16)
+            axes[i, 0].set_title("Long-term Autoregressive Rollout", fontsize=16)
 
         # Absolute Error (Log Scale)
-        # Both are now (N,), so subtraction works perfectly
         abs_error = jnp.abs(xyz_ref_matched[:, i] - xyz_pred_full[:, i])
         axes[i, 1].plot(t_star_full, abs_error, color=colors[i], linewidth=1.5)
         axes[i, 1].set_yscale('log')
