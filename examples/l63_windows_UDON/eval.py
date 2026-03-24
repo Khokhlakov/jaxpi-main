@@ -155,7 +155,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         # Autoregressive step: use the LAST point of this prediction as the next IC
         u_current = xyz_pred_window[-1, :]
 
-   xyz_pred_full = jnp.concatenate(xyz_pred_list, axis=0)
+    xyz_pred_full = jnp.concatenate(xyz_pred_list, axis=0)
     t_star_full = jnp.concatenate(t_full_list, axis=0)
     
     # --- NEW: Generate Exact Reference on the fly ---
