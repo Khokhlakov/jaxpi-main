@@ -254,3 +254,4 @@ class DeepONet(nn.Module):
         y = self.activation_fn(y)
         y = Dense(features=self.out_dim, reparam=self.reparam)(y)
         return y
+
