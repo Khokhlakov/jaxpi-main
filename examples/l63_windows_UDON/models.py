@@ -175,6 +175,7 @@ class L63UDON(ForwardIVP):
         # Predictions over a grid (t partition)
         self.xyz_pred_fn = vmap(self.xyz_net, (None, None, 0))
         self.r_pred_fn = vmap(self.r_net, (None, None, 0))
+        self.r_grid_fn = vmap(vmap(self.r_net, (None, None, 0)), (None, 0, None))
 
     def xyz_net(self, params, u, t):
         t = jnp.atleast_1d(t)
@@ -195,22 +196,21 @@ class L63UDON(ForwardIVP):
 
     @partial(jit, static_argnums=(0,))
     def res_and_w(self, params, batch):
-        "Compute residuals and weights for causal training over batch_u and batch_t"
         batch_u, batch_t = batch
-        # Sort time coordinates
         t_sorted = jnp.sort(batch_t)
         
-        # vmap over batch_t (inner), then vmap over batch_u (outer)
-        # Output shape: (len(batch_u), len(t_sorted), 3)
-        r_pred = vmap(self.r_net, (None, 0, 0))(params, batch_u, t_sorted)
+        # Evaluate residual on the full grid (IC x Time)
+        # r_pred shape: (num_u, num_t, 3)
+        r_pred = self.r_grid_fn(params, batch_u, t_sorted)
         
-        # Split time dimension into chunks. Shape becomes: (batch_u_size, num_chunks, chunk_size, 3)
-        r_pred = r_pred.reshape(batch_u.shape[0], self.num_chunks, -1, 3)
+        # Reshape into chunks: (num_u, num_chunks, chunk_size, 3)
+        r_chunks = r_pred.reshape(batch_u.shape[0], self.num_chunks, -1, 3)
         
-        # Calculate mean error per time chunk over all ICs (axis 0), chunk size (axis 2), and spatial dims (axis 3)
-        l = jnp.mean(r_pred**2, axis=(0, 2, 3))
+        # Mean error per chunk: (num_chunks,)
+        # We average over ICs (0), points in chunk (2), and x,y,z dims (3)
+        l = jnp.mean(r_chunks**2, axis=(0, 2, 3))
         
-        # Compute causal weights based on cumulative error
+        # Causal weights: w_i = exp(-tol * sum_{j=1}^{i-1} L_j)
         w = lax.stop_gradient(jnp.exp(-self.tol * (self.M @ l)))
         return l, w
     
@@ -224,7 +224,7 @@ class L63UDON(ForwardIVP):
         ics_loss = jnp.mean((batch_u - xyz_pred_ic) ** 2)
 
         # Residual loss
-        if self.config.weighting.use_causal == True: # Incomplete
+        if self.config.weighting.use_causal == True: 
             l, w = self.res_and_w(params, batch)
             res_loss = jnp.mean(l * w)
         else:

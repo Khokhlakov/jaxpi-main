@@ -133,7 +133,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     t_full_list = []
     
     # If trained on [0,1] and rolling out to [0,20], num_windows should be 20
-    num_windows = 20
+    num_windows = config.training.num_time_windows 
     dt_window = t_star_window[-1] - t_star_window[0]
 
     for idx in range(num_windows):
