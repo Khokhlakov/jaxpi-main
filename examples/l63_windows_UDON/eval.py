@@ -120,7 +120,9 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     num_windows = config.training.num_time_windows
     
     model = models.L63UDON(config, t_star_window)
-    ckpt_path = os.path.join(workdir, config.wandb.name, "ckpt", "udon_model")
+    ckpt_path = os.path.join(
+            os.getcwd(), config.wandb.name, "ckpt", "time_window_{}".format(idx + 1)
+        )
     model.state = restore_checkpoint(model.state, ckpt_path)
     params = model.state.params
 
