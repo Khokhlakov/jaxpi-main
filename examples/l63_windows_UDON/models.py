@@ -181,7 +181,7 @@ class L63UDON(ForwardIVP):
         if t.ndim < u.ndim:
             t = t[..., jnp.newaxis]
         inputs = jnp.concatenate([u, t], axis=-1)
-        return self.arch.apply(params, inputs)
+        return self.state.apply_fn(params, inputs)
     
     def r_net(self, params, u, t):
         xyz = self.xyz_net(params, u, t)
