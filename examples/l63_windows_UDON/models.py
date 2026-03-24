@@ -227,6 +227,9 @@ class L63UDON(ForwardIVP):
         if self.config.weighting.use_causal == True: 
             l, w = self.res_and_w(params, batch)
             res_loss = jnp.mean(l * w)
+        elif self.config.training.use_cartesian_prod == True:
+            r_pred = self.r_grid_fn(params, batch_u, batch_t)
+            res_loss = jnp.mean(r_pred ** 2)
         else:
             r_pred = vmap(self.r_net, (None, 0, 0))(params, batch_u, batch_t)
             res_loss = jnp.mean(r_pred ** 2)
