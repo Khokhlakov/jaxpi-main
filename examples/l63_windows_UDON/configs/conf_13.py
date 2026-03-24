@@ -42,11 +42,12 @@ def get_config():
     training.max_steps = 150000
     training.batch_size_per_device = 512
     training.num_time_windows = 20
+    training.use_cartesian_prod = False
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 1.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 50.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 100
 

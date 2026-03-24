@@ -42,6 +42,7 @@ def get_config():
     training.max_steps = 120000
     training.batch_size_per_device = 512
     training.num_time_windows = 20
+    training.use_cartesian_prod = False
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()

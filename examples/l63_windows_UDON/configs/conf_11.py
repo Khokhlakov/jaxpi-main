@@ -9,7 +9,7 @@ def get_config():
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L63"
-    wandb.name = "test_11"  # Updated name to reflect strategy
+    wandb.name = "test_11"
     wandb.tag = None
 
     # Arch 
@@ -42,6 +42,7 @@ def get_config():
     training.max_steps = 150000
     training.batch_size_per_device = 512
     training.num_time_windows = 20
+    training.use_cartesian_prod = False
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()

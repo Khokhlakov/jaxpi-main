@@ -3,13 +3,14 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    # Config 9 with sin activation function
+    # Config 11 with pair training and 8192 batches
     config.mode = "train"
 
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L63"
-    wandb.name = "test_14"
+    wandb.name = "test_11_2"
+    wandb.tag = None
 
     # Arch 
     config.arch = arch = ml_collections.ConfigDict()
@@ -18,9 +19,9 @@ def get_config():
     arch.num_trunk_layers = 6
     arch.hidden_dim = 256
     arch.out_dim = 3
-    arch.activation = "sin"
+    arch.activation = "tanh"
     arch.periodicity = None
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 5, "embed_dim": 256})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
@@ -39,7 +40,7 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 150000
-    training.batch_size_per_device = 512
+    training.batch_size_per_device = 8192
     training.num_time_windows = 20
     training.use_cartesian_prod = False
 
