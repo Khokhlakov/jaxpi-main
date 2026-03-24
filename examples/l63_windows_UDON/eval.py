@@ -119,7 +119,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     model = models.L63UDON(config, t_star_window)
     last_window_idx = config.training.num_time_windows
     ckpt_path = os.path.join(
-        os.getcwd(), config.wandb.name, "ckpt", f"time_window_{last_window_idx}"
+        os.getcwd(), config.wandb.name, "ckpt", f"udon_model{last_window_idx}"
     )
     
     logging.info(f"Restored model from window {last_window_idx} for rollout.")
