@@ -128,6 +128,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         
         # Pick the trajectory for the current IC
         u_current = u0_ref_all[ic_idx, :] 
+        logging.info(f"--- The current u is: {u_current} ---")
 
         # 3. Rollout Loop
         xyz_pred_list = []
