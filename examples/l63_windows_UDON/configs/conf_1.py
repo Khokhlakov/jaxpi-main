@@ -41,7 +41,7 @@ def get_config():
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 200000 
+    training.max_steps = 20000#200000 
     training.batch_size_per_device = 4096
     training.num_time_windows = 1
 
@@ -74,7 +74,7 @@ def get_config():
     saving.num_keep_ckpts = 5
 
     # Input shape (t is the only input)
-    config.input_dim = 1
+    config.input_dim = 4
 
     # Integer for PRNG random seed.
     config.seed = 42
