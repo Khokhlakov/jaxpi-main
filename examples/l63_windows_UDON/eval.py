@@ -8,6 +8,9 @@ from jaxpi.utils import restore_checkpoint
 import models
 from utils import get_dataset
 
+import numpy as np
+from scipy.integrate import solve_ivp
+
 def evaluate_prev(config: ml_collections.ConfigDict, workdir: str):
     # Load full dataset
     xyz_ref, t_star = get_dataset()
@@ -152,15 +155,36 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         # Autoregressive step: use the LAST point of this prediction as the next IC
         u_current = xyz_pred_window[-1, :]
 
-    # 4. Finalize results
-    xyz_pred_full = jnp.concatenate(xyz_pred_list, axis=0)
+   xyz_pred_full = jnp.concatenate(xyz_pred_list, axis=0)
     t_star_full = jnp.concatenate(t_full_list, axis=0)
     
-    # Ensure reference matches the total rollout length
-    # This assumes your get_dataset() loaded a long enough reference trajectory
-    xyz_ref_matched = xyz_ref_trajectory[:xyz_pred_full.shape[0], :]
+    # --- NEW: Generate Exact Reference on the fly ---
+    # Define the standard Lorenz 63 system
+    def lorenz_63(t, state, sigma=10.0, rho=28.0, beta=8.0/3.0):
+        x, y, z = state
+        return [sigma * (y - x), x * (rho - z) - y, x * y - beta * z]
 
-    # Compute total L2 error
+    logging.info("Generating exact long-term reference trajectory via SciPy...")
+    
+    # We need numpy arrays for scipy, not JAX arrays
+    t_eval_np = np.array(t_star_full)
+    u0_np = np.array(u0_ref_all[0, :])
+    
+    # Solve the ODE over the full rollout time
+    sol = solve_ivp(
+        lorenz_63, 
+        t_span=[t_eval_np[0], t_eval_np[-1]], 
+        y0=u0_np, 
+        t_eval=t_eval_np,
+        rtol=1e-8, # High tolerance for an "exact" reference
+        atol=1e-10
+    )
+    
+    # SciPy returns shape (3, N), so we transpose it to (N, 3) to match UDON
+    xyz_ref_matched = jnp.array(sol.y.T) 
+    # ------------------------------------------------
+
+    # Compute total L2 error (Shapes should now both be (2001, 3))
     total_l2_error = jnp.linalg.norm(xyz_pred_full - xyz_ref_matched) / jnp.linalg.norm(xyz_ref_matched)
     print(f"Full Rollout Trajectory L2 error: {total_l2_error:.3e}")
 
