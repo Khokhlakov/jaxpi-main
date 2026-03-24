@@ -178,8 +178,6 @@ class L63UDON(ForwardIVP):
 
     def xyz_net(self, params, u, t):
         t = jnp.atleast_1d(t)
-        if t.ndim < u.ndim:
-            t = t[..., jnp.newaxis]
         inputs = jnp.concatenate([u, t], axis=-1)
         return self.state.apply_fn(params, inputs)
     
@@ -204,7 +202,7 @@ class L63UDON(ForwardIVP):
         
         # vmap over batch_t (inner), then vmap over batch_u (outer)
         # Output shape: (len(batch_u), len(t_sorted), 3)
-        r_pred = vmap(vmap(self.r_net, (None, None, 0)), (None, 0, None))(params, batch_u, t_sorted)
+        r_pred = vmap(self.r_net, (None, 0, 0))(params, batch_u, t_sorted)
         
         # Split time dimension into chunks. Shape becomes: (batch_u_size, num_chunks, chunk_size, 3)
         r_pred = r_pred.reshape(batch_u.shape[0], self.num_chunks, -1, 3)
@@ -230,7 +228,7 @@ class L63UDON(ForwardIVP):
             l, w = self.res_and_w(params, batch)
             res_loss = jnp.mean(l * w)
         else:
-            r_pred = vmap(vmap(self.r_net, (None, None, 0)), (None, 0, None))(params, batch_u, batch_t)
+            r_pred = vmap(self.r_net, (None, 0, 0))(params, batch_u, batch_t)
             res_loss = jnp.mean(r_pred ** 2)
 
         loss_dict = {"ics": ics_loss, "res": res_loss}
