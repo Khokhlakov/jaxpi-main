@@ -20,9 +20,7 @@ def get_config():
     arch.hidden_dim = 256
     arch.out_dim = 3
     arch.activation = "tanh"
-    arch.periodicity = ml_collections.ConfigDict(
-        {"period": (jnp.pi,), "axis": (1,), "trainable": (False,)}
-    )
+    arch.periodicity = None
     arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 5, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
