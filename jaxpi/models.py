@@ -8,6 +8,9 @@ import jax.numpy as jnp
 from jax import lax, jit, grad, pmap, random, jacfwd, jacrev
 from jax.tree_util import tree_map, tree_reduce, tree_leaves
 
+from soap_jax import soap  # Install from https://github.com/haydn-jones/SOAP_JAX
+from psgd_jax.kron import kron
+
 import optax
 
 from jaxpi import archs
@@ -67,6 +70,11 @@ def _create_optimizer(config):
         tx = optax.adam(
             learning_rate=lr, b1=config.beta1, b2=config.beta2, eps=config.eps
         )
+    elif config.optimizer == "Soap":
+
+        tx = soap(
+            learning_rate=lr, b1=config.beta1, b2=config.beta2, weight_decay=0.0, precondition_frequency=2
+            )
 
     else:
         raise NotImplementedError(f"Optimizer {config.optimizer} not supported yet!")

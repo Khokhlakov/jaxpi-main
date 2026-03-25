@@ -3,7 +3,7 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    # Config 16 with grid training 256x256
+    # Config 12 with grid training 256x256
     config.mode = "train"
 
     # Weights & Biases
@@ -21,7 +21,7 @@ def get_config():
     arch.out_dim = 3
     arch.activation = "tanh"
     arch.periodicity = None
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 256})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 5, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
