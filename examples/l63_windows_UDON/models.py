@@ -197,18 +197,15 @@ class L63UDON(ForwardIVP):
     @partial(jit, static_argnums=(0,))
     def res_and_w(self, params, batch):
         batch_u, batch_t = batch
-        t_sorted = jnp.sort(batch_t)
+        idx = jnp.argsort(batch_t)
+        t_sorted = batch_t[idx]
+        u_sorted = batch_u[idx]
         
         # Evaluate residual on the full grid (IC x Time)
         # r_pred shape: (num_u, num_t, 3)
-        r_pred = self.r_grid_fn(params, batch_u, t_sorted)
-        
-        # Reshape into chunks: (num_u, num_chunks, chunk_size, 3)
-        r_chunks = r_pred.reshape(batch_u.shape[0], self.num_chunks, -1, 3)
-        
-        # Mean error per chunk: (num_chunks,)
-        # We average over ICs (0), points in chunk (2), and x,y,z dims (3)
-        l = jnp.mean(r_chunks**2, axis=(0, 2, 3))
+        r_pred = vmap(self.r_net, (None, 0, 0))(params, u_sorted, t_sorted)
+        r_chunks = r_pred.reshape(self.num_chunks, -1, 3)
+        l = jnp.mean(r_chunks**2, axis=(1,2))
         
         # Causal weights: w_i = exp(-tol * sum_{j=1}^{i-1} L_j)
         w = lax.stop_gradient(jnp.exp(-self.tol * (self.M @ l)))
