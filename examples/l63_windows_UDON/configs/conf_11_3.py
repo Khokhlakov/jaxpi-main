@@ -9,7 +9,7 @@ def get_config():
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L63"
-    wandb.name = "test_11_2"
+    wandb.name = "test_11_3"
     wandb.tag = None
 
     # Arch 
