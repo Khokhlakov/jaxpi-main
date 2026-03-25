@@ -71,7 +71,12 @@ def _create_optimizer(config):
             learning_rate=lr, b1=config.beta1, b2=config.beta2, eps=config.eps
         )
     elif config.optimizer == "Soap":
-
+        lr = optax.exponential_decay(
+            init_value=config.learning_rate,
+            transition_steps=config.decay_steps,
+            decay_rate=config.decay_rate,
+            staircase=False
+        )
         tx = soap(
             learning_rate=lr, b1=config.beta1, b2=config.beta2, weight_decay=0.0, precondition_frequency=2
             )
