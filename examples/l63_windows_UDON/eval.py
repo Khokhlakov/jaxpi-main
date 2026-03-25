@@ -121,7 +121,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
 
     # Define the Initial Condition (IC) indices you want to plot 
     # (e.g., 0 for the first trajectory, 1 for the second)
-    ic_indices = [0, 1]
+    ic_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
     for ic_idx in ic_indices:
         logging.info(f"--- Evaluating Trajectory for IC index {ic_idx} ---")
