@@ -39,7 +39,7 @@ def get_config():
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 100000
+    training.max_steps = 150000
     training.batch_size_per_device = 8192
     training.num_time_windows = 40
     training.use_cartesian_prod = False

@@ -3,13 +3,13 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    # Config 22 with causal training decay_steps 10000
+    # Config 22 with causal training dacay_steps 2000
     config.mode = "train"
 
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L63"
-    wandb.name = "test_25" 
+    wandb.name = "test_24" 
     wandb.tag = None
 
     # Arch 
@@ -35,11 +35,11 @@ def get_config():
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 10000 
+    optim.decay_steps = 2000 
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 100000
+    training.max_steps = 150000
     training.batch_size_per_device = 8192
     training.num_time_windows = 40
     training.use_cartesian_prod = False

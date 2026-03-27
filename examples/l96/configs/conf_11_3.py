@@ -3,13 +3,13 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    # Config 22 with causal training decay_steps 10000
+    # Config 11 with pair training and 8192 batches and sin activation f
     config.mode = "train"
 
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L63"
-    wandb.name = "test_25" 
+    wandb.name = "test_11_3"
     wandb.tag = None
 
     # Arch 
@@ -19,9 +19,9 @@ def get_config():
     arch.num_trunk_layers = 6
     arch.hidden_dim = 256
     arch.out_dim = 3
-    arch.activation = "tanh"
+    arch.activation = "sin"
     arch.periodicity = None
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 5, "embed_dim": 256})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
@@ -29,19 +29,19 @@ def get_config():
     # Optim
     config.optim = optim = ml_collections.ConfigDict()
     optim.grad_accum_steps = 0
-    optim.optimizer = "Soap"
+    optim.optimizer = "Adam"
     optim.beta1 = 0.9
     optim.beta2 = 0.999
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
-    optim.decay_rate = 0.9
-    optim.decay_steps = 10000 
+    optim.decay_rate = 0.95
+    optim.decay_steps = 5000 
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 100000
+    training.max_steps = 150000
     training.batch_size_per_device = 8192
-    training.num_time_windows = 40
+    training.num_time_windows = 20
     training.use_cartesian_prod = False
 
     # Weighting
@@ -52,9 +52,9 @@ def get_config():
     weighting.update_every_steps = 100
 
     # Causal Weighting
-    weighting.use_causal = True
+    weighting.use_causal = False
     weighting.causal_tol = 1.0
-    weighting.num_chunks = 32
+    weighting.num_chunks = 16 
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()

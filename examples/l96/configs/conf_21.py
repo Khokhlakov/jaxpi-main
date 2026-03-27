@@ -3,13 +3,13 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    # Config 22 with causal training decay_steps 10000
+    # Config 20 wwith causal training
     config.mode = "train"
 
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L63"
-    wandb.name = "test_25" 
+    wandb.name = "test_21" 
     wandb.tag = None
 
     # Arch 
@@ -39,8 +39,8 @@ def get_config():
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 100000
-    training.batch_size_per_device = 8192
+    training.max_steps = 150000
+    training.batch_size_per_device = 1024
     training.num_time_windows = 40
     training.use_cartesian_prod = False
 
@@ -54,7 +54,7 @@ def get_config():
     # Causal Weighting
     weighting.use_causal = True
     weighting.causal_tol = 1.0
-    weighting.num_chunks = 32
+    weighting.num_chunks = 16 
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
