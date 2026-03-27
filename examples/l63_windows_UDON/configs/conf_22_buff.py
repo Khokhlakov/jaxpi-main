@@ -8,7 +8,7 @@ def get_config():
 
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project = "PI-UDON-L63"
+    wandb.project = "PI-UDON-L63-buff"
     wandb.name = "test_22_buff" 
     wandb.tag = None
 
