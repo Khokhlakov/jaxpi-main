@@ -2,14 +2,13 @@ import ml_collections
 import jax.numpy as jnp
 
 def get_config():
-    """Config for L63, chaotic regime using Time-Windowing paired data"""
     config = ml_collections.ConfigDict()
-
+    # Config 20 with 8192 data
     config.mode = "train"
 
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project = "PI-UDON-L63"
+    wandb.project = "PI-UDON-L96"
     wandb.name = "test_1" 
     wandb.tag = None
 
@@ -19,11 +18,9 @@ def get_config():
     arch.num_branch_layers = 6 
     arch.num_trunk_layers = 6
     arch.hidden_dim = 256
-    arch.out_dim = 3
+    arch.out_dim = 40
     arch.activation = "tanh"
-    arch.periodicity = ml_collections.ConfigDict(
-        {"period": (jnp.pi,), "axis": (1,), "trainable": (False,)}
-    )
+    arch.periodicity = None
     arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 5, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
@@ -32,19 +29,19 @@ def get_config():
     # Optim
     config.optim = optim = ml_collections.ConfigDict()
     optim.grad_accum_steps = 0
-    optim.optimizer = "Adam"
+    optim.optimizer = "Soap"
     optim.beta1 = 0.9
     optim.beta2 = 0.999
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 2000 
+    optim.decay_steps = 10000 
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 20000#200000 
-    training.batch_size_per_device = 4096
-    training.num_time_windows = 20
+    training.max_steps = 100000
+    training.batch_size_per_device = 4096#16384
+    training.num_time_windows = 40
     training.use_cartesian_prod = False
 
     # Weighting
@@ -52,7 +49,7 @@ def get_config():
     weighting.scheme = "grad_norm"
     weighting.init_weights = ml_collections.ConfigDict({"ics": 1.0, "res": 1.0}) 
     weighting.momentum = 0.9
-    weighting.update_every_steps = 1000
+    weighting.update_every_steps = 100
 
     # Causal Weighting
     weighting.use_causal = False
@@ -72,11 +69,11 @@ def get_config():
     # Saving
     config.saving = saving = ml_collections.ConfigDict()
     # Save at the end of each window automatically (managed in training script)
-    saving.save_every_steps = 5000
-    saving.num_keep_ckpts = 5
+    saving.save_every_steps = 10000
+    saving.num_keep_ckpts = 3
 
     # Input shape (t is the only input)
-    config.input_dim = 4
+    config.input_dim = 41
 
     # Integer for PRNG random seed.
     config.seed = 42
