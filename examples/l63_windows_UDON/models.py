@@ -10,40 +10,189 @@ from jaxpi.utils import ntk_fn, flatten_pytree
 from matplotlib import pyplot as plt
 
 
-class L96UDON(ForwardIVP):
+class L63(ForwardIVP):
+    def __init__(self, config, xyz0, t_star):
+        super().__init__(config)
+
+        self.xyz0 = xyz0
+        self.t_star = t_star
+
+        self.t0 = t_star[0]
+        self.t1 = t_star[-1]
+        
+        # System parameters
+        self.sigma = 10.0
+        self.rho = 28.0
+        self.beta = 8.0 / 3.0
+
+        # Predictions over a grid (t partition)
+        self.xyz_pred_fn = vmap(self.xyz_net, (None, 0))
+        self.r_pred_fn = vmap(self.r_net, (None, 0))
+
+    def xyz_net(self, params, t):
+        z = jnp.array([t])
+        xyz = self.state.apply_fn(params, z)
+        return xyz
+
+    def grad_net(self, params, t):
+        xyz_t = jacfwd(self.xyz_net, argnums=1)(params, t)
+        return xyz_t
+
+    def r_net(self, params, t):
+        xyz = self.xyz_net(params, t)
+        x, y, z = xyz[0], xyz[1], xyz[2]
+
+        xyz_t = jacfwd(self.xyz_net, argnums=1)(params, t)
+        x_t, y_t, z_t = xyz_t[0], xyz_t[1], xyz_t[2]
+
+        r_x = x_t - self.sigma * (y - x)
+        r_y = y_t - (x * (self.rho - z) - y)
+        r_z = z_t - (x * y - self.beta * z)
+        return jnp.array([r_x, r_y, r_z])
+
+    @partial(jit, static_argnums=(0,))
+    def res_and_w(self, params, batch_t):
+        "Compute residuals and weights for causal training"
+        # Sort time coordinates
+        t_sorted = jnp.sort(batch_t)
+        r_pred = vmap(self.r_net, (None, 0))(params, t_sorted)
+        # Split residuals into chunks
+        r_pred = r_pred.reshape(self.num_chunks, -1, 3)
+        # Err
+        l = jnp.mean(r_pred**2, axis=(1,2))
+        w = lax.stop_gradient(jnp.exp(-self.tol * (self.M @ l)))
+        return l, w
+
+    @partial(jit, static_argnums=(0,))
+    def losses(self, params, batch):
+        # Initial condition loss
+        batch_t = batch.flatten()
+        xyz_pred = self.xyz_net(params, self.t0)
+        ics_loss = jnp.mean((self.xyz0 - xyz_pred) ** 2)
+
+        # Residual loss
+        if self.config.weighting.use_causal == True:
+            l, w = self.res_and_w(params, batch_t)
+            res_loss = jnp.mean(l * w)
+        else:
+            r_pred = vmap(self.r_net, (None, 0))(params, batch_t)
+            res_loss = jnp.mean((r_pred) ** 2)
+
+        loss_dict = {"ics": ics_loss, "res": res_loss}
+        return loss_dict
+
+    @partial(jit, static_argnums=(0,))
+    def compute_diag_ntk(self, params, batch):
+        batch_t = batch.flatten()
+        ics_ntk = ntk_fn, (self.xyz_net, params, self.t0)
+
+        # Consider the effect of causal weights
+        if self.config.weighting.use_causal:
+            # sort the time step for causal loss
+            t_sorted = jnp.sort(batch_t)
+            res_ntk = vmap(ntk_fn, (None, None, 0))(
+                self.r_net, params, t_sorted
+            )
+            res_ntk = res_ntk.reshape(self.num_chunks, -1)  # shape: (num_chunks, -1)
+            res_ntk = jnp.mean(
+                res_ntk, axis=1
+            )  # average convergence rate over each chunk
+            _, casual_weights = self.res_and_w(params, t_sorted)
+            res_ntk = res_ntk * casual_weights  # multiply by causal weights
+        else:
+            res_ntk = vmap(ntk_fn, (None, None, 0))(
+                self.r_net, params, batch_t
+            )
+
+        ntk_dict = {"ics": ics_ntk, "res": res_ntk}
+
+        return ntk_dict
+
+    @partial(jit, static_argnums=(0,))
+    def compute_l2_error(self, params, xyz_test):
+        xyz_pred = self.xyz_pred_fn(params, self.t_star)
+        error = jnp.linalg.norm(xyz_pred - xyz_test) / jnp.linalg.norm(xyz_test)
+        return error
+
+
+
+class L63Evaluator(BaseEvaluator):
+    def __init__(self, config, model):
+        super().__init__(config, model)
+
+    def log_errors(self, params, xyz_ref):
+        l2_error = self.model.compute_l2_error(params, xyz_ref)
+        self.log_dict["l2_error"] = l2_error
+
+    def log_preds(self, params):
+        xyz_pred = self.model.xyz_pred_fn(params, self.model.t_star)
+        t = self.model.t_star
+
+        fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
+        labels = ['x(t)', 'y(t)', 'z(t)']
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+        for i in range(3):
+            axes[i].plot(t, xyz_pred[:, i], label=f"Pred {labels[i]}", color=colors[i], lw=1.5)
+            axes[i].set_ylabel(labels[i])
+            axes[i].grid(True, alpha=0.3)
+            axes[i].legend(loc='upper right')
+        axes[2].set_xlabel("Time (t)")
+        plt.tight_layout()
+        self.log_dict["xyz_pred"] = fig
+        plt.close()
+
+    def __call__(self, state, batch, xyz_ref):
+        self.log_dict = super().__call__(state, batch)
+
+        if self.config.weighting.use_causal:
+            batch_t = batch.flatten()
+            _, causal_weight = self.model.res_and_w(state.params, batch_t)
+            self.log_dict["cas_weight"] = causal_weight.min()
+
+        if self.config.logging.log_errors:
+            self.log_errors(state.params, xyz_ref)
+
+        if self.config.logging.log_preds:
+            self.log_preds(state.params)
+
+        return self.log_dict
+
+
+
+class L63UDON(ForwardIVP):
     def __init__(self, config, t_star):
         super().__init__(config)
         self.t_star = t_star 
 
         # System parameters
-        self.N = 40
-        self.F = 6.0
+        self.sigma = 10.0
+        self.rho = 28.0
+        self.beta = 8.0 / 3.0
         
         self.t0 = t_star[0]
         self.t1 = t_star[-1]
 
         # Predictions over a grid (t partition)
-        self.x_pred_fn = vmap(self.x_net, (None, None, 0))
+        self.xyz_pred_fn = vmap(self.xyz_net, (None, None, 0))
         self.r_pred_fn = vmap(self.r_net, (None, None, 0))
         self.r_grid_fn = vmap(vmap(self.r_net, (None, None, 0)), (None, 0, None))
 
-    def x_net(self, params, u, t):
+    def xyz_net(self, params, u, t):
         t = jnp.atleast_1d(t)
         inputs = jnp.concatenate([u, t], axis=-1)
         return self.state.apply_fn(params, inputs)
     
     def r_net(self, params, u, t):
-        x = self.x_net(params, u, t)
-        x_t = jacfwd(self.x_net, argnums=2)(params, u, t)
+        xyz = self.xyz_net(params, u, t)
+        x, y, z = xyz[0], xyz[1], xyz[2]
 
-        # Lorenz 96 ODE: dx_i/dt = (x_{i+1} - x_{i-2}) * x_{i-1} - x_i + F
-        # Using jnp.roll for periodic boundary conditions
-        x_plus_1 = jnp.roll(x, -1)
-        x_minus_1 = jnp.roll(x, 1)
-        x_minus_2 = jnp.roll(x, 2)
+        xyz_t = jacfwd(self.xyz_net, argnums=2)(params, u, t)
+        x_t, y_t, z_t = xyz_t[0], xyz_t[1], xyz_t[2]
 
-        r_x = x_t - ((x_plus_1 - x_minus_2) * x_minus_1 - x + self.F)
-        return r_x
+        r_x = x_t - self.sigma * (y - x)
+        r_y = y_t - (x * (self.rho - z) - y)
+        r_z = z_t - (x * y - self.beta * z)
+        return jnp.array([r_x, r_y, r_z])
 
     @partial(jit, static_argnums=(0,))
     def res_and_w(self, params, batch):
@@ -53,9 +202,9 @@ class L96UDON(ForwardIVP):
         u_sorted = batch_u[idx]
         
         # Evaluate residual on the full grid (IC x Time)
-        # r_pred shape: (num_u, num_t, N)
+        # r_pred shape: (num_u, num_t, 3)
         r_pred = vmap(self.r_net, (None, 0, 0))(params, u_sorted, t_sorted)
-        r_chunks = r_pred.reshape(self.num_chunks, -1, self.N)
+        r_chunks = r_pred.reshape(self.num_chunks, -1, 3)
         l = jnp.mean(r_chunks**2, axis=(1,2))
         
         # Causal weights: w_i = exp(-tol * sum_{j=1}^{i-1} L_j)
@@ -68,8 +217,8 @@ class L96UDON(ForwardIVP):
         batch_u, batch_t = batch
 
         # IC Loss
-        x_pred_ic = vmap(self.x_net, (None, 0, None))(params, batch_u, self.t0)
-        ics_loss = jnp.mean((batch_u - x_pred_ic) ** 2)
+        xyz_pred_ic = vmap(self.xyz_net, (None, 0, None))(params, batch_u, self.t0)
+        ics_loss = jnp.mean((batch_u - xyz_pred_ic) ** 2)
 
         # Residual loss
         if self.config.weighting.use_causal == True: 
@@ -86,38 +235,38 @@ class L96UDON(ForwardIVP):
         return loss_dict
     
     @partial(jit, static_argnums=(0,))
-    def compute_l2_error(self, params, u_test, x_test):
+    def compute_l2_error(self, params, u_test, xyz_test):
         # Predict the trajectory under initial condition 
-        x_pred = self.x_pred_fn(params, u_test, self.t_star)
-        error = jnp.linalg.norm(x_pred - x_test) / jnp.linalg.norm(x_test)
+        xyz_pred = self.xyz_pred_fn(params, u_test, self.t_star)
+        error = jnp.linalg.norm(xyz_pred - xyz_test) / jnp.linalg.norm(xyz_test)
         return error
 
-class L96UDONEvaluator(BaseEvaluator):
+class L63UDONEvaluator(BaseEvaluator):
     def __init__(self, config, model):
         super().__init__(config, model)
 
-    def log_errors(self, params, u_ref, x_ref):
-        l2_error = self.model.compute_l2_error(params, u_ref, x_ref)
+    def log_errors(self, params, u_ref, xyz_ref):
+        l2_error = self.model.compute_l2_error(params, u_ref, xyz_ref)
         self.log_dict["l2_error"] = l2_error
 
     def log_preds(self, params, u_ref):
-        x_pred = self.model.x_pred_fn(params, u_ref, self.model.t_star)
+        xyz_pred = self.model.xyz_pred_fn(params, u_ref, self.model.t_star)
         t = self.model.t_star
 
-        fig, ax = plt.subplots(figsize=(10, 8))
-        
-        # Construct heatmap: variables on x-axis, time on y-axis
-        c = ax.pcolormesh(np.arange(self.model.N), t, x_pred, cmap='viridis', shading='auto')
-        ax.set_xlabel("Variables (0 to 39)")
-        ax.set_ylabel("Time (t)")
-        ax.set_title("L96 UDON Trajectory Heatmap")
-        fig.colorbar(c, ax=ax)
-        
+        fig, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
+        labels = ['x(t)', 'y(t)', 'z(t)']
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+        for i in range(3):
+            axes[i].plot(t, xyz_pred[:, i], label=f"Pred {labels[i]}", color=colors[i], lw=1.5)
+            axes[i].set_ylabel(labels[i])
+            axes[i].grid(True, alpha=0.3)
+            axes[i].legend(loc='upper right')
+        axes[2].set_xlabel("Time (t)")
         plt.tight_layout()
-        self.log_dict["x_pred"] = fig
+        self.log_dict["xyz_pred"] = fig
         plt.close()
 
-    def __call__(self, state, batch, u_ref, x_ref):
+    def __call__(self, state, batch, u_ref, xyz_ref):
         self.log_dict = super().__call__(state, batch)
 
         # Causal weights now need the full batch (batch_u, batch_t)
@@ -126,7 +275,7 @@ class L96UDONEvaluator(BaseEvaluator):
             self.log_dict["cas_weight"] = causal_weight.min()
 
         if self.config.logging.log_errors:
-            self.log_errors(state.params, u_ref, x_ref)
+            self.log_errors(state.params, u_ref, xyz_ref)
 
         if self.config.logging.log_preds:
             self.log_preds(state.params, u_ref)
