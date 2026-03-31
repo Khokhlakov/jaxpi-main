@@ -17,7 +17,7 @@ def get_config():
     arch.arch_name = "DeepONet"
     arch.num_branch_layers = 6 
     arch.num_trunk_layers = 6
-    arch.hidden_dim = 256
+    arch.hidden_dim = 512
     arch.out_dim = 40
     arch.activation = "tanh"
     arch.periodicity = None
@@ -52,7 +52,7 @@ def get_config():
     weighting.update_every_steps = 100
 
     # Causal Weighting
-    weighting.use_causal = False
+    weighting.use_causal = True
     weighting.causal_tol = 1.0
     weighting.num_chunks = 16 
 
