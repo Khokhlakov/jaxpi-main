@@ -53,7 +53,6 @@ class L96UDON(ForwardIVP):
         u_sorted = batch_u[idx]
         
         # Evaluate residual on the full grid (IC x Time)
-        # r_pred shape: (num_u, num_t, N)
         r_pred = vmap(self.r_net, (None, 0, 0))(params, u_sorted, t_sorted)
         r_chunks = r_pred.reshape(self.num_chunks, -1, self.N)
         l = jnp.mean(r_chunks**2, axis=(1,2))
