@@ -78,3 +78,4 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
                 save_checkpoint(model.state, ckpt_path, keep=config.saving.num_keep_ckpts)
 
     return model
+
