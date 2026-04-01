@@ -13,7 +13,7 @@ def get_config():
 
     # Arch 
     config.arch = arch = ml_collections.ConfigDict()
-    arch.arch_name = "DeepONet"
+    arch.arch_name = "ModifiedDeepONet"
     arch.num_branch_layers = 6 
     arch.num_trunk_layers = 6
     arch.hidden_dim = 512
@@ -45,7 +45,7 @@ def get_config():
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
-    weighting.scheme = "ntk"
+    weighting.scheme = "grad_norm"
     weighting.init_weights = ml_collections.ConfigDict({"ics": 1.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 100
@@ -73,6 +73,8 @@ def get_config():
 
     # Input shape (t is the only input)
     config.input_dim = 41
+    #config.x_input_dim = 40
+    #config.t_input_dim = 1
 
     # Integer for PRNG random seed.
     config.seed = 42
