@@ -13,7 +13,7 @@ def get_config():
 
     # Arch 
     config.arch = arch = ml_collections.ConfigDict()
-    arch.arch_name = "modifiedDeepONet"
+    arch.arch_name = "ModifiedDeepONet"
     arch.num_branch_layers = 5
     arch.num_trunk_layers = 5
     arch.hidden_dim = 512
