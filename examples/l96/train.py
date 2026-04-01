@@ -86,30 +86,33 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
         # NEW: 3. Periodically expand the IC dataset using network predictions
         # -------------------------------------------------------------------------
         if step > 0 and step % update_interval == 0 and additions_done < max_additions:
-            # Extract a single un-replicated state (assuming pmap is used based on your tree_map syntax)
+            # 1. Properly extract the UN-REPLICATED state and params
+            # We use jax.device_get to bring it to CPU and tree_map to grab the first device's copy
             single_state = jax.device_get(tree_map(lambda x: x[0], model.state))
             
-            # Predict the state at time t_end for all current ICs
-            t_target_array = jnp.full((u0_train_batch.shape[0], 1), t_end)
+            # 2. Ensure t_end has a 'feature' dimension (Trunk expects a vector)
+            t_end_vec = jnp.array([t_end]) 
             
-            # We vmap over the 2nd argument (u) and keep params and t fixed
-            # model.x_net(params, u, t) -> returns (40,)
+            # 3. Define the prediction function using the model's logic
+            # Note: We pass single_state.params, NOT model.state.params
             predict_batch_fn = jax.vmap(model.x_net, in_axes=(None, 0, None))
             
-            # Generate the new initial conditions (N, 40)
-            new_u0_predictions = predict_batch_fn(model.state.params, u0_train_batch, t_end)
+            # 4. Generate the new initial conditions
+            # We use single_state.params here to avoid the shape error
+            new_u0_predictions = predict_batch_fn(single_state.params, u0_train_batch, t_end_vec)
             
-            # Append the new predictions to the training ICs
+            # 5. Update the dataset
             u0_train_batch = jnp.concatenate([u0_train_batch, new_u0_predictions], axis=0)
             
             # Update the domain bounds and re-instantiate the samplers
             dom_u = get_dom_u(u0_train_batch)
             sampler_u = UniformSampler(dom_u, batch_size)
+            
+            # Re-bundle the sampler (sampler_t remains the same)
             res_sampler = zip(sampler_u, sampler_t)
             
             additions_done += 1
-            logging.info(f"Step {step}: Added {new_u0_predictions.shape[0]} new predictions at t={additions_done * t_end:.2f}. "
-                         f"New IC dataset size: {u0_train_batch.shape[0]}")
+            logging.info(f"Step {step}: Success! New IC dataset size: {u0_train_batch.shape[0]}")
 
         # Logging and Evaluation
         if jax.process_index() == 0:
