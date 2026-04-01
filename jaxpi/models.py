@@ -53,6 +53,9 @@ def _create_arch(config):
 
     elif config.arch_name == "DeepONet":
         arch = archs.DeepONet(**config)
+    
+    elif config.arch_name == "ModifiedDeepONet":
+        arch = archs.ModifiedDeepONet(**config)
 
     else:
         raise NotImplementedError(f"Arch {config.arch_name} not supported yet!")

@@ -257,3 +257,45 @@ class DeepONet(nn.Module):
         y = Dense(features=self.out_dim, reparam=self.reparam)(y)
         return y
 
+class ModifiedDeepONet(nn.Module):
+    arch_name: Optional[str] = "ModifiedDeepONet"
+    num_branch_layers: int = 4
+    num_trunk_layers: int = 4
+    hidden_dim: int = 256
+    out_dim: int = 1
+    activation: str = "tanh"
+    periodicity: Union[None, Dict] = None
+    fourier_emb: Union[None, Dict] = None
+    reparam: Union[None, Dict] = None
+
+    def setup(self):
+        self.activation_fn = _get_activation(self.activation)
+
+    @nn.compact
+    def __call__(self, inputs):
+        u = inputs[..., :3] 
+        x = inputs[..., 3:]
+        u = ModifiedMlp(
+            num_layers=self.num_branch_layers,
+            hidden_dim=self.hidden_dim,
+            out_dim=self.hidden_dim,
+            activation=self.activation,
+            periodicity=False,
+            reparam=self.reparam,
+        )(u)
+
+        x = ModifiedMlp(
+            num_layers=self.num_trunk_layers,
+            hidden_dim=self.hidden_dim,
+            out_dim=self.hidden_dim,
+            activation=self.activation,
+            periodicity=self.periodicity,
+            fourier_emb=self.fourier_emb,
+            reparam=self.reparam,
+        )(x)
+
+        y = u * x
+        y = self.activation_fn(y)
+        y = Dense(features=self.out_dim, reparam=self.reparam)(y)
+        return y
+
