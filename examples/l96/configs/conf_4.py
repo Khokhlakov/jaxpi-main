@@ -20,7 +20,9 @@ def get_config():
     arch.hidden_dim = 512
     arch.out_dim = 40
     arch.activation = "tanh"
-    arch.periodicity = None
+    arch.periodicity = ml_collections.ConfigDict(
+        {"period": (jnp.pi,), "axis": (1,), "trainable": (False,)}
+    )
     arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 5, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
@@ -35,7 +37,7 @@ def get_config():
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 10000 
+    optim.decay_steps = 2000 
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
