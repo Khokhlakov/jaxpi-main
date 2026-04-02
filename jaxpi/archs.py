@@ -231,8 +231,8 @@ class DeepONet(nn.Module):
 
     @nn.compact
     def __call__(self, inputs):
-        u = inputs[..., :40] 
-        x = inputs[..., 40:]
+        u = inputs[..., :6] 
+        x = inputs[..., 6:]
         u = MlpBlock(
             num_layers=self.num_branch_layers,
             hidden_dim=self.hidden_dim,
@@ -273,8 +273,8 @@ class ModifiedDeepONet(nn.Module):
 
     @nn.compact
     def __call__(self, inputs):
-        u = inputs[..., :40] 
-        x = inputs[..., 40:]
+        u = inputs[..., :6] 
+        x = inputs[..., 6:]
         u = ModifiedMlp(
             num_layers=self.num_branch_layers,
             hidden_dim=self.hidden_dim,
