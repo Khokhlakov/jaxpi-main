@@ -74,7 +74,7 @@ def get_config():
     saving.num_keep_ckpts = 3
 
     # Input shape (t is the only input)
-    config.input_dim = 61
+    config.input_dim = 7
 
     # Integer for PRNG random seed.
     config.seed = 42
