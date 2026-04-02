@@ -64,7 +64,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         t_star_full = jnp.concatenate(t_full_list, axis=0)
         
         # Generate Exact Reference on the fly for L96
-        def lorenz_96(t, state, F=2.0):
+        def lorenz_96(t, state, F=6.0):
             x_plus_1 = np.roll(state, -1)
             x_minus_1 = np.roll(state, 1)
             x_minus_2 = np.roll(state, 2)
@@ -96,20 +96,20 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         im0 = axes[0].pcolormesh(np.arange(model.N), t_star_full, x_ref_matched, cmap='viridis', shading='auto')
         axes[0].set_title(f"Exact L96 Reference (IC {ic_idx})", fontsize=14)
         axes[0].set_ylabel("Time (t)", fontsize=14)
-        axes[0].set_xlabel("Variables (0 to 6)", fontsize=14)
+        axes[0].set_xlabel("Variables (0 to 39)", fontsize=14)
         fig.colorbar(im0, ax=axes[0])
         
         # 2. UDON Prediction Heatmap
         im1 = axes[1].pcolormesh(np.arange(model.N), t_star_full, x_pred_full, cmap='viridis', shading='auto')
         axes[1].set_title(f"UDON Rollout (IC {ic_idx})", fontsize=14)
-        axes[1].set_xlabel("Variables (0 to 6)", fontsize=14)
+        axes[1].set_xlabel("Variables (0 to 39)", fontsize=14)
         fig.colorbar(im1, ax=axes[1])
         
         # 3. Absolute Error Heatmap
         abs_error = jnp.abs(x_ref_matched - x_pred_full)
         im2 = axes[2].pcolormesh(np.arange(model.N), t_star_full, abs_error, cmap='magma', shading='auto')
         axes[2].set_title(f"Absolute Error (IC {ic_idx})", fontsize=14)
-        axes[2].set_xlabel("Variables (0 to 6)", fontsize=14)
+        axes[2].set_xlabel("Variables (0 to 39)", fontsize=14)
         fig.colorbar(im2, ax=axes[2])
 
         # Draw Window boundaries across the heatmaps

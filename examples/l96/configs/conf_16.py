@@ -17,7 +17,7 @@ def get_config():
     arch.num_branch_layers = 5
     arch.num_trunk_layers = 5
     arch.hidden_dim = 512
-    arch.out_dim = 6
+    arch.out_dim = 40
     arch.activation = "tanh"
     arch.periodicity = None
     arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 5, "embed_dim": 256})
@@ -42,19 +42,19 @@ def get_config():
     training.batch_size_per_device = 8192#16384
     training.num_time_windows = 40
     training.use_cartesian_prod = False
-    training.num_initial_ics = 1500
-    training.max_additions = 7
+    training.num_initial_ics = 1000
+    training.max_additions = 8
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 1000.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 1.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
 
     # Causal Weighting
     weighting.use_causal = True
-    weighting.causal_tol = 1
+    weighting.causal_tol = 10
     weighting.num_chunks = 8
 
     # Logging
@@ -74,7 +74,7 @@ def get_config():
     saving.num_keep_ckpts = 3
 
     # Input shape (t is the only input)
-    config.input_dim = 7
+    config.input_dim = 41
 
     # Integer for PRNG random seed.
     config.seed = 42

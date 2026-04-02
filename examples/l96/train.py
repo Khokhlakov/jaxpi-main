@@ -34,10 +34,10 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     # -------------------------------------------------------------------------
     key = jax.random.PRNGKey(config.training.get("seed", 42))
     num_initial_ics = config.training.get("num_initial_ics", 1000)
-    num_vars = 6 # Standard for Lorenz 96
+    num_vars = 40 # Standard for Lorenz 96
     
     # Adjust mean and std_dev to match the typical L96 scale (e.g., mean=8, std=1)
-    mean, std_dev = 2.0, 1.0 
+    mean, std_dev = 8.0, 1.0 
     u0_train_batch = mean + std_dev * jax.random.normal(key, shape=(num_initial_ics, num_vars))
 
     logging.info(f"Initializing L96 DeepONet with {u0_train_batch.shape[0]} Gaussian trajectories...")

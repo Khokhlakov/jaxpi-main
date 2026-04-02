@@ -16,8 +16,8 @@ class L96UDON(ForwardIVP):
         self.t_star = t_star 
 
         # System parameters
-        self.N = 6
-        self.F = 2.0
+        self.N = 40
+        self.F = 6.0
         
         self.t0 = t_star[0]
         self.t1 = t_star[-1]
