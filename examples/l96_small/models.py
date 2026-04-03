@@ -35,6 +35,7 @@ class L96UDON(ForwardIVP):
     def r_net(self, params, u, t):
         x = self.x_net(params, u, t)
         x_t = jacfwd(self.x_net, argnums=2)(params, u, t)
+        x_t = x_t.squeeze(-1) 
 
         # Lorenz 96 ODE: dx_i/dt = (x_{i+1} - x_{i-2}) * x_{i-1} - x_i + F
         # Using jnp.roll for periodic boundary conditions

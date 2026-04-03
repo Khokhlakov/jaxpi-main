@@ -13,7 +13,7 @@ def get_dataset(filepath="data/l96_udon.mat"):
     t_star = jnp.array(data["t"]).flatten() # (num_points,)
 
     # Mask desired horizon
-    mask = t_star <= 0.5
+    mask = t_star <= 0.25
     t_star = t_star[mask]
     x_ref = x_ref[:, mask, :] # Slicing the 'num_points' dimension
 
