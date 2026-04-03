@@ -34,7 +34,7 @@ def get_config():
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 10000 
+    optim.decay_steps = 2000 
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
@@ -48,13 +48,13 @@ def get_config():
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 1000.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
 
     # Causal Weighting
     weighting.use_causal = True
-    weighting.causal_tol = 1.0
+    weighting.causal_tol = 0.1
     weighting.num_chunks = 8
 
     # Logging
