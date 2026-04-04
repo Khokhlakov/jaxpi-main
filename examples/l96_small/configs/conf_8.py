@@ -43,7 +43,7 @@ def get_config():
     training.num_time_windows = 40
     training.use_cartesian_prod = False
     training.num_initial_ics = 2048
-    training.max_additions = 6
+    training.max_additions = 0
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
