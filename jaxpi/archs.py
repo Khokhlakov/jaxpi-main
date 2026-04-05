@@ -222,6 +222,7 @@ class DeepONet(nn.Module):
     hidden_dim: int = 256
     out_dim: int = 1
     activation: str = "tanh"
+    branch_input_dim: int = 6
     periodicity: Union[None, Dict] = None
     fourier_emb: Union[None, Dict] = None
     reparam: Union[None, Dict] = None
@@ -230,9 +231,7 @@ class DeepONet(nn.Module):
         self.activation_fn = _get_activation(self.activation)
 
     @nn.compact
-    def __call__(self, inputs):
-        u = inputs[..., :6] 
-        x = inputs[..., 6:]
+    def __call__(self, u, x):
         u = MlpBlock(
             num_layers=self.num_branch_layers,
             hidden_dim=self.hidden_dim,
@@ -264,6 +263,7 @@ class ModifiedDeepONet(nn.Module):
     hidden_dim: int = 256
     out_dim: int = 1
     activation: str = "tanh"
+    branch_input_dim: int = 6
     periodicity: Union[None, Dict] = None
     fourier_emb: Union[None, Dict] = None
     reparam: Union[None, Dict] = None
@@ -272,9 +272,7 @@ class ModifiedDeepONet(nn.Module):
         self.activation_fn = _get_activation(self.activation)
 
     @nn.compact
-    def __call__(self, inputs):
-        u = inputs[..., :40] 
-        x = inputs[..., 40:]
+    def __call__(self, u, x):
         u = ModifiedMlp(
             num_layers=self.num_branch_layers,
             hidden_dim=self.hidden_dim,

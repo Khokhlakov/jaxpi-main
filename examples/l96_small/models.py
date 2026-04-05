@@ -29,8 +29,7 @@ class L96UDON(ForwardIVP):
 
     def x_net(self, params, u, t):
         t = jnp.atleast_1d(t)
-        inputs = jnp.concatenate([u, t], axis=-1)
-        return self.state.apply_fn(params, inputs)
+        return self.state.apply_fn(params, u, t)
     
     def r_net(self, params, u, t):
         x = self.x_net(params, u, t)
