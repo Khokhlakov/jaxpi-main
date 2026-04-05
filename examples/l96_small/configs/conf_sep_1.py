@@ -8,7 +8,7 @@ def get_config():
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-small-separated"
-    wandb.name = "test_1" 
+    wandb.name = "sep_test_1" 
     wandb.tag = None
 
     # Arch 
@@ -39,7 +39,7 @@ def get_config():
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 150000
+    training.max_steps = 250000
     training.batch_size_per_device = 1024#16384
     training.num_time_windows = 40
     training.use_cartesian_prod = False
