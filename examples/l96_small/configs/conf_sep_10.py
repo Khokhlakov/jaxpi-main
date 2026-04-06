@@ -6,10 +6,10 @@ def get_config():
     config.mode = "train"
 
     # Weights & Biases
-    # T7 with 40 vars
+    # causal with cartesian prod
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-small-separated"
-    wandb.name = "sep_test_9" 
+    wandb.name = "sep_test_10" 
     wandb.tag = None
 
     # Arch 
@@ -46,7 +46,7 @@ def get_config():
     training.use_cartesian_prod = True
     training.update_interval = 50000
     training.num_initial_ics = 1500
-    training.max_additions = 4
+    training.max_additions = 0
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
@@ -56,9 +56,9 @@ def get_config():
     weighting.update_every_steps = 1000
 
     # Causal Weighting
-    weighting.use_causal = False
+    weighting.use_causal = True
     weighting.causal_tol = 1.0
-    weighting.num_chunks = 8
+    weighting.num_chunks = 16
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
