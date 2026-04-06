@@ -34,7 +34,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     # -------------------------------------------------------------------------
     key = jax.random.PRNGKey(config.training.get("seed", 42))
     num_initial_ics = config.training.get("num_initial_ics", 1000)
-    num_vars = 6 # Standard for Lorenz 96
+    num_vars = 40 # Standard for Lorenz 96
     
     # Adjust mean and std_dev to match the typical L96 scale (e.g., mean=8, std=1)
     mean, std_dev = 6.0, 2.0 
