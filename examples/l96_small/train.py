@@ -69,7 +69,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     # -------------------------------------------------------------------------
     # NEW: 2. Setup variables for the curriculum/dataset expansion regime
     # -------------------------------------------------------------------------
-    update_interval = config.training.get("max_additions", 10000)
+    update_interval = config.training.get("update_interval", 10000)
     max_additions = config.training.get("max_additions", 5)
     additions_done = 0
     t_end = t_star[-1] # The time 't' we project forward to
