@@ -14,7 +14,7 @@ num_points = 101
 t_eval = np.linspace(t_span[0], t_span[1], num_points)
 
 # Number of Initial Conditions to sample
-num_ics = 500
+num_ics = 1000
 
 # Preallocate arrays to store the dataset
 # Shape: (num_ics, num_points, N)
@@ -40,8 +40,7 @@ start_time = time.time()
 
 for i in range(num_ics):
     # Randomly sample initial conditions within a typical L96 range
-    # L96 values typically oscillate roughly between -10 and +15
-    u0 = -10 + 25 * np.random.rand(N)
+    u0 = np.random.normal(loc=2.0, scale=1.0, size=N)
     
     u0_all[i, :] = u0
     
