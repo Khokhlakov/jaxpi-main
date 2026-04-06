@@ -16,8 +16,8 @@ class L96UDON(ForwardIVP):
         self.t_star = t_star 
 
         # System parameters
-        self.N = 6
-        self.F = 2.0
+        self.N = 40
+        self.F = 6.0
         
         self.t0 = t_star[0]
         self.t1 = t_star[-1]
@@ -48,16 +48,26 @@ class L96UDON(ForwardIVP):
     @partial(jit, static_argnums=(0,))
     def res_and_w(self, params, batch):
         batch_u, batch_t = batch
+
+        # Sort time points only — ICs are not reordered
         idx = jnp.argsort(batch_t)
         t_sorted = batch_t[idx]
-        u_sorted = batch_u[idx]
-        
-        # Evaluate residual on the full grid (IC x Time)
-        r_pred = vmap(self.r_net, (None, 0, 0))(params, u_sorted, t_sorted)
-        r_chunks = r_pred.reshape(self.num_chunks, -1, self.N)
-        l = jnp.mean(r_chunks**2, axis=(1,2))
-        
-        # Causal weights: w_i = exp(-tol * sum_{j=1}^{i-1} L_j)
+
+        # Evaluate residual on the full Cartesian grid
+        # r_grid_fn: vmap over u (outer), vmap over t (inner)
+        # Output shape: (num_u, num_t, N)
+        r_pred = self.r_grid_fn(params, batch_u, t_sorted)
+
+        # Transpose to (num_t, num_u, N) so chunking splits along time
+        r_pred = r_pred.transpose(1, 0, 2)
+
+        # Chunk along time axis: (num_chunks, num_t_per_chunk, num_u, N)
+        r_chunks = r_pred.reshape(self.num_chunks, -1, batch_u.shape[0], self.N)
+
+        # Chunk loss: average over time-within-chunk, ICs, and variables
+        l = jnp.mean(r_chunks ** 2, axis=(1, 2, 3))  # shape: (num_chunks,)
+
+        # Causal weights: w_i = exp(-tol * sum_{j<i} L_j)
         w = lax.stop_gradient(jnp.exp(-self.tol * (self.M @ l)))
         return l, w
     
