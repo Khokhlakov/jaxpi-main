@@ -36,14 +36,14 @@ def get_config():
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 25000 
+    optim.decay_steps = 50000 
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 500000
-    training.batch_size_per_device = 16384
+    training.batch_size_per_device = 8192#16384
     training.num_time_windows = 40
-    training.use_cartesian_prod = True
+    training.use_cartesian_prod = False
     training.update_interval = 50000
     training.num_initial_ics = 1500
     training.max_additions = 0
@@ -51,7 +51,7 @@ def get_config():
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 1.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 1000
 
