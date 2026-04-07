@@ -6,7 +6,7 @@ def get_config():
     config.mode = "train"
 
     # Weights & Biases
-    # config 13
+    # config 13 with fixed weights and no causality
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-small-separated"
     wandb.name = "sep_test_14" 
@@ -50,7 +50,7 @@ def get_config():
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
-    weighting.scheme = "grad_norm"
+    weighting.scheme = "none"
     weighting.init_weights = ml_collections.ConfigDict({"ics": 1.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 1000
