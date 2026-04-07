@@ -64,7 +64,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         t_star_full = jnp.concatenate(t_full_list, axis=0)
         
         # Generate Exact Reference on the fly for L96
-        def lorenz_96(t, state, F=2.0):
+        def lorenz_96(t, state, F=6.0):
             x_plus_1 = np.roll(state, -1)
             x_minus_1 = np.roll(state, 1)
             x_minus_2 = np.roll(state, 2)
