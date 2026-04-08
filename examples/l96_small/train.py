@@ -53,10 +53,11 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
         )
         restored = restore_checkpoint(model.state, ckpt_path)
         # Keep only restored params, fresh optimizer state
+        restored_single = jax.device_get(
+            tree_map(lambda x: x[0] if hasattr(x, 'shape') and len(x.shape) > 0 else x, restored)
+        )
         model.state = replicate(
-            model.state.replace(params=jax.device_get(
-                tree_map(lambda x: x[0], restored)
-            ).params)
+            model.state.replace(params=restored_single.params)
         )
         logging.info(f"Restored params from: {ckpt_path}")
 
