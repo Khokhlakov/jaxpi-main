@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import jax
 from jax.tree_util import tree_map
+from flax.jax_utils import replicate
 
 from jaxpi.utils import restore_checkpoint
 import models
@@ -152,9 +153,11 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
     model = models.L96UDON(config, t_star_window)
     ckpt_path = os.path.join(os.getcwd(), config.wandb.ckpt_name, "ckpt", "udon_model")
     model.state = restore_checkpoint(model.state, ckpt_path)
+    model.state = replicate(model.state)
 
     # Unreplicated params for inference
     params = jax.device_get(tree_map(lambda x: x[0], model.state)).params
+
 
     # Assimilation dt = one window length
     dt = float(t_star_window[-1] - t_star_window[0])
