@@ -150,7 +150,7 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
     x_ref_all, u0_ref_all, t_star_window = get_dataset()
 
     model = models.L96UDON(config, t_star_window)
-    ckpt_path = os.path.join(os.getcwd(), config.wandb.name, "ckpt", "udon_model")
+    ckpt_path = os.path.join(os.getcwd(), config.wandb.ckpt_name, "ckpt", "udon_model")
     model.state = restore_checkpoint(model.state, ckpt_path)
 
     # Unreplicated params for inference

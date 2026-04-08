@@ -10,6 +10,7 @@ def get_config():
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f2"
     wandb.name = "test_1_ekf" 
+    wandb.ckpt_name = "test_1"
     wandb.tag = None
 
     # Arch 
