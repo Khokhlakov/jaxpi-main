@@ -51,8 +51,13 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
         ckpt_path = os.path.join(
             os.getcwd(), config.saving.restore_checkpoint_path
         )
+        
+        # 1. Restore the parameters (this returns an unreplicated state)
         model.state = restore_checkpoint(model.state, ckpt_path)
-        logging.info(f"Restored checkpoint from: {ckpt_path}")
+        # 2. Re-replicate the state so pmap can handle it
+        model.state = replicate(model.state)
+        
+        logging.info(f"Restored and Re-replicated checkpoint from: {ckpt_path}")
 
     # Samplers: We still sample t and u independently to enforce the Physics-Informed part
     dom_t = jnp.array([[t_star[0], t_star[-1]]])
