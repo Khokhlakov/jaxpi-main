@@ -73,7 +73,7 @@ save_dict = {
 
 # Define the path and save
 file_path = os.path.join(
-        os.getcwd(), 'examples', 'l96_small', 'data', 'l96_udon.mat'
+        os.getcwd(), 'examples', 'l96_n40_f2', 'data', 'l96_udon.mat'
     )
 savemat(file_path, save_dict)
 
