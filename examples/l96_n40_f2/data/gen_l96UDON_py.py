@@ -6,7 +6,7 @@ import time
 
 # --- Parameters ---
 N = 40
-F = 6.0
+F = 2.0
 
 # Narrower time domain for DeepONet/PINN window training
 t_span = (0.0, 1.0)
@@ -40,7 +40,7 @@ start_time = time.time()
 
 for i in range(num_ics):
     # Randomly sample initial conditions within a typical L96 range
-    u0 = np.random.normal(loc=6.0, scale=2.0, size=N)
+    u0 = np.random.normal(loc=2.0, scale=1.0, size=N)
     
     u0_all[i, :] = u0
     
