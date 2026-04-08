@@ -92,6 +92,45 @@ class L96UDON(ForwardIVP):
 
         loss_dict = {"ics": ics_loss, "res": res_loss}
         return loss_dict
+        
+    # Inside the L96UDON class in l96/models.py
+
+    def make_surrogate_propagator(self, params, dt: float) -> Callable:
+        """
+        Returns a pure function  u: (N,) -> x(t+dt): (N,)
+        suitable for use as the EKF propagator.
+
+        The DeepONet is queried at t=dt with u as the initial condition.
+        params are frozen (closed over), so this is a plain array -> array fn.
+
+        Args:
+            params: frozen network parameters (unreplicated).
+            dt: integration window in the same units as t_star.
+
+        Returns:
+            propagator: Callable[(N,) -> (N,)]
+        """
+        t_vec = jnp.array([dt])  # trunk expects a 1-D vector
+
+        def propagator(u: jnp.ndarray) -> jnp.ndarray:
+            return self.x_net(params, u, t_vec).reshape(self.N)
+
+        return propagator
+
+    def make_ekf_fns(self, params, dt: float):
+        """
+        Convenience method: build and return EKF predict/update functions
+        bound to this model's surrogate propagator.
+
+        Usage:
+            predict, update = model.make_ekf_fns(params, dt=0.05)
+            ekf_state = EKFState(x_hat=x0, P=P0)
+            ekf_state = predict(ekf_state, Q)
+            ekf_state, K = update(ekf_state, y_obs, H, R)
+        """
+        from l96_n40_f2.ekf import make_ekf
+        propagator = self.make_surrogate_propagator(params, dt)
+        return make_ekf(propagator, self.N)
     
     @partial(jit, static_argnums=(0,))
     def compute_l2_error(self, params, u_test, x_test):
