@@ -11,7 +11,9 @@ import wandb
 
 from jaxpi.samplers import UniformSampler
 from jaxpi.logging import Logger
-from jaxpi.utils import save_checkpoint
+from jaxpi.utils import save_checkpoint, restore_checkpoint
+
+from flax.jax_utils import replicate
 
 import models
 from utils import get_dataset
@@ -30,7 +32,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     x_ref_eval = x_train_batch[0, :, :] 
 
     # -------------------------------------------------------------------------
-    # NEW: 1. Generate an initial set of ICs from a Gaussian distribution
+    # 1. Generate an initial set of ICs from a Gaussian distribution
     # -------------------------------------------------------------------------
     key = jax.random.PRNGKey(config.training.get("seed", 42))
     num_initial_ics = config.training.get("num_initial_ics", 1000)
@@ -44,6 +46,19 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
 
     model = models.L96UDON(config, t_star)
     evaluator = models.L96UDONEvaluator(config, model)
+
+    if config.saving.get("restore_checkpoint", False):
+        ckpt_path = os.path.join(
+            os.getcwd(), config.saving.restore_checkpoint_path
+        )
+        restored = restore_checkpoint(model.state, ckpt_path)
+        # Keep only restored params, fresh optimizer state
+        model.state = replicate(
+            model.state.replace(params=jax.device_get(
+                tree_map(lambda x: x[0], restored)
+            ).params)
+        )
+        logging.info(f"Restored params from: {ckpt_path}")
 
     # Samplers: We still sample t and u independently to enforce the Physics-Informed part
     dom_t = jnp.array([[t_star[0], t_star[-1]]])
@@ -67,7 +82,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     start_time = time.time()
     
     # -------------------------------------------------------------------------
-    # NEW: 2. Setup variables for the curriculum/dataset expansion regime
+    # 2. Setup variables for the curriculum/dataset expansion regime
     # -------------------------------------------------------------------------
     update_interval = config.training.get("update_interval", 10000)
     max_additions = config.training.get("max_additions", 5)
