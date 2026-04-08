@@ -30,9 +30,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
 
     # Define the Initial Condition (IC) indices you want to plot 
     # (e.g., 0 for the first trajectory, 1 for the second)
-    ic_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-
-    for ic_idx in ic_indices:
+    for ic_idx in range(config.saving.total_plots):
         logging.info(f"--- Evaluating Trajectory for IC index {ic_idx} ---")
         
         # Pick the trajectory for the current IC
@@ -180,7 +178,7 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
 
     num_windows = config.training.num_time_windows
 
-    for ic_idx in [0, 1, 2]:
+    for ic_idx in range(config.saving.total_plots):
         logging.info(f"--- EKF Evaluation for IC {ic_idx} ---")
 
         u_current_true = u0_ref_all[ic_idx, :]  # ground truth IC

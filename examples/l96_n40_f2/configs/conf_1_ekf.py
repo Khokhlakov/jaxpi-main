@@ -67,7 +67,6 @@ def get_config():
     config.ekf.sigma_obs = 0.5
     config.ekf.sigma_proc = 0.1
     config.ekf.P0_sigma = 1.0
-    config.ekf.ic_indices = [0, 1, 2, 3, 4]
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
@@ -85,6 +84,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
+    saving.total_plots = 5
 
     # Input shape (t is the only input)
     config.input_dim = 41
