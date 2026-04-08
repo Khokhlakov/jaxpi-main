@@ -140,7 +140,7 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
       - assimilation_dt: time gap between observations (= one prediction window).
       - Measurement noise std: sigma_obs.
     """
-    from l96_n40_f2.ekf import EKFState, run_ekf_smoother
+    from ekf import EKFState, run_ekf_smoother
 
     obs_every_n  = config.ekf.get("obs_every_n",  4)    # observe every 4th variable
     sigma_obs    = config.ekf.get("sigma_obs",    0.5)   # observation noise std
