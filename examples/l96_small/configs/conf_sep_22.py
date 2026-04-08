@@ -22,7 +22,7 @@ def get_config():
     arch.out_dim = 40
     arch.activation = "tanh"
     arch.periodicity = None
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 7, "embed_dim": 256})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 3, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
@@ -51,7 +51,7 @@ def get_config():
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 10000000.0, "res": 100.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 1000.0, "res": 10.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 1000
 
