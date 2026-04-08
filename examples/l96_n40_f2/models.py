@@ -129,7 +129,7 @@ class L96UDON(ForwardIVP):
             ekf_state = predict(ekf_state, Q)
             ekf_state, K = update(ekf_state, y_obs, H, R)
         """
-        from l96_n40_f2.ekf import make_ekf
+        from ekf import make_ekf
         propagator = self.make_surrogate_propagator(params, dt)
         return make_ekf(propagator, self.N)
     

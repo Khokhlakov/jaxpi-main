@@ -153,10 +153,9 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
     model = models.L96UDON(config, t_star_window)
     ckpt_path = os.path.join(os.getcwd(), config.wandb.ckpt_name, "ckpt", "udon_model")
     model.state = restore_checkpoint(model.state, ckpt_path)
-    model.state = replicate(model.state)
 
     # Unreplicated params for inference
-    params = jax.device_get(tree_map(lambda x: x[0], model.state)).params
+    params = model.state.params
 
 
     # Assimilation dt = one window length
