@@ -48,30 +48,11 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     evaluator = models.L96UDONEvaluator(config, model)
 
     if config.saving.get("restore_checkpoint", False):
-        ckpt_path = os.path.join(os.getcwd(), config.saving.restore_checkpoint_path)
-        restored = restore_checkpoint(model.state, ckpt_path)
-
-        # Extract single-device copy of restored params
-        restored_single = jax.device_get(
-            tree_map(
-                lambda x: x[0] if hasattr(x, 'shape') and len(x.shape) > 0 else x,
-                restored
-            )
+        ckpt_path = os.path.join(
+            os.getcwd(), config.saving.restore_checkpoint_path
         )
-
-        # Extract single-device copy of fresh state (to get correct optimizer structure)
-        fresh_single = jax.device_get(
-            tree_map(
-                lambda x: x[0] if hasattr(x, 'shape') and len(x.shape) > 0 else x,
-                model.state
-            )
-        )
-
-        # Graft restored params onto fresh optimizer state, then re-replicate once
-        model.state = replicate(
-            fresh_single.replace(params=restored_single.params)
-        )
-        logging.info(f"Restored params from: {ckpt_path}")
+        model.state = restore_checkpoint(model.state, ckpt_path)
+        logging.info(f"Restored checkpoint from: {ckpt_path}")
 
     # Samplers: We still sample t and u independently to enforce the Physics-Informed part
     dom_t = jnp.array([[t_star[0], t_star[-1]]])
