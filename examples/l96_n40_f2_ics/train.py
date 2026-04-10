@@ -10,7 +10,7 @@ import ml_collections
 from absl import logging
 import wandb
 
-from jaxpi.samplers import UniformSampler
+from jaxpi.samplers import UniformSampler, SpaceSampler
 from jaxpi.logging import Logger
 from jaxpi.utils import save_checkpoint, restore_checkpoint
 
@@ -19,184 +19,155 @@ from flax.jax_utils import replicate
 import models
 from utils import get_dataset
 
-
-def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
-    # Initialize W&B
-    wandb_config = config.wandb
-    wandb.init(project=wandb_config.project, name=wandb_config.name)
  
-    # Fetch dataset — used only for the evaluation reference trajectory
-    x_train_batch, u0_train_batch_orig, t_star = get_dataset()
-    u_ref_eval = u0_train_batch_orig[0, :]
-    x_ref_eval = x_train_batch[0, :, :]
+# ---------------------------------------------------------------------------
+# Main training loop
+# ---------------------------------------------------------------------------
+def train_and_evaluate(config, workdir: str):
  
-    # -------------------------------------------------------------------------
-    # 1. Generate the original ICs and pre-allocate the full pool buffer.
-    #
-    #    The pool will eventually hold:
-    #      slot 0          : u0_original          (rows [0,          N_ic) )
-    #      slot 1          : rollout depth-1 ICs  (rows [N_ic,     2*N_ic) )
-    #      ...
-    #      slot max_add    : rollout depth-k ICs  (rows [k*N_ic, (k+1)*N_ic) )
-    #
-    #    Total rows = N_ic * (max_additions + 1)  — known at startup.
-    #    A plain NumPy array is used so slice-assignment is a zero-copy write.
-    # -------------------------------------------------------------------------
-    key = jax.random.PRNGKey(config.training.get("seed", 42))
+    # ── W&B ────────────────────────────────────────────────────────────────
+    wandb.init(project=config.wandb.project, name=config.wandb.name)
+ 
+    # ── Reference data (used only for eval logging during training) ────────
+    x_train_batch, u0_ref_orig, t_star = get_dataset()
+    u_ref_eval = u0_ref_orig[0, :]      # shape (N,)
+    x_ref_eval = x_train_batch[0, :, :] # shape (num_t, N)
+ 
+    # ── Hyper-parameters ───────────────────────────────────────────────────
+    num_vars        = 40
     num_initial_ics = config.training.get("num_initial_ics", 10000)
-    max_additions   = config.training.get("max_additions", 5)
-    num_vars        = 40  # L96 dimension
+    max_additions   = config.training.get("max_additions",   5)
+    update_interval = config.training.get("update_interval", 10000)
+    batch_size      = config.training.batch_size_per_device
+    seed            = config.training.get("seed", 42)
  
-    mean, std_dev = 2.0, 1.0
-    key, ic_key = jax.random.split(key)
-    u0_original = np.array(
-        mean + std_dev * jax.random.normal(ic_key, shape=(num_initial_ics, num_vars))
-    )
- 
-    total_pool_rows = num_initial_ics * (max_additions + 1)
-    u0_pool = np.empty((total_pool_rows, num_vars), dtype=np.float32)
-    u0_pool[:num_initial_ics] = u0_original   # write slot 0
-    current_pool_size = num_initial_ics        # live rows visible to the sampler
+    # ── Sample the fixed original IC set from N(2, 1) ──────────────────────
+    key = jax.random.PRNGKey(seed)
+    mean_ic, std_ic = 2.0, 1.0
+    u0_original = mean_ic + std_ic * jax.random.normal(
+        key, shape=(num_initial_ics, num_vars)
+    )  # shape (num_initial_ics, N) — kept fixed for all rollout augmentations
  
     logging.info(
-        f"Pre-allocated IC pool: {total_pool_rows} rows x {num_vars} cols "
-        f"({u0_pool.nbytes / 1e6:.1f} MB). "
-        f"Initialised slot 0 with {num_initial_ics} Gaussian ICs."
+        f"Sampled {num_initial_ics} original ICs from N({mean_ic}, {std_ic}²)."
     )
  
-    model = models.L96UDON(config, t_star)
+    # ── Pre-allocate the full IC pool ──────────────────────────────────────
+    # Total size is known: num_initial_ics rows per addition, plus the original.
+    total_pool_size = num_initial_ics * (max_additions + 1)
+    u0_pool = jnp.zeros((total_pool_size, num_vars))
+    # Write original ICs into slot 0
+    u0_pool = u0_pool.at[:num_initial_ics].set(u0_original)
+    active_size   = num_initial_ics          # number of valid rows right now
+    additions_done = 0
+ 
+    logging.info(
+        f"Pre-allocated IC pool: {total_pool_size} rows "
+        f"({max_additions + 1} slots × {num_initial_ics} ICs). "
+        f"Active: {active_size}."
+    )
+ 
+    # ── Build model ────────────────────────────────────────────────────────
+    model     = models.L96UDON(config, t_star)
     evaluator = models.L96UDONEvaluator(config, model)
  
     if config.saving.get("restore_checkpoint", False):
-        ckpt_path = os.path.join(os.getcwd(), config.saving.restore_checkpoint_path)
+        ckpt_path   = os.path.join(os.getcwd(), config.saving.restore_checkpoint_path)
         model.state = restore_checkpoint(model.state, ckpt_path)
         model.state = replicate(model.state)
         logging.info(f"Restored and re-replicated checkpoint from: {ckpt_path}")
  
-    # -------------------------------------------------------------------------
-    # 2. Samplers.
-    #
-    #    sampler_t  — uniform over [t0, t1], unchanged.
-    #    make_ic_sampler — draws random rows from the *live* prefix of u0_pool.
-    #                      Rebuilt whenever current_pool_size changes.
-    # -------------------------------------------------------------------------
-    dom_t      = jnp.array([[t_star[0], t_star[-1]]])
-    batch_size = config.training.batch_size_per_device
-    sampler_t  = UniformSampler(dom_t, batch_size)
+    # ── Samplers ───────────────────────────────────────────────────────────
+    # t is sampled uniformly over the training window [t0, t1].
+    dom_t     = jnp.array([[t_star[0], t_star[-1]]])
+    sampler_t = UniformSampler(dom_t, batch_size)
  
-    def make_ic_sampler(pool: np.ndarray, live_rows: int, batch_sz: int, rng):
-        """Yields (batch_sz, num_vars) rows sampled uniformly from pool[:live_rows]."""
-        while True:
-            rng, subkey = jax.random.split(rng)
-            idx = np.array(
-                jax.random.randint(subkey, shape=(batch_sz,), minval=0, maxval=live_rows)
-            )
-            yield jnp.array(pool[idx])
- 
-    key, sampler_key = jax.random.split(key)
-    sampler_u   = make_ic_sampler(u0_pool, current_pool_size, batch_size, sampler_key)
+    # IC sampler: samples rows uniformly at random from the active pool slice.
+    # Rebuilt whenever active_size grows.
+    sampler_u = SpaceSampler(u0_pool[:active_size], batch_size)
     res_sampler = zip(sampler_u, sampler_t)
  
-    # -------------------------------------------------------------------------
-    # 3. JIT-compiled batch propagator — shared across all rollout additions.
-    # -------------------------------------------------------------------------
+    # ── JIT-compiled batch prediction for pool expansion ───────────────────
+    # vmap over ICs (axis 1), fix params and t.
+    predict_batch = jax.jit(jax.vmap(model.x_net, in_axes=(None, 0, None)))
+    # Trunk expects a 1-D time vector: shape (1,)
     t_end_vec = jnp.array([t_star[-1]])
  
-    @jax.jit
-    def predict_batch(params, u_batch):
-        """One time-horizon forward pass for a batch of ICs.
- 
-        Args:
-            params:  unreplicated network parameters.
-            u_batch: (B, N) array of initial conditions.
- 
-        Returns:
-            (B, N) predicted states at t_end.
-        """
-        return jax.vmap(model.x_net, in_axes=(None, 0, None))(
-            params, u_batch, t_end_vec
-        ).reshape(u_batch.shape[0], num_vars)
- 
-    # -------------------------------------------------------------------------
-    # 4. Training loop.
-    # -------------------------------------------------------------------------
-    update_interval = config.training.get("update_interval", 10000)
-    additions_done  = 0
- 
+    # ── Training loop ──────────────────────────────────────────────────────
     logger     = Logger()
-    print("Waiting for JIT compilation...")
     start_time = time.time()
+    logging.info("Waiting for JIT compilation…")
  
     for step in range(config.training.max_steps):
-        batch = next(res_sampler)
+ 
+        # ── Forward + gradient step ────────────────────────────────────────
+        batch       = next(res_sampler)          # (batch_u, batch_t), each (devices, B, ·)
         model.state = model.step(model.state, batch)
  
-        if config.weighting.scheme in ["grad_norm", "ntk"]:
+        # ── Adaptive loss weighting (optional) ────────────────────────────
+        if config.weighting.scheme in ("grad_norm", "ntk"):
             if step % config.weighting.update_every_steps == 0:
                 model.state = model.update_weights(model.state, batch)
  
-        # ---------------------------------------------------------------------
-        # 5. Periodic dataset expansion.
-        #
-        #    addition k  ->  roll u0_original forward k horizons, write the
-        #                    resulting states into slot k of u0_pool.
-        #
-        #    current_pool_size is advanced by num_initial_ics after each write
-        #    so the sampler immediately starts drawing from the new rows.
-        # ---------------------------------------------------------------------
-        if (
-            step > 0
-            and step % update_interval == 0
-            and additions_done < max_additions
-        ):
-            rollout_depth = additions_done + 1  # 1, 2, 3, ...
+        # ── IC pool expansion ──────────────────────────────────────────────
+        # Trigger: every update_interval steps, as long as budget remains.
+        if (step > 0
+                and step % update_interval == 0
+                and additions_done < max_additions):
  
+            rollout_steps = additions_done + 1   # 1, 2, 3, … max_additions
+ 
+            # Extract a single-device, CPU-side copy of the parameters.
             single_params = jax.device_get(
                 tree_map(lambda x: x[0], model.state)
             ).params
  
-            # Chain rollout_depth forward passes starting from the frozen originals.
-            u_current = jnp.array(u0_original)
-            for _ in range(rollout_depth):
-                u_current = predict_batch(single_params, u_current)
+            # Roll out `rollout_steps` windows starting from u0_original.
+            u_rolled = u0_original               # shape (num_initial_ics, N)
+            for _ in range(rollout_steps):
+                # predict_batch: (params, (num_ics, N), (1,)) → (num_ics, 1, N)
+                u_rolled = predict_batch(single_params, u_rolled, t_end_vec)
+                u_rolled = u_rolled.reshape(num_initial_ics, num_vars)
  
-            # Write into the pre-allocated slot (no allocation, no copy of existing rows).
-            slot_start = (additions_done + 1) * num_initial_ics
+            # Write the new ICs into the next free slot of the pre-allocated pool.
+            slot_start = num_initial_ics * (additions_done + 1)
             slot_end   = slot_start + num_initial_ics
-            u0_pool[slot_start:slot_end] = np.array(u_current)
+            u0_pool    = u0_pool.at[slot_start:slot_end].set(u_rolled)
+            active_size = slot_end
  
-            # Advance the live-row cursor and rebuild the sampler.
-            current_pool_size = slot_end
-            key, sampler_key  = jax.random.split(key)
-            sampler_u   = make_ic_sampler(u0_pool, current_pool_size, batch_size, sampler_key)
+            # Rebuild sampler over the enlarged active region.
+            sampler_u = SpaceSampler(u0_pool[:active_size], batch_size)
             res_sampler = zip(sampler_u, sampler_t)
- 
             additions_done += 1
+ 
             logging.info(
-                f"Step {step}: addition {additions_done}/{max_additions} — "
-                f"depth {rollout_depth} horizon(s). "
-                f"Pool rows in use: {current_pool_size}/{total_pool_rows}."
+                f"Step {step:>7d} | Pool expansion #{additions_done}: "
+                f"rollout ×{rollout_steps} window(s) → "
+                f"active ICs {active_size}/{total_pool_size}"
             )
  
-        # Logging and evaluation
+        # ── Logging ────────────────────────────────────────────────────────
         if jax.process_index() == 0:
             if step % config.logging.log_every_steps == 0:
-                state     = jax.device_get(tree_map(lambda x: x[0], model.state))
+                state    = jax.device_get(tree_map(lambda x: x[0], model.state))
                 batch_dev = jax.device_get(tree_map(lambda x: x[0], batch))
  
                 log_dict = evaluator(state, batch_dev, u_ref_eval, x_ref_eval)
+ 
+                # Track pool coverage for visibility
+                log_dict["pool/active_ics"]  = active_size
+                log_dict["pool/additions"]   = additions_done
+ 
                 wandb.log(log_dict, step)
  
                 end_time = time.time()
                 logger.log_iter(step, start_time, end_time, log_dict)
                 start_time = end_time
  
-        # Checkpointing
+        # ── Checkpointing ──────────────────────────────────────────────────
         if config.saving.save_every_steps is not None:
-            if (
-                (step + 1) % config.saving.save_every_steps == 0
-                or (step + 1) == config.training.max_steps
-            ):
+            if ((step + 1) % config.saving.save_every_steps == 0
+                    or (step + 1) == config.training.max_steps):
                 ckpt_path = os.path.join(
                     os.getcwd(), config.wandb.name, "ckpt", "udon_model"
                 )
