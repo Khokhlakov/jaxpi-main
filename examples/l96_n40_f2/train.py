@@ -3,7 +3,6 @@ import time
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax.tree_util import tree_map
 
 import ml_collections
