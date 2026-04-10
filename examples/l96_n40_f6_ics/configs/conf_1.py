@@ -8,7 +8,7 @@ def get_config():
     # Weights & Biases
     # config 5 of v6 f2
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project = "PI-UDON-L96-n40-f2-ics"
+    wandb.project = "PI-UDON-L96-n40-f6-ics"
     wandb.name = "test_1" 
     wandb.tag = None
 
@@ -44,9 +44,9 @@ def get_config():
     training.batch_size_per_device = 256#16384
     training.num_time_windows = 40
     training.use_cartesian_prod = False
-    training.update_interval = 50000
-    training.num_initial_ics = 1500
-    training.max_additions = 1
+    training.update_interval = 10000
+    training.num_initial_ics = 10000
+    training.max_additions = 5
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
