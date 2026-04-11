@@ -75,6 +75,7 @@ class L96UDON(ForwardIVP):
     def losses(self, params, batch):
         # batch: (batch_u, batch_t)
         batch_u, batch_t = batch
+        batch_t = batch_t.reshape(-1)
 
         # IC Loss
         x_pred_ic = vmap(self.x_net, (None, 0, None))(params, batch_u, self.t0)

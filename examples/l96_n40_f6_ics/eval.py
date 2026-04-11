@@ -65,7 +65,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         t_star_full = jnp.concatenate(t_full_list, axis=0)
         
         # Generate Exact Reference on the fly for L96
-        def lorenz_96(t, state, F=2.0):
+        def lorenz_96(t, state, F=6.0):
             x_plus_1 = np.roll(state, -1)
             x_minus_1 = np.roll(state, 1)
             x_minus_2 = np.roll(state, 2)
@@ -184,7 +184,7 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
         u_current_true = u0_ref_all[ic_idx, :]  # ground truth IC
 
         # ── Generate noisy observations by forward-simulating reference ───────
-        def lorenz_96(t, state, F=2.0):
+        def lorenz_96(t, state, F=6.0):
             xp1 = np.roll(state, -1); xm1 = np.roll(state, 1); xm2 = np.roll(state, 2)
             return (xp1 - xm2) * xm1 - state + F
 

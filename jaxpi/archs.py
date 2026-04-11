@@ -278,7 +278,7 @@ class ModifiedDeepONet(nn.Module):
             hidden_dim=self.hidden_dim,
             out_dim=self.hidden_dim,
             activation=self.activation,
-            periodicity=False,
+            periodicity=None,
             reparam=self.reparam,
         )(u)
 

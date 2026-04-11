@@ -6,7 +6,7 @@ import time
 
 # --- Parameters ---
 N = 40
-F = 2.0
+F = 6.0
 
 # Narrower time domain for DeepONet/PINN window training
 t_span = (0.0, 1.0)
