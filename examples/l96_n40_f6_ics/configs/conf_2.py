@@ -6,7 +6,6 @@ def get_config():
     config.mode = "train"
 
     # Weights & Biases
-    # config 5 of v6 f2
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics"
     wandb.name = "test_2" 

@@ -6,9 +6,10 @@ def get_config():
     config.mode = "train"
 
     # Weights & Biases
+    # config 1 after fixing data generation issues
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics"
-    wandb.name = "test_1" 
+    wandb.name = "test_7" 
     wandb.tag = None
 
     # Arch 
