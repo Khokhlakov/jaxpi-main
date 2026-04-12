@@ -6,7 +6,7 @@ def get_config():
     config.mode = "train"
 
     # Weights & Biases
-    # Config 15 with less causal tol
+    # Pwered config 15
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics"
     wandb.name = "test_16" 
@@ -41,7 +41,7 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 300000
-    training.batch_size_per_device = 512#16384
+    training.batch_size_per_device = 1024#16384
     training.num_time_windows = 40
     training.use_cartesian_prod = False
     training.update_interval = 10000
@@ -53,11 +53,11 @@ def get_config():
     weighting.scheme = "grad_norm"
     weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
     weighting.momentum = 0.9
-    weighting.update_every_steps = 1500
+    weighting.update_every_steps = 2000
 
     # Causal Weighting
     weighting.use_causal = True
-    weighting.causal_tol = 0.005
+    weighting.causal_tol = 0.02
     weighting.num_chunks = 8
 
     # Logging
