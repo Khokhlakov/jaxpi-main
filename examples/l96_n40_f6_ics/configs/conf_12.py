@@ -6,21 +6,21 @@ def get_config():
     config.mode = "train"
 
     # Weights & Biases
-    # config 6 after error plotting fixxed
+    # Config 9 with lower causal tol (0.05)
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics"
-    wandb.name = "test_10" 
+    wandb.name = "test_12" 
     wandb.tag = None
 
     # Arch 
     config.arch = arch = ml_collections.ConfigDict()
-    arch.arch_name = "ModifiedDeepONet"
+    arch.arch_name = "DeepONet"
     arch.num_branch_layers = 5
     arch.num_trunk_layers = 5
     arch.hidden_dim = 512
     arch.branch_input_dim = 40
     arch.out_dim = 40
-    arch.activation = "sin"
+    arch.activation = "tanh"
     arch.periodicity = None
     arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 256})
     arch.reparam = ml_collections.ConfigDict(
@@ -40,24 +40,24 @@ def get_config():
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 150000
-    training.batch_size_per_device = 256#16384
+    training.max_steps = 300000
+    training.batch_size_per_device = 512#16384
     training.num_time_windows = 40
     training.use_cartesian_prod = False
-    training.update_interval = 20000
+    training.update_interval = 10000
     training.num_initial_ics = 10000
     training.max_additions = 5
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 800.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
 
     # Causal Weighting
     weighting.use_causal = True
-    weighting.causal_tol = 1e-3
+    weighting.causal_tol = 0.05
     weighting.num_chunks = 32
 
     # Logging
@@ -76,7 +76,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
-    saving.total_plots = 10
+    saving.total_plots = 5
 
     # Input shape (t is the only input)
     config.input_dim = 41

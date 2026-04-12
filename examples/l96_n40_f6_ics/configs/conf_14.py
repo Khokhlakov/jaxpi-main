@@ -6,10 +6,10 @@ def get_config():
     config.mode = "train"
 
     # Weights & Biases
-    # config 6 after error plotting fixxed
+    # config 6 with higher causal tol
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics"
-    wandb.name = "test_10" 
+    wandb.name = "test_14" 
     wandb.tag = None
 
     # Arch 
@@ -34,7 +34,7 @@ def get_config():
     optim.beta1 = 0.9
     optim.beta2 = 0.999
     optim.eps = 1e-8
-    optim.learning_rate = 1e-3
+    optim.learning_rate = 0.01
     optim.decay_rate = 0.9
     optim.decay_steps = 5000 
 
