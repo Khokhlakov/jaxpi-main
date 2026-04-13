@@ -43,7 +43,7 @@ def get_config():
     training.max_steps = 300000
     training.batch_size_per_device = 1024#16384
     training.num_time_windows = 40
-    training.use_cartesian_prod = False
+    training.use_cartesian_prod = True
     training.update_interval = 10000
     training.num_initial_ics = 10000
     training.max_additions = 5
