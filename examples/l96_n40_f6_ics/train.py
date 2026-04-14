@@ -146,16 +146,6 @@ def train_and_evaluate(config, workdir: str):
         f"({max_additions + 1} slots × {num_initial_ics} ICs). "
         f"Active: {active_size}."
     )
- 
-    # ── Build model ────────────────────────────────────────────────────────
-    model     = models.L96UDON(config, t_star)
-    evaluator = models.L96UDONEvaluator(config, model)
- 
-    if config.saving.get("restore_checkpoint", False):
-        ckpt_path   = os.path.join(os.getcwd(), config.saving.restore_checkpoint_path)
-        model.state = restore_checkpoint(model.state, ckpt_path)
-        model.state = replicate(model.state)
-        logging.info(f"Restored and re-replicated checkpoint from: {ckpt_path}")
     
     # ── IC pool initialisation ─────────────────────────────────────────────
     total_pool_size = num_initial_ics * (max_additions + 1)
@@ -195,13 +185,63 @@ def train_and_evaluate(config, workdir: str):
     # Rebuilt whenever active_size grows.
     sampler_u = SpaceSampler(u0_pool[:active_size], batch_size)
     res_sampler = zip(sampler_u, sampler_t)
+
+    # ── Build model ────────────────────────────────────────────────────────
+    model     = models.L96UDON(config, t_star)
+    evaluator = models.L96UDONEvaluator(config, model)
+ 
+    if config.saving.get("restore_checkpoint", False):
+        ckpt_path   = os.path.join(os.getcwd(), config.saving.restore_checkpoint_path)
+        model.state = restore_checkpoint(model.state, ckpt_path)
+        model.state = replicate(model.state)
+        logging.info(f"Restored and re-replicated checkpoint from: {ckpt_path}")
  
     # ── JIT-compiled batch prediction for pool expansion ───────────────────
     # vmap over ICs (axis 1), fix params and t.
     predict_batch = jax.jit(jax.vmap(model.x_net, in_axes=(None, 0, None)))
     # Trunk expects a 1-D time vector: shape (1,)
     t_end_vec = jnp.array([t_star[-1]])
- 
+
+    # Augment pool from beginning if restore_checkpoint
+    if config.saving.get("restore_checkpoint", False):
+        if (augmentation_scheme == "model"):
+            for i in range(max_additions):
+                rollout_steps = i + 1
+        
+                u0_pool = _expand_pool_model(
+                    u0_original   = u0_original,
+                    u0_pool       = u0_pool,
+                    model_state   = model.state,
+                    predict_batch = predict_batch,
+                    t_end_vec     = t_end_vec,
+                    rollout_steps = rollout_steps,
+                    additions_done= i,
+                    num_initial_ics = num_initial_ics,
+                    num_vars      = num_vars,
+                )
+                expansion_msg = f"rollout ×{rollout_steps} window(s) via models"
+
+                logging.info(
+                    f"Step {step:>7d} | Pool expansion #{i}: "
+                    f"{expansion_msg} → active ICs {active_size}/{total_pool_size}"
+                )
+        elif (augmentation_scheme == "file"):
+            for i in range(max_additions):
+                expansion_msg = f"slot {i + 1} unlocked from archive"
+
+                logging.info(
+                    f"Step {step:>7d} | Pool expansion #{i}: "
+                    f"{expansion_msg} → active ICs {active_size}/{total_pool_size}"
+                )
+        
+        additions_done = max_additions
+        active_size = num_initial_ics * (max_additions + 1)
+
+        # Rebuild sampler over the enlarged active region.
+        sampler_u   = SpaceSampler(u0_pool[:active_size], batch_size)
+        res_sampler = zip(sampler_u, sampler_t)
+            
+
     # ── Training loop ──────────────────────────────────────────────────────
     logger     = Logger()
     start_time = time.time()
@@ -243,7 +283,6 @@ def train_and_evaluate(config, workdir: str):
 
             else:
                 expansion_msg = f"slot {additions_done + 1} unlocked from archive"
-
             
             active_size = num_initial_ics * (additions_done + 2)
 
