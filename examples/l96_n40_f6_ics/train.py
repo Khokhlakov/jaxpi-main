@@ -220,20 +220,19 @@ def train_and_evaluate(config, workdir: str):
                     num_initial_ics = num_initial_ics,
                     num_vars      = num_vars,
                 )
+
                 expansion_msg = f"rollout ×{rollout_steps} window(s) via models"
                 active_size = num_initial_ics * (rollout_steps + 1)
-
                 logging.info(
-                    f"Pool expansion #{i}: "
+                    f"Pool expansion #{i+1}: "
                     f"{expansion_msg} → active ICs {active_size}/{total_pool_size}"
                 )
         elif (augmentation_scheme == "file"):
             for i in range(max_additions):
                 expansion_msg = f"slot {i + 1} unlocked from archive"
-                active_size = num_initial_ics * (i + 1)
-
+                active_size = num_initial_ics * (i + 2)
                 logging.info(
-                    f"Pool expansion #{i}: "
+                    f"Pool expansion #{i+1}: "
                     f"{expansion_msg} → active ICs {active_size}/{total_pool_size}"
                 )
         
