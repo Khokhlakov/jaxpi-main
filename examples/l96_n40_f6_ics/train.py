@@ -156,7 +156,36 @@ def train_and_evaluate(config, workdir: str):
         model.state = restore_checkpoint(model.state, ckpt_path)
         model.state = replicate(model.state)
         logging.info(f"Restored and re-replicated checkpoint from: {ckpt_path}")
+    
+    # ── IC pool initialisation ─────────────────────────────────────────────
+    total_pool_size = num_initial_ics * (max_additions + 1)
  
+    if augmentation_scheme == "file":
+        # Load the full pre-computed pool from disk.  All slots are available
+        # from step 0 — no progressive expansion needed.
+        u0_pool    = _load_rollout_pool(
+            max_additions, num_initial_ics, num_vars
+        )
+        active_size    = num_initial_ics
+        additions_done = 0
+ 
+    elif augmentation_scheme == "model":
+        # Start with only the original ICs; expand progressively during training.
+        u0_pool = jnp.zeros((total_pool_size, num_vars))
+        u0_pool = u0_pool.at[:num_initial_ics].set(u0_original)
+        active_size    = num_initial_ics
+        additions_done = 0
+ 
+    else:
+        raise ValueError(
+            f"Unknown augmentation_scheme '{augmentation_scheme}'. "
+            f"Choose 'file' or 'model'."
+        )
+ 
+    logging.info(
+        f"IC pool ready: total={total_pool_size}, active={active_size}."
+    )
+
     # ── Samplers ───────────────────────────────────────────────────────────
     # t is sampled uniformly over the training window [t0, t1].
     dom_t     = jnp.array([[t_star[0], t_star[-1]]])
@@ -191,39 +220,41 @@ def train_and_evaluate(config, workdir: str):
  
         # ── IC pool expansion ──────────────────────────────────────────────
         # Trigger: every update_interval steps, as long as budget remains.
-        if (step > 0
-                and step % update_interval == 0
-                and additions_done < max_additions):
- 
-            rollout_steps = additions_done + 1   # 1, 2, 3, … max_additions
- 
-            # Extract a single-device, CPU-side copy of the parameters.
-            single_params = jax.device_get(
-                tree_map(lambda x: x[0], model.state)
-            ).params
- 
-            # Roll out `rollout_steps` windows starting from u0_original.
-            u_rolled = u0_original               # shape (num_initial_ics, N)
-            for _ in range(rollout_steps):
-                # predict_batch: (params, (num_ics, N), (1,)) → (num_ics, 1, N)
-                u_rolled = predict_batch(single_params, u_rolled, t_end_vec)
-                u_rolled = u_rolled.reshape(num_initial_ics, num_vars)
- 
-            # Write the new ICs into the next free slot of the pre-allocated pool.
-            slot_start = num_initial_ics * (additions_done + 1)
-            slot_end   = slot_start + num_initial_ics
-            u0_pool    = u0_pool.at[slot_start:slot_end].set(u_rolled)
-            active_size = slot_end
- 
+        if (
+            step > 0
+            and step % update_interval == 0
+            and additions_done < max_additions
+        ):
+            if (augmentation_scheme == "model"):
+                rollout_steps = additions_done + 1
+    
+                u0_pool = _expand_pool_model(
+                    u0_original   = u0_original,
+                    u0_pool       = u0_pool,
+                    model_state   = model.state,
+                    predict_batch = predict_batch,
+                    t_end_vec     = t_end_vec,
+                    rollout_steps = rollout_steps,
+                    additions_done= additions_done,
+                    num_initial_ics = num_initial_ics,
+                    num_vars      = num_vars,
+                )
+                expansion_msg = f"rollout ×{rollout_steps} window(s) via models"
+
+            else:
+                expansion_msg = f"slot {additions_done + 1} unlocked from archive"
+
+            
+            active_size = num_initial_ics * (additions_done + 2)
+
             # Rebuild sampler over the enlarged active region.
-            sampler_u = SpaceSampler(u0_pool[:active_size], batch_size)
+            sampler_u   = SpaceSampler(u0_pool[:active_size], batch_size)
             res_sampler = zip(sampler_u, sampler_t)
             additions_done += 1
  
             logging.info(
                 f"Step {step:>7d} | Pool expansion #{additions_done}: "
-                f"rollout ×{rollout_steps} window(s) → "
-                f"active ICs {active_size}/{total_pool_size}"
+                f"{expansion_msg} → active ICs {active_size}/{total_pool_size}"
             )
  
         # ── Logging ────────────────────────────────────────────────────────
