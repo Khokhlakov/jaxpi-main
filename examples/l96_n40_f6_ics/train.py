@@ -203,6 +203,7 @@ def train_and_evaluate(config, workdir: str):
     t_end_vec = jnp.array([t_star[-1]])
 
     # Augment pool from beginning if restore_checkpoint
+    # This assumes the restoration is done after all additional training data has been added
     if config.saving.get("restore_checkpoint", False):
         if (augmentation_scheme == "model"):
             for i in range(max_additions):
@@ -220,17 +221,19 @@ def train_and_evaluate(config, workdir: str):
                     num_vars      = num_vars,
                 )
                 expansion_msg = f"rollout ×{rollout_steps} window(s) via models"
+                active_size = num_initial_ics * (rollout_steps + 1)
 
                 logging.info(
-                    f"Step {step:>7d} | Pool expansion #{i}: "
+                    f"Pool expansion #{i}: "
                     f"{expansion_msg} → active ICs {active_size}/{total_pool_size}"
                 )
         elif (augmentation_scheme == "file"):
             for i in range(max_additions):
                 expansion_msg = f"slot {i + 1} unlocked from archive"
+                active_size = num_initial_ics * (i + 1)
 
                 logging.info(
-                    f"Step {step:>7d} | Pool expansion #{i}: "
+                    f"Pool expansion #{i}: "
                     f"{expansion_msg} → active ICs {active_size}/{total_pool_size}"
                 )
         
