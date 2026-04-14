@@ -6,10 +6,10 @@ def get_config():
     config.mode = "train"
 
     # Weights & Biases
-    # Pwered config 15
+    # Resume training 20 augmenting data from the first moment, fixing weights
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics"
-    wandb.name = "test_20_2" 
+    wandb.name = "test_20_3" 
     wandb.tag = None
 
     # Arch 
@@ -44,7 +44,7 @@ def get_config():
     training.batch_size_per_device = 512#16384
     training.num_time_windows = 5
     training.use_cartesian_prod = True
-    training.update_interval = 1
+    training.update_interval = 10000
     training.num_initial_ics = 10000
     training.max_additions = 7
     training.augmentation_scheme = "file" #"model"
