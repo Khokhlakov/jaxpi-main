@@ -40,7 +40,7 @@ def get_config():
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 400000
+    training.max_steps = 300000
     training.batch_size_per_device = 512#16384
     training.num_time_windows = 40
     training.use_cartesian_prod = True
@@ -52,7 +52,7 @@ def get_config():
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 5.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 1000
 
