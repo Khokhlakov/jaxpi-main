@@ -3,6 +3,7 @@ from absl import logging
 import ml_collections
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 import jax
 from jax.tree_util import tree_map
 from flax.jax_utils import replicate
@@ -295,7 +296,7 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
                 eps = 1e-10
                 im = ax.pcolormesh(
                     var_ax, t_ax, np.array(data) + eps, 
-                    norm=plt.colors.LogNorm(vmin=max(data.min(), 1e-10), vmax=data.max()), # Adjust vmin/vmax to your noise floor
+                    norm=LogNorm(vmin=max(data.min(), 1e-10), vmax=data.max()), # Adjust vmin/vmax to your noise floor
                     cmap='magma', 
                     shading='auto'
                 )
