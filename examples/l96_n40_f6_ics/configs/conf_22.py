@@ -6,7 +6,7 @@ def get_config():
     config.mode = "train"
 
     # Weights & Biases
-    # Config 21 with all data available from the first iterations and unmodified DeepONet
+    # Config 21 with all data available from the first iterations and unmodified DeepONet and grad_norm
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics"
     wandb.name = "test_22" 
@@ -51,7 +51,7 @@ def get_config():
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
-    weighting.scheme = "none"
+    weighting.scheme = "grad_norm"
     weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 0.5}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 10000
