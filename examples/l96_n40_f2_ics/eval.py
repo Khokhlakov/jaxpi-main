@@ -289,6 +289,18 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
             ax.set_xlabel("Variables")
             fig.colorbar(im, ax=ax)
             
+            # err 
+            if i == 2: # The Absolute Error Plot
+                # Add a small epsilon to prevent log(0)
+                eps = 1e-10
+                im = ax.pcolormesh(
+                    var_ax, t_ax, np.array(data) + eps, 
+                    norm=plt.colors.LogNorm(vmin=max(data.min(), 1e-10), vmax=data.max()), # Adjust vmin/vmax to your noise floor
+                    cmap='magma', 
+                    shading='auto'
+                )
+                ax.set_title(f"{title} (Log Scale)")
+                fig.colorbar(im, ax=ax, extend='both')
             # On the third plot (Error), mark observations with crosses
             if i == 2 and len(obs_coords) > 0:
                 obs_vars, obs_times = zip(*obs_coords)
