@@ -6,15 +6,15 @@ def get_config():
     config.mode = "train"
 
     # Weights & Biases
-    # Config 20 with fixed weights + ModifiedDeepONet and data augmentation schedule from file
+    # Config 21 with all data available from the first iterations and unmodified DeepONet
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics"
-    wandb.name = "test_21" 
+    wandb.name = "test_22" 
     wandb.tag = None
 
     # Arch 
     config.arch = arch = ml_collections.ConfigDict()
-    arch.arch_name = "ModifiedDeepONet"
+    arch.arch_name = "DeepONet"
     arch.num_branch_layers = 5
     arch.num_trunk_layers = 5
     arch.hidden_dim = 512
@@ -44,7 +44,7 @@ def get_config():
     training.batch_size_per_device = 1024#16384
     training.num_time_windows = 5
     training.use_cartesian_prod = True
-    training.update_interval = 15000
+    training.update_interval = 1
     training.num_initial_ics = 10000
     training.max_additions = 7
     training.augmentation_scheme = "file" #"model"
