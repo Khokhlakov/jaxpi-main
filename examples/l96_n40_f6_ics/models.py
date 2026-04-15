@@ -9,7 +9,7 @@ from jaxpi.evaluator import BaseEvaluator
 from jaxpi.utils import ntk_fn, flatten_pytree
 
 from matplotlib import pyplot as plt
-
+import numpy as np
 
 class L96UDON(ForwardIVP):
     def __init__(self, config, t_star):
@@ -94,8 +94,6 @@ class L96UDON(ForwardIVP):
 
         loss_dict = {"ics": ics_loss, "res": res_loss}
         return loss_dict
-        
-    # Inside the L96UDON class in l96/models.py
 
     def make_surrogate_propagator(self, params, dt: float) -> Callable:
         """

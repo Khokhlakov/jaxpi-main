@@ -42,7 +42,7 @@ def get_config():
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 300000
     training.batch_size_per_device = 512#16384
-    training.num_time_windows = 40
+    training.num_time_windows = 5
     training.use_cartesian_prod = True
     training.update_interval = 10000
     training.num_initial_ics = 10000
@@ -77,7 +77,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
-    saving.total_plots = 5
+    saving.total_plots = 10
 
     # Input shape (t is the only input)
     config.input_dim = 41
