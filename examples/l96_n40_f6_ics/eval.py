@@ -141,6 +141,8 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
     """
     from ekf import EKFState, run_ekf_smoother
 
+    obs_interval = config.ekf.get("obs_interval", 1)    # 1 = every t*, 2 = every 2t*, etc.
+    dynamic_vars = config.ekf.get("dynamic_vars", False)
     obs_every_n  = config.ekf.get("obs_every_n",  4)    # observe every 4th variable
     sigma_obs    = config.ekf.get("sigma_obs",    0.5)   # observation noise std
     sigma_proc   = config.ekf.get("sigma_proc",   0.1)   # process noise std
@@ -162,6 +164,7 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
     # Build EKF functions (JIT-compiled, bound to frozen params)
     predict_fn, update_fn = model.make_ekf_fns(params, dt)
 
+    num_windows = config.training.num_time_windows
     # ── Observation operator ──────────────────────────────────────────────────
     # Observe every obs_every_n-th variable → m = N // obs_every_n
     N = model.N
@@ -175,8 +178,6 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
     R = jnp.eye(m) * sigma_obs ** 2
     P0 = jnp.eye(N) * P0_sigma ** 2
     # ─────────────────────────────────────────────────────────────────────────
-
-    num_windows = config.training.num_time_windows
 
     for ic_idx in range(config.saving.total_plots):
         logging.info(f"--- EKF Evaluation for IC {ic_idx} ---")
@@ -197,14 +198,56 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
         )
         x_true_windows = jnp.array(sol.y.T)   # (num_windows+1, N) — states at each window boundary
 
-        # Add noise to create synthetic observations
+        # 2. Prepare Observation Sequences
+        H_list = []
+        y_obs_list = []
+        obs_mask = []
+        obs_coords = [] # To store (time, var_idx) for plotting crosses
+
+        ## Add noise to create synthetic observations
         key = jax.random.PRNGKey(ic_idx)
-        noise = sigma_obs * jax.random.normal(key, shape=(num_windows, m))
-        # Observe every window boundary (skipping t=0) 
-        y_obs_seq = x_true_windows[1:, obs_indices] + noise   # (num_windows, m)
-        obs_mask  = jnp.ones(num_windows, dtype=bool)
         # ─────────────────────────────────────────────────────────────────────
 
+        x_true_at_boundaries = x_true_windows[1:] # (num_windows, N)
+        for t_idx in range(num_windows):
+            is_obs_time = (t_idx + 1) % obs_interval == 0
+            obs_mask.append(is_obs_time)
+            
+            if is_obs_time:
+                # Determine which variables to observe
+                if dynamic_vars:
+                    # Randomly pick m variables each time
+                    m = N // obs_every_n
+                    key, subkey = jax.random.split(key)
+                    obs_indices = jax.random.choice(subkey, N, shape=(m,), replace=False)
+                else:
+                    obs_indices = jnp.arange(0, N, obs_every_n)
+                
+                m = len(obs_indices)
+                H_t = jnp.zeros((m, N)).at[jnp.arange(m), obs_indices].set(1.0)
+                
+                # Create noisy observation
+                key, subkey = jax.random.split(key)
+                noise = sigma_obs * jax.random.normal(subkey, shape=(m,))
+                y_t = x_true_at_boundaries[t_idx, obs_indices] + noise
+                
+                H_list.append(H_t)
+                y_obs_list.append(y_t)
+                
+                # Store coordinates for the cross markers
+                current_time = (t_idx + 1) * dt
+                for idx in obs_indices:
+                    obs_coords.append((idx, current_time))
+            else:
+                # Padding for JAX consistency (will be ignored by mask)
+                m_fixed = N // obs_every_n
+                H_list.append(jnp.zeros((m_fixed, N)))
+                y_obs_list.append(jnp.zeros((m_fixed,)))
+
+        H_seq = jnp.stack(H_list)
+        y_obs_seq = jnp.stack(y_obs_list)
+        obs_mask = jnp.array(obs_mask)
+        
         # ── Initial EKF state: perturbed IC ───────────────────────────────────
         x0_hat = u_current_true + P0_sigma * jax.random.normal(
             jax.random.PRNGKey(ic_idx + 100), shape=(N,)
@@ -217,7 +260,7 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
             predict_fn, update_fn,
             x0_hat, P0,
             y_obs_seq, obs_mask,
-            H, Q, R
+            H_seq, Q, R
         )
         # x_hats shape: (num_windows, N)
         # ─────────────────────────────────────────────────────────────────────
@@ -232,22 +275,31 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
         print(f"IC {ic_idx} | Open-loop L2: {l2_open_loop:.3e} | EKF L2: {l2_ekf:.3e}")
 
         # ── Plot comparison ───────────────────────────────────────────────────
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
-        t_ax = t_eval_full[1:]
+        fig, axes = plt.subplots(1, 3, figsize=(20, 6), sharey=True)
+        t_ax = np.arange(1, num_windows + 1) * dt
+        var_ax = np.arange(N)
 
-        for ax, data, title in zip(
-            axes,
-            [x_true_compare, x_hats, jnp.abs(x_true_compare - x_hats)],
-            ["Ground Truth", "EKF Estimate", "Absolute Error"]
-        ):
-            im = ax.pcolormesh(np.arange(N), t_ax, np.array(data),
-                               cmap="viridis" if "Error" not in title else "magma",
-                               shading="auto")
-            ax.set_title(f"{title} (IC {ic_idx})", fontsize=13)
-            ax.set_xlabel("Variable index"); ax.set_ylabel("Time (t)")
+        data_list = [x_true_at_boundaries, x_hats, jnp.abs(x_true_at_boundaries - x_hats)]
+        titles = ["Ground Truth", "EKF Estimate", "Absolute Error"]
+        cmaps = ["viridis", "viridis", "magma"]
+
+        for i, (ax, data, title, cmap) in enumerate(zip(axes, data_list, titles, cmaps)):
+            im = ax.pcolormesh(var_ax, t_ax, np.array(data), cmap=cmap, shading='auto')
+            ax.set_title(title)
+            ax.set_xlabel("Variables")
             fig.colorbar(im, ax=ax)
+            
+            # On the third plot (Error), mark observations with crosses
+            if i == 2 and len(obs_coords) > 0:
+                obs_vars, obs_times = zip(*obs_coords)
+                ax.scatter(obs_vars, obs_times, marker='x', color='cyan', 
+                           s=20, linewidths=0.5, label='Observations')
+                ax.legend(loc='upper right', fontsize='small')
 
-        fig.tight_layout()
+        axes[0].set_ylabel("Time (t)")
+        plt.tight_layout()
+
+        # Save logic
         save_dir = os.path.join(workdir, "figures", config.wandb.name)
         os.makedirs(save_dir, exist_ok=True)
         fig.savefig(os.path.join(save_dir, f"ekf_ic_{ic_idx}.pdf"), bbox_inches="tight", dpi=300)

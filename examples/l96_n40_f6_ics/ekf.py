@@ -100,8 +100,8 @@ def run_ekf_smoother(
     P0: jnp.ndarray,
     observations: jnp.ndarray,   # (T, m) — None rows = no observation at that step
     obs_mask: jnp.ndarray,        # (T,) bool — True when observation available
-    H: jnp.ndarray,
-    Q: jnp.ndarray,
+    H_seq: jnp.ndarray,         # (T, m, N) - Sequence of H matrices
+    Q: jnp.ndarray,                
     R: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
@@ -120,7 +120,7 @@ def run_ekf_smoother(
 
         # Update only when an observation is available
         if obs_mask[t]:
-            state, _ = update_fn(state, observations[t], H, R)
+            state, _ = update_fn(state, observations[t], H_seq[t], R)
 
         x_hats.append(state.x_hat)
         Ps.append(state.P)

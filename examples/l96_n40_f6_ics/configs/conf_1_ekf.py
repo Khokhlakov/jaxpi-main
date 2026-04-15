@@ -67,6 +67,8 @@ def get_config():
     config.ekf.sigma_obs = 0.5
     config.ekf.sigma_proc = 0.1
     config.ekf.P0_sigma = 1.0
+    config.ekf.obs_interval = 1
+    config.ekf.dynamic_vars = False # True -> randpick vars
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
