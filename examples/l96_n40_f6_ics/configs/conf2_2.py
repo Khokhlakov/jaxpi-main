@@ -6,7 +6,7 @@ def get_config():
     config.mode = "train"
 
     # Weights & Biases
-    # test2_1 with width 1024
+    # test2_1 with width 1024 and less data per batch
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics-2"
     wandb.name = "test2_2" 
@@ -41,10 +41,10 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 300000
-    training.batch_size_per_device = 1024#16384
+    training.batch_size_per_device = 512#16384
     training.num_time_windows = 5
     training.use_cartesian_prod = True
-    training.update_interval = 1
+    training.update_interval = 10000
     training.num_initial_ics = 10000
     training.max_additions = 7
     training.augmentation_scheme = "file" #"model"
