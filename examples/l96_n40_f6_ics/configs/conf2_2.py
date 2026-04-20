@@ -42,7 +42,7 @@ def get_config():
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 300000
     training.batch_size_per_device = 512#16384
-    training.num_time_windows = 5
+    training.num_time_windows = 10
     training.use_cartesian_prod = True
     training.update_interval = 10000
     training.num_initial_ics = 10000
