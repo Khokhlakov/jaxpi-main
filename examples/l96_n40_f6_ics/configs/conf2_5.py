@@ -48,6 +48,7 @@ def get_config():
     training.num_initial_ics = 10000
     training.max_additions = 7
     training.augmentation_scheme = "file" #"model"
+    training.augmentation_file_name = "train_rollouts_025.mat"
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()

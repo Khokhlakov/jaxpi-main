@@ -154,7 +154,8 @@ def train_and_evaluate(config, workdir: str):
         # Load the full pre-computed pool from disk.  All slots are available
         # from step 0 — no progressive expansion needed.
         u0_pool    = _load_rollout_pool(
-            max_additions, num_initial_ics, num_vars
+            max_additions, num_initial_ics, num_vars,
+            config.training.get("augmentation_file_name", "data/train_rollouts.mat")
         )
         active_size    = num_initial_ics
         additions_done = 0
