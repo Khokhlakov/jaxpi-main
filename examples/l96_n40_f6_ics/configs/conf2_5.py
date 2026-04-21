@@ -47,7 +47,7 @@ def get_config():
     training.update_interval = 1
     training.num_initial_ics = 10000
     training.max_additions = 7
-    training.augmentation_scheme = "file" #"model"
+    training.augmentation_scheme = "file" #"model" 
     training.augmentation_file_name = "train_rollouts_025.mat"
 
     # Weighting
