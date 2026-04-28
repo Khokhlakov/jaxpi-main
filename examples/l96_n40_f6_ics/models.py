@@ -128,9 +128,45 @@ class L96UDON(ForwardIVP):
             ekf_state = predict(ekf_state, Q)
             ekf_state, K = update(ekf_state, y_obs, H, R)
         """
-        from ekf import make_ekf
+        from kf import make_ekf
         propagator = self.make_surrogate_propagator(params, dt)
         return make_ekf(propagator, self.N)
+
+    def make_enkf_fns(self, params, dt: float, N_ens: int = 50):
+        """
+        Convenience method: build and return EnKF predict/update functions
+        bound to this model's surrogate propagator.
+ 
+        The propagator is identical to the one used by make_ekf_fns, but the
+        EnKF factory wraps it with vmap (one forward pass per ensemble member)
+        rather than jacfwd.  This removes the linearisation assumption and lets
+        the ensemble spread capture the true non-Gaussian uncertainty of L96.
+ 
+        Args:
+            params: frozen (unreplicated) network parameters.
+            dt:     assimilation window length, same units as t_star.
+            N_ens:  ensemble size.
+                    • ≥ 20  — minimum for stable covariance estimation on L96-N40
+                    • 50    — good balance of cost vs accuracy (default)
+                    • ≥ 100 — recommended when sigma_proc is large or obs are sparse
+ 
+        Returns:
+            predict_fn, update_fn — both JIT-compiled EnKF functions.
+ 
+        Usage:
+            predict, update = model.make_enkf_fns(params, dt=0.05, N_ens=50)
+            key  = jax.random.PRNGKey(0)
+            key, k0 = jax.random.split(key)
+            ensemble0 = init_ensemble(x0_hat, P0, N_ens, k0)      # from enkf.py
+            enkf_state = EnKFState(ensemble=ensemble0)
+            key, kp, ku = jax.random.split(key, 3)
+            enkf_state        = predict(enkf_state, Q, kp)
+            enkf_state, K_bar = update(enkf_state, y_obs, H, R, ku)
+        """
+        from kf import make_enkf
+        propagator = self.make_surrogate_propagator(params, dt)
+        return make_enkf(propagator, self.N, N_ens)
+ 
     
     @partial(jit, static_argnums=(0,))
     def compute_l2_error(self, params, u_test, x_test):

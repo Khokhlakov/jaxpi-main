@@ -39,6 +39,9 @@ def main(argv):
     elif FLAGS.config.mode == "eval_ekf":
         eval.evaluate_with_ekf(FLAGS.config, FLAGS.workdir)
 
+    elif FLAGS.config.mode == "eval_enkf":
+        eval.evaluate_with_enkf(FLAGS.config, FLAGS.workdir)
+
 if __name__ == "__main__":
     flags.mark_flags_as_required(["config", "workdir"])
     app.run(main)
