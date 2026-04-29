@@ -74,6 +74,8 @@ def get_config():
     config.ekf.obs_interval = 0.25
     config.ekf.dynamic_vars = False # True -> randpick vars
 
+    # EnKF settings
+    config.ekf = ml_collections.ConfigDict()
     config.enkf.sigma_model = 0.1
 
 
