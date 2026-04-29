@@ -13,6 +13,89 @@ from utils import get_dataset
 
 import numpy as np
 from scipy.integrate import solve_ivp
+from scipy.io import loadmat
+
+
+def _load_l2_eval_pool(
+    mat_path:      str,
+    max_additions: int,
+    num_vars:      int,
+) -> tuple[jnp.ndarray, list[jnp.ndarray]]:
+    """
+    Load the pre-computed rollout pool from a .mat file, mirroring the logic
+    of _load_rollout_pool used during training.
+ 
+    Args:
+        mat_path:      Path to the .mat file (e.g. "data/train_rollouts_025.mat").
+        max_additions: Number of rollout slots to read (= config.training.max_additions).
+        num_vars:      State dimension N (40 for L96).
+ 
+    Returns:
+        u0_original  : (B, N) initial conditions — one row per trajectory.
+        rollout_states: list of max_additions arrays, each (B, N).
+                        rollout_states[k] is the ground-truth state after
+                        k+1 windows (i.e. the key "u0_rollout_{k+1}").
+    """
+    data = loadmat(mat_path)
+ 
+    u0_original = jnp.array(data["u0_original"].astype(np.float32))  # (B, N)
+ 
+    rollout_states: list[jnp.ndarray] = []
+    for k in range(1, max_additions + 1):
+        key_name = f"u0_rollout_{k}"
+        if key_name not in data:
+            raise KeyError(
+                f"Key '{key_name}' not found in {mat_path}. "
+                f"Regenerate the file with max_additions >= {k}."
+            )
+        rollout_states.append(jnp.array(data[key_name].astype(np.float32)))
+ 
+    return u0_original, rollout_states
+ 
+ 
+def _plot_l2_per_window(
+    curves:    dict[str, np.ndarray],   # label → (num_windows,) mean L2 array
+    dt:        float,                   # window duration (for x-axis labels)
+    title:     str,
+    save_path: str,
+    colors:    dict[str, str] | None = None,
+) -> None:
+    """
+    Plot one or more average-L2-per-window curves on a log-scale y-axis and
+    save the figure as a PDF.
+ 
+    Args:
+        curves:    Mapping from method label to a 1-D array of length
+                   num_windows containing the mean L2 at each window boundary.
+        dt:        Assimilation window duration used to label the x-axis.
+        title:     Figure suptitle.
+        save_path: Full path (including .pdf extension) for the output file.
+        colors:    Optional mapping from label to matplotlib colour string.
+                   Defaults are applied for unlabelled entries.
+    """
+    default_colors = ["#2196F3", "#FF5722", "#4CAF50", "#9C27B0"]
+    fig, ax = plt.subplots(figsize=(8, 5))
+ 
+    for i, (label, l2_arr) in enumerate(curves.items()):
+        num_windows = len(l2_arr)
+        window_idx  = np.arange(1, num_windows + 1)
+        color       = (colors or {}).get(label, default_colors[i % len(default_colors)])
+        ax.plot(window_idx, l2_arr, marker="o", markersize=4,
+                linewidth=1.8, label=label, color=color)
+ 
+    ax.set_yscale("log")
+    ax.set_xlabel("Window index  (each = {:.3g} time units)".format(dt), fontsize=12)
+    ax.set_ylabel("Mean relative L2 error  (log scale)", fontsize=12)
+    ax.set_title(title, fontsize=13)
+    ax.legend(fontsize=11)
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+ 
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    logging.info(f"Batch L2-per-window plot saved to: {save_path}")
+
 
 def evaluate(config: ml_collections.ConfigDict, workdir: str):
     # 1. Load dataset (x_ref is 3D: [num_ics, num_points, 40])
@@ -130,6 +213,77 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         
         logging.info(f"Evaluation plot for IC {ic_idx} saved to: {fig_path}")
 
+    _evaluate_batch_l2_openloop(model, params, t_star_window, config, workdir)
+
+def _evaluate_batch_l2_openloop(model, params, t_star_window, config, workdir):
+    """
+    Compute and plot the batch-averaged open-loop L2 error per window.
+ 
+    Called at the end of evaluate().  Autoregressively rolls out the DeepONet
+    from each IC in the pool, comparing the end-of-window prediction to the
+    ground-truth state stored in the .mat file.
+ 
+    Strategy
+    --------
+    For window k (1-indexed):
+        1. Start from u0_original.
+        2. Run k autoregressive steps through x_pred_fn.
+        3. Compare the final state to u0_rollout_k.
+        4. Average the relative L2 norm over all ICs in the batch.
+ 
+    The innermost prediction is vmapped over the batch dimension so that all
+    ICs are evaluated in a single JIT-compiled call per window.
+    """
+    dt_window    = float(t_star_window[-1] - t_star_window[0])
+    max_additions = config.training.get("max_additions", 5)
+    num_vars      = model.N
+    mat_path      = os.path.join(
+        "data",
+        config.training.get("augmentation_file_name_eval", "train_rollouts_025.mat"),
+    )
+ 
+    logging.info("Computing batch L2 per window (open-loop) …")
+    u0_original, rollout_states = _load_l2_eval_pool(mat_path, max_additions, num_vars)
+    B = u0_original.shape[0]
+ 
+    # JIT-compiled, vmapped single-window predictor:  (B, N) → (B, N)
+    # x_pred_fn is already vmapped over t; we now also vmap over the IC axis.
+    predict_one_window = jax.jit(
+        jax.vmap(
+            lambda u: model.x_pred_fn(params, u, t_star_window)[-1],
+            in_axes=0,
+        )
+    )
+ 
+    l2_per_window: list[float] = []
+    u_current = u0_original  # (B, N)
+ 
+    for k in range(max_additions):
+        # Advance every IC by one more window
+        u_current = predict_one_window(u_current)        # (B, N)
+ 
+        # Ground truth at window boundary k+1
+        x_ref_k = rollout_states[k]                      # (B, N)
+ 
+        # Per-IC relative L2, then batch mean
+        numer   = jnp.linalg.norm(u_current - x_ref_k, axis=1)  # (B,)
+        denom   = jnp.linalg.norm(x_ref_k,              axis=1)  # (B,)
+        l2_mean = float(jnp.mean(numer / (denom + 1e-12)))
+        l2_per_window.append(l2_mean)
+ 
+        logging.info(f"  Window {k+1:>3d} | mean L2: {l2_mean:.3e}")
+ 
+    save_dir  = os.path.join(workdir, "figures", config.wandb.name)
+    save_path = os.path.join(save_dir, "batch_l2_per_window_openloop.pdf")
+    _plot_l2_per_window(
+        curves    = {"Open-loop (DeepONet)": np.array(l2_per_window)},
+        dt        = dt_window,
+        title     = f"Open-loop: batch-average L2 per window  (B={B})",
+        save_path = save_path,
+        colors    = {"Open-loop (DeepONet)": "#2196F3"},
+    )
+
+
 def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
     """
     Evaluates the trained UDON model with EKF data assimilation.
@@ -210,7 +364,7 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
 
         x_true_at_boundaries = x_true_windows[1:] # (num_windows, N)
         for t_idx in range(num_windows):
-            is_obs_time = (t_idx + 1) % obs_interval == 0
+            is_obs_time = (t_idx + 1)*dt % obs_interval == 0
             obs_mask.append(is_obs_time)
             
             if is_obs_time:
@@ -306,6 +460,160 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
         plt.close(fig)
         logging.info(f"EKF plot for IC {ic_idx} saved.")
 
+    _evaluate_batch_l2_ekf(
+         model, params, t_star_window,
+         predict_fn, update_fn,
+         Q, R, P0,
+         obs_every_n, sigma_obs, P0_sigma,
+         dynamic_vars, obs_interval,
+         config, workdir,
+    )
+    
+def _evaluate_batch_l2_ekf(
+    model, params, t_star_window,
+    predict_fn, update_fn,
+    Q, R, P0,
+    obs_every_n, sigma_obs, P0_sigma,
+    dynamic_vars, obs_interval,
+    config, workdir,
+):
+    """
+    Compute and plot the batch-averaged L2 error per window for both the
+    open-loop DeepONet rollout and the EKF estimate.
+ 
+    Called at the end of evaluate_with_ekf().
+ 
+    For each IC in the pool:
+      • Open-loop:  autoregressively roll out the model for k windows.
+      • EKF:        run run_ekf_smoother up to window k, take the final
+                    filtered estimate.
+    Both errors are averaged over all ICs and plotted together.
+ 
+    Notes
+    -----
+    Running the full EKF smoother for every IC in the pool can be expensive.
+    The batch size used here is capped at `ekf_batch_size` (default 200) ICs
+    to keep wall-clock time manageable; this can be overridden via
+    config.ekf.get("batch_l2_size", 200).
+    """
+    from enkf import run_ekf_smoother, EKFState
+ 
+    dt_window    = float(t_star_window[-1] - t_star_window[0])
+    max_additions = config.training.get("max_additions", 5)
+    num_vars      = model.N
+    N             = num_vars
+    mat_path      = os.path.join(
+        "data",
+        config.training.get("augmentation_file_name_eval", "train_rollouts_025.mat"),
+    )
+    ekf_batch_size = config.ekf.get("batch_l2_size", 200)
+ 
+    logging.info("Computing batch L2 per window (open-loop vs EKF) …")
+    u0_original, rollout_states = _load_l2_eval_pool(mat_path, max_additions, num_vars)
+ 
+    # Cap batch size
+    B = min(u0_original.shape[0], ekf_batch_size)
+    u0_original   = u0_original[:B]
+    rollout_states = [r[:B] for r in rollout_states]
+    logging.info(f"  Using {B} ICs from pool for batch L2 evaluation.")
+ 
+    # Open-loop: vmapped single-window predictor
+    predict_one_window = jax.jit(
+        jax.vmap(lambda u: model.x_pred_fn(params, u, t_star_window)[-1], in_axes=0)
+    )
+ 
+    # Observation operator (fixed, as in evaluate_with_ekf)
+    obs_indices = jnp.arange(0, N, obs_every_n)
+    m           = len(obs_indices)
+ 
+    # Accumulators: per-window mean L2 summed over ICs, then divided by B
+    ol_l2_sum  = np.zeros(max_additions)   # open-loop
+    ekf_l2_sum = np.zeros(max_additions)   # EKF
+ 
+    u_ol = u0_original   # running open-loop state (B, N)
+ 
+    for ic in range(B):
+        key = jax.random.PRNGKey(ic + 9999)   # distinct from per-IC eval keys
+ 
+        u_true_ic = u0_original[ic]   # (N,)
+ 
+        # ── Synthesise per-IC observations at each window boundary ──────────
+        H_list, y_obs_list, obs_mask_list = [], [], []
+ 
+        for t_idx in range(max_additions):
+            x_true_t = rollout_states[t_idx][ic]              # (N,) ground truth
+            is_obs   = (t_idx + 1) % obs_interval == 0
+            obs_mask_list.append(is_obs)
+ 
+            if is_obs:
+                if dynamic_vars:
+                    key, subkey = jax.random.split(key)
+                    obs_idx = jax.random.choice(subkey, N, shape=(m,), replace=False)
+                else:
+                    obs_idx = obs_indices
+ 
+                m_t = len(obs_idx)
+                H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx].set(1.0)
+                key, subkey = jax.random.split(key)
+                noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
+                y_t   = x_true_t[obs_idx] + noise
+ 
+                H_list.append(H_t)
+                y_obs_list.append(y_t)
+            else:
+                H_list.append(jnp.zeros((m, N)))
+                y_obs_list.append(jnp.zeros((m,)))
+ 
+        H_seq     = jnp.stack(H_list)
+        y_obs_seq = jnp.stack(y_obs_list)
+        obs_mask  = jnp.array(obs_mask_list)
+ 
+        # Perturbed IC
+        key, key_ic = jax.random.split(key)
+        x0_hat = u_true_ic + P0_sigma * jax.random.normal(key_ic, shape=(N,))
+ 
+        # Run EKF smoother — returns (max_additions, N)
+        x_hats, _ = run_ekf_smoother(
+            predict_fn, update_fn,
+            x0_hat, P0,
+            y_obs_seq, obs_mask,
+            H_seq, Q, R,
+        )
+ 
+        # Accumulate per-window L2 for this IC
+        for k in range(max_additions):
+            ref_k = rollout_states[k][ic]   # (N,)
+ 
+            ekf_err = float(jnp.linalg.norm(x_hats[k] - ref_k)
+                            / (jnp.linalg.norm(ref_k) + 1e-12))
+            ekf_l2_sum[k] += ekf_err
+ 
+    # Open-loop: much cheaper — run all ICs at once
+    u_current = u0_original
+    for k in range(max_additions):
+        u_current = predict_one_window(u_current)
+        ref_k     = rollout_states[k]
+        numer     = jnp.linalg.norm(u_current - ref_k, axis=1)
+        denom     = jnp.linalg.norm(ref_k,              axis=1)
+        ol_l2_sum[k] = float(jnp.mean(numer / (denom + 1e-12)))
+ 
+    l2_openloop = ol_l2_sum                  # already mean (computed per-window)
+    l2_ekf      = ekf_l2_sum / B            # average over ICs
+ 
+    save_dir  = os.path.join(workdir, "figures", config.wandb.name)
+    save_path = os.path.join(save_dir, "batch_l2_per_window_ekf.pdf")
+    _plot_l2_per_window(
+        curves={
+            "Open-loop (DeepONet)": l2_openloop,
+            "EKF estimate":         l2_ekf,
+        },
+        dt        = dt_window,
+        title     = f"EKF vs open-loop: batch-average L2 per window  (B={B})",
+        save_path = save_path,
+        colors    = {"Open-loop (DeepONet)": "#2196F3", "EKF estimate": "#FF5722"},
+    )
+
+
 def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
     """
     Evaluates the trained UDON model with EnKF data assimilation.
@@ -357,7 +665,6 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
     predict_fn, update_fn = model.make_enkf_fns(params, dt, N_ens=N_ens)
  
     num_windows = config.training.num_time_windows
-    window_size = config.training.window_size
  
     # ── Fixed noise covariances ───────────────────────────────────────────────
     Q  = jnp.eye(N) * sigma_model ** 2
@@ -535,3 +842,185 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         fig.savefig(out_path, bbox_inches="tight", dpi=300)
         plt.close(fig)
         logging.info(f"EnKF plot for IC {ic_idx} saved to: {out_path}")
+    
+    _evaluate_batch_l2_enkf(
+         model, params, t_star_window,
+         predict_fn, update_fn,
+         Q, P0,
+         N_ens, obs_every_n, sigma_obs, P0_sigma,
+         dynamic_vars, obs_interval,
+         config, workdir,
+    )
+
+def _evaluate_batch_l2_enkf(
+    model, params, t_star_window,
+    predict_fn, update_fn,
+    Q, P0,
+    N_ens, obs_every_n, sigma_obs, P0_sigma,
+    dynamic_vars, obs_interval,
+    config, workdir,
+):
+    """
+    Compute and plot the batch-averaged L2 error per window for the open-loop
+    DeepONet rollout, the EnKF ensemble mean, and (optionally) the mean
+    ensemble spread as a proxy for uncertainty calibration.
+ 
+    Called at the end of evaluate_with_enkf().
+ 
+    For each IC in the pool the EnKF smoother is run with synthetic noisy
+    observations constructed from the ground-truth rollout states. The
+    ensemble spread (mean σ per window) is collected alongside the L2 error,
+    providing a visual check that the filter is well-calibrated: a well-tuned
+    EnKF should have spread ≈ RMSE.
+ 
+    Notes
+    -----
+    Same cost caveat as _evaluate_batch_l2_ekf: capped at
+    config.ekf.get("batch_l2_size", 200) ICs for filter evaluation.
+    """
+    from enkf import run_enkf_smoother, init_ensemble, EnKFState
+ 
+    dt_window     = float(t_star_window[-1] - t_star_window[0])
+    max_additions = config.training.get("max_additions", 5)
+    N             = model.N
+    mat_path      = os.path.join(
+        "data",
+        config.training.get("augmentation_file_name_eval", "train_rollouts_025.mat"),
+    )
+    enkf_batch_size = config.ekf.get("batch_l2_size", 200)
+ 
+    logging.info("Computing batch L2 per window (open-loop vs EnKF) …")
+    u0_original, rollout_states = _load_l2_eval_pool(mat_path, max_additions, N)
+ 
+    B = min(u0_original.shape[0], enkf_batch_size)
+    u0_original   = u0_original[:B]
+    rollout_states = [r[:B] for r in rollout_states]
+    logging.info(f"  Using {B} ICs from pool for batch L2 evaluation (N_ens={N_ens}).")
+ 
+    obs_indices = jnp.arange(0, N, obs_every_n)
+    m           = len(obs_indices)
+    R_fixed     = jnp.eye(m) * sigma_obs ** 2
+ 
+    # Open-loop vmapped predictor
+    predict_one_window = jax.jit(
+        jax.vmap(lambda u: model.x_pred_fn(params, u, t_star_window)[-1], in_axes=0)
+    )
+ 
+    enkf_l2_sum     = np.zeros(max_additions)
+    enkf_spread_sum = np.zeros(max_additions)
+ 
+    for ic in range(B):
+        key      = jax.random.PRNGKey(ic + 77777)
+        u_true   = u0_original[ic]   # (N,)
+ 
+        # ── Build per-IC synthetic observation sequence ──────────────────────
+        H_list, y_obs_list, obs_mask_list = [], [], []
+ 
+        for t_idx in range(max_additions):
+            x_true_t = rollout_states[t_idx][ic]
+            is_obs   = (t_idx + 1) % obs_interval == 0
+            obs_mask_list.append(is_obs)
+ 
+            if is_obs:
+                if dynamic_vars:
+                    key, subkey = jax.random.split(key)
+                    obs_idx = jax.random.choice(subkey, N, shape=(m,), replace=False)
+                else:
+                    obs_idx = obs_indices
+ 
+                m_t = len(obs_idx)
+                H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx].set(1.0)
+                key, subkey = jax.random.split(key)
+                noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
+                y_t   = x_true_t[obs_idx] + noise
+ 
+                H_list.append(H_t)
+                y_obs_list.append(y_t)
+            else:
+                H_list.append(jnp.zeros((m, N)))
+                y_obs_list.append(jnp.zeros((m,)))
+ 
+        H_seq     = jnp.stack(H_list)
+        y_obs_seq = jnp.stack(y_obs_list)
+        obs_mask  = jnp.array(obs_mask_list)
+ 
+        # ── Initialise ensemble ──────────────────────────────────────────────
+        key, key_ic, key_ens = jax.random.split(key, 3)
+        x0_hat    = u_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
+        ensemble0 = init_ensemble(x0_hat, P0, N_ens, key_ens)
+ 
+        # ── Run EnKF smoother — returns (max_additions, N) each ─────────────
+        x_means, x_spreads = run_enkf_smoother(
+            predict_fn, update_fn,
+            ensemble0,
+            y_obs_seq, obs_mask,
+            H_seq, Q, R_fixed,
+            key,
+        )
+ 
+        # ── Accumulate ───────────────────────────────────────────────────────
+        for k in range(max_additions):
+            ref_k = rollout_states[k][ic]
+ 
+            enkf_l2_sum[k]     += float(
+                jnp.linalg.norm(x_means[k] - ref_k)
+                / (jnp.linalg.norm(ref_k) + 1e-12)
+            )
+            enkf_spread_sum[k] += float(jnp.mean(x_spreads[k]))
+ 
+    # Open-loop — vectorised over B
+    ol_l2 = np.zeros(max_additions)
+    u_current = u0_original
+    for k in range(max_additions):
+        u_current = predict_one_window(u_current)
+        ref_k     = rollout_states[k]
+        numer     = jnp.linalg.norm(u_current - ref_k, axis=1)
+        denom     = jnp.linalg.norm(ref_k,              axis=1)
+        ol_l2[k]  = float(jnp.mean(numer / (denom + 1e-12)))
+ 
+    l2_enkf    = enkf_l2_sum     / B
+    spread_mean = enkf_spread_sum / B
+ 
+    save_dir  = os.path.join(workdir, "figures", config.wandb.name)
+    save_path = os.path.join(save_dir, "batch_l2_per_window_enkf.pdf")
+ 
+    # ── Two-panel figure: L2 error (log) + ensemble spread (log) ────────────
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    window_idx = np.arange(1, max_additions + 1)
+ 
+    # Left: L2 error curves
+    ax = axes[0]
+    ax.plot(window_idx, ol_l2,   marker="o", markersize=4, linewidth=1.8,
+            label="Open-loop (DeepONet)", color="#2196F3")
+    ax.plot(window_idx, l2_enkf, marker="s", markersize=4, linewidth=1.8,
+            label=f"EnKF mean (N_ens={N_ens})", color="#FF5722")
+    ax.set_yscale("log")
+    ax.set_xlabel(f"Window index  (each = {dt_window:.3g} time units)", fontsize=12)
+    ax.set_ylabel("Mean relative L2 error  (log scale)", fontsize=12)
+    ax.set_title("EnKF vs open-loop: L2 per window", fontsize=13)
+    ax.legend(fontsize=11)
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+ 
+    # Right: ensemble spread — a calibration diagnostic
+    # Well-calibrated filter: spread ≈ RMSE across the batch.
+    ax2 = axes[1]
+    ax2.plot(window_idx, spread_mean, marker="^", markersize=4, linewidth=1.8,
+             label="Mean ensemble σ", color="#4CAF50")
+    ax2.plot(window_idx, l2_enkf,     marker="s", markersize=4, linewidth=1.8,
+             linestyle="--", label="EnKF mean L2  (RMSE proxy)", color="#FF5722")
+    ax2.set_yscale("log")
+    ax2.set_xlabel(f"Window index  (each = {dt_window:.3g} time units)", fontsize=12)
+    ax2.set_ylabel("Log scale", fontsize=12)
+    ax2.set_title("Calibration: ensemble spread vs L2 error", fontsize=13)
+    ax2.legend(fontsize=11)
+    ax2.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+ 
+    fig.suptitle(
+        f"EnKF batch evaluation  (B={B}, N_ens={N_ens}, "
+        f"obs every {obs_every_n}th var, σ_obs={sigma_obs})",
+        fontsize=13,
+    )
+    fig.tight_layout()
+    fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    logging.info(f"EnKF batch L2-per-window plot saved to: {save_path}")

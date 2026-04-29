@@ -51,7 +51,6 @@ def get_config():
     training.augmentation_file_name = "train_rollouts_025.mat"
 
     training.num_time_windows = 10
-    training.window_size = 0.25
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
