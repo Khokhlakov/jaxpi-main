@@ -496,7 +496,7 @@ def _evaluate_batch_l2_ekf(
     to keep wall-clock time manageable; this can be overridden via
     config.ekf.get("batch_l2_size", 200).
     """
-    from enkf import run_ekf_smoother, EKFState
+    from kf import run_ekf_smoother, EKFState
  
     dt_window    = float(t_star_window[-1] - t_star_window[0])
     max_additions = config.training.get("max_additions", 5)
@@ -878,7 +878,7 @@ def _evaluate_batch_l2_enkf(
     Same cost caveat as _evaluate_batch_l2_ekf: capped at
     config.ekf.get("batch_l2_size", 200) ICs for filter evaluation.
     """
-    from enkf import run_enkf_smoother, init_ensemble, EnKFState
+    from kf import run_enkf_smoother, init_ensemble, EnKFState
  
     dt_window     = float(t_star_window[-1] - t_star_window[0])
     max_additions = config.training.get("max_additions", 5)
