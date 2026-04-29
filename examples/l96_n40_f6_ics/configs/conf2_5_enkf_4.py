@@ -51,7 +51,7 @@ def get_config():
     training.augmentation_file_name = "train_rollouts_025.mat"
 
     training.num_time_windows = 10
-    training.window_size = 0.5
+    training.window_size = 0.25
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
@@ -71,7 +71,7 @@ def get_config():
     config.ekf.sigma_obs = 0.5
     config.ekf.sigma_proc = 0.1
     config.ekf.P0_sigma = 1.0
-    config.ekf.obs_interval = 0.25
+    config.ekf.obs_interval = 0.5
     config.ekf.dynamic_vars = False # True -> randpick vars
 
     # EnKF settings

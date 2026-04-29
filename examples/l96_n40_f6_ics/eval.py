@@ -337,7 +337,7 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
     obs_every_n   = config.ekf.get("obs_every_n",   4)
     sigma_obs     = config.ekf.get("sigma_obs",      0.5)
     P0_sigma      = config.ekf.get("P0_sigma",       1.0)
-
+    
     N_ens         = config.enkf.get("N_ens",          50)
     sigma_model   = config.enkf.get("sigma_model",     0.1)
  
@@ -400,7 +400,7 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         x_true_at_boundaries = x_true_windows[1:]   # (num_windows, N)
  
         for t_idx in range(num_windows):
-            is_obs_time = (t_idx + 1)*window_size % obs_interval == 0
+            is_obs_time = (t_idx + 1)*dt % obs_interval == 0
             obs_mask.append(is_obs_time)
  
             if is_obs_time:
