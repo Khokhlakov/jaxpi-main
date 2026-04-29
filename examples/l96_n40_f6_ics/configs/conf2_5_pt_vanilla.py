@@ -50,7 +50,7 @@ def get_config():
     training.augmentation_scheme = "file" #"model" 
     training.augmentation_file_name = "train_rollouts_025.mat"
 
-    training.num_time_windows = 20
+    training.num_time_windows = 10
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()

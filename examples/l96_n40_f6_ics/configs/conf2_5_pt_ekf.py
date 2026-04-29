@@ -9,7 +9,7 @@ def get_config():
     # test2_3 with additions every 1 iteration
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics-2"
-    wandb.name = "test2_5_pt_vanilla"
+    wandb.name = "test2_5_pt_ekf"
     wandb.ckpt_name = "test2_5"
     wandb.tag = None
 
