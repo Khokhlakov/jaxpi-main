@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from jax import jacfwd, jit
+from jax import jacfwd, jit, vmap
 from functools import partial
 from typing import NamedTuple, Callable
 
