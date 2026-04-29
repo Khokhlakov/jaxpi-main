@@ -167,6 +167,7 @@ def _plot_trajectory_summary(
                 label="Mean |error| over variables")
     ax_top.set_xlabel("Time  t", fontsize=11)
     ax_top.set_ylabel("Mean absolute error", fontsize=11)
+    ax_top.set_yscale("log")
     ax_top.set_title(
         f"IC {ic_idx} — Mean absolute error across all {N} variables  ({est_label})",
         fontsize=12, fontweight="bold",
