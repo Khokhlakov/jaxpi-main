@@ -77,6 +77,7 @@ def get_config():
     # EnKF settings
     config.enkf = ml_collections.ConfigDict()
     config.enkf.sigma_model = 0.1
+    config.enkf.N_ens = 70
 
 
     # Logging
