@@ -336,9 +336,10 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
     dynamic_vars  = config.ekf.get("dynamic_vars",  False)
     obs_every_n   = config.ekf.get("obs_every_n",   4)
     sigma_obs     = config.ekf.get("sigma_obs",      0.5)
-    sigma_proc    = config.ekf.get("sigma_proc",     0.1)
     P0_sigma      = config.ekf.get("P0_sigma",       1.0)
     N_ens         = config.ekf.get("N_ens",          50)
+
+    sigma_model   = config.enkf.get("sigma_model",     0.1)
  
     # ── Model & checkpoint ────────────────────────────────────────────────────
     x_ref_all, u0_ref_all, t_star_window = get_dataset()
@@ -356,9 +357,10 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
     predict_fn, update_fn = model.make_enkf_fns(params, dt, N_ens=N_ens)
  
     num_windows = config.training.num_time_windows
+    window_size = config.training.window_size
  
     # ── Fixed noise covariances ───────────────────────────────────────────────
-    Q  = jnp.eye(N) * sigma_proc ** 2
+    Q  = jnp.eye(N) * sigma_model ** 2
     R_fixed = jnp.eye(N // obs_every_n) * sigma_obs ** 2   # resized per step if dynamic
     P0 = jnp.eye(N) * P0_sigma ** 2
  
@@ -398,7 +400,7 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         x_true_at_boundaries = x_true_windows[1:]   # (num_windows, N)
  
         for t_idx in range(num_windows):
-            is_obs_time = (t_idx + 1) % obs_interval == 0
+            is_obs_time = (t_idx + 1)*dt % obs_interval == 0
             obs_mask.append(is_obs_time)
  
             if is_obs_time:
@@ -521,7 +523,7 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         fig.suptitle(
             f"EnKF Assimilation — IC {ic_idx}  "
             f"(N_ens={N_ens}, obs every {obs_every_n}th var, "
-            f"σ_obs={sigma_obs}, σ_proc={sigma_proc})",
+            f"σ_obs={sigma_obs}, σ_model={sigma_model})",
             fontsize=13, y=1.01,
         )
         plt.tight_layout()
