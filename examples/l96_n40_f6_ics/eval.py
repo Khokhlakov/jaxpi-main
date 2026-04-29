@@ -3,6 +3,7 @@ from absl import logging
 import ml_collections
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import jax
 from jax.tree_util import tree_map
 from flax.jax_utils import replicate
@@ -97,6 +98,139 @@ def _plot_l2_per_window(
     logging.info(f"Batch L2-per-window plot saved to: {save_path}")
 
 
+def _plot_trajectory_summary(
+    t_ax:       np.ndarray,        # (T,)   time axis
+    x_true:     np.ndarray,        # (T, N) ground-truth state
+    x_est:      np.ndarray,        # (T, N) estimate (prediction / filter mean)
+    x_std:      np.ndarray | None, # (T, N) per-variable std, or None
+    ic_idx:     int,
+    est_label:  str,               # e.g. "DeepONet", "EKF estimate", "EnKF mean"
+    save_path:  str,
+    N:          int = 40,
+) -> None:
+    """
+    Generate and save the trajectory-summary PDF for a single IC.
+ 
+    Layout
+    ------
+    Row 0 (2-column span):
+        Line plot of mean |error| across all N variables vs time.
+        Gives a scalar summary of how the error evolves.
+ 
+    Rows 1–20, columns 0–1  (40 panels total):
+        Panel for variable i shows:
+          • ground-truth trajectory  (solid, dark)
+          • estimate trajectory      (dashed, coloured)
+          • ±1σ shaded band          (if x_std is not None)
+ 
+    Args:
+        t_ax:      1-D time array shared by all panels.
+        x_true:    Ground-truth states; shape (T, N).
+        x_est:     Estimated states; shape (T, N).
+        x_std:     Per-variable standard deviation; shape (T, N), or None.
+                   • EKF  → sqrt of diagonal of the covariance matrix P.
+                   • EnKF → ensemble standard deviation from run_enkf_smoother.
+                   • Open-loop → None (no uncertainty estimate available).
+        ic_idx:    Trajectory index, used only for the figure title.
+        est_label: Short name for the estimator shown in legends.
+        save_path: Full output path including filename and .pdf extension.
+        N:         State dimension (default 40 for L96).
+    """
+    x_true = np.asarray(x_true)   # (T, N)
+    x_est  = np.asarray(x_est)    # (T, N)
+    x_std  = np.asarray(x_std) if x_std is not None else None
+ 
+    abs_error    = np.abs(x_true - x_est)            # (T, N)
+    mean_abs_err = abs_error.mean(axis=1)             # (T,)  ← the top-panel curve
+ 
+    n_var_rows = N // 2                               # 20 rows for 40 variables
+ 
+    # ── Figure & GridSpec ────────────────────────────────────────────────────
+    # Top row is taller (summary plot); variable rows are compact.
+    top_height   = 3.2
+    var_row_h    = 1.9
+    total_height = top_height + n_var_rows * var_row_h
+ 
+    fig = plt.figure(figsize=(14, total_height))
+    gs  = gridspec.GridSpec(
+        nrows        = 1 + n_var_rows,
+        ncols        = 2,
+        figure       = fig,
+        height_ratios= [top_height] + [var_row_h] * n_var_rows,
+        hspace       = 0.55,
+        wspace       = 0.32,
+    )
+ 
+    # ── Top panel: mean absolute error vs time ───────────────────────────────
+    ax_top = fig.add_subplot(gs[0, :])   # span both columns
+    ax_top.plot(t_ax, mean_abs_err, color="#E53935", linewidth=1.6,
+                label="Mean |error| over variables")
+    ax_top.set_xlabel("Time  t", fontsize=11)
+    ax_top.set_ylabel("Mean absolute error", fontsize=11)
+    ax_top.set_title(
+        f"IC {ic_idx} — Mean absolute error across all {N} variables  ({est_label})",
+        fontsize=12, fontweight="bold",
+    )
+    ax_top.legend(fontsize=10)
+    ax_top.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+ 
+    # ── Colour palette ───────────────────────────────────────────────────────
+    TRUTH_COLOR = "#37474F"   # dark blue-grey — ground truth
+    EST_COLOR   = "#1E88E5"   # blue           — estimate
+    BAND_COLOR  = "#90CAF9"   # light blue     — ±1σ band
+ 
+    # ── Per-variable panels ──────────────────────────────────────────────────
+    # Variable i occupies row (1 + i//2), column (i % 2).
+    for i in range(N):
+        row = 1 + i // 2
+        col = i % 2
+        ax  = fig.add_subplot(gs[row, col])
+ 
+        # Ground truth
+        ax.plot(t_ax, x_true[:, i],
+                color=TRUTH_COLOR, linewidth=1.0, label="Truth")
+ 
+        # Estimate
+        ax.plot(t_ax, x_est[:, i],
+                color=EST_COLOR, linewidth=1.0, linestyle="--",
+                label=est_label)
+ 
+        # ±1σ uncertainty band (EKF or EnKF only)
+        if x_std is not None:
+            ax.fill_between(
+                t_ax,
+                x_est[:, i] - x_std[:, i],
+                x_est[:, i] + x_std[:, i],
+                color=BAND_COLOR, alpha=0.40, linewidth=0,
+                label="±1σ",
+            )
+ 
+        ax.set_title(f"$x_{{{i}}}$", fontsize=9, pad=2)
+        ax.tick_params(labelsize=7)
+        ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5)
+ 
+        # Only label axes on the border panels to reduce clutter
+        if row == 1 + n_var_rows - 1:          # bottom row
+            ax.set_xlabel("t", fontsize=8)
+        if col == 0:                            # left column
+            ax.set_ylabel("state", fontsize=8)
+ 
+        # Legend only on the first panel (top-left variable)
+        if i == 0:
+            ax.legend(fontsize=7, loc="upper right",
+                      handlelength=1.2, framealpha=0.7)
+ 
+    fig.suptitle(
+        f"Trajectory summary — IC {ic_idx}  |  estimator: {est_label}",
+        fontsize=13, fontweight="bold", y=1.002,
+    )
+ 
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    logging.info(f"Trajectory summary for IC {ic_idx} saved to: {save_path}")
+
+
 def evaluate(config: ml_collections.ConfigDict, workdir: str):
     # 1. Load dataset (x_ref is 3D: [num_ics, num_points, 40])
     x_ref_all, u0_ref_all, t_star_window = get_dataset()
@@ -168,6 +302,21 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         )
         x_ref_matched = jnp.array(sol.y.T) 
         # ------------------------------------------------
+        # Plot summary
+        _plot_trajectory_summary(
+            t_ax      = np.array(t_star_full),
+            x_true    = np.array(x_ref_matched),
+            x_est     = np.array(x_pred_full),
+            x_std     = None,                   # no uncertainty for open-loop
+            ic_idx    = ic_idx,
+            est_label = "DeepONet",
+            save_path = os.path.join(
+                workdir, "figures", config.wandb.name,
+                f"trajectory_summary_ic_{ic_idx}.pdf",
+            ),
+            N         = model.N,
+        )
+
 
         # Compute total L2 error 
         total_l2_error = jnp.linalg.norm(x_pred_full - x_ref_matched) / jnp.linalg.norm(x_ref_matched)
@@ -418,6 +567,27 @@ def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
         )
         # x_hats shape: (num_windows, N)
         # ─────────────────────────────────────────────────────────────────────
+        # Plot summary
+        # ── EKF per-variable std from covariance diagonal ─────────────────────
+        # diag of each (N, N) covariance matrix → (num_windows, N)
+        ekf_std = np.sqrt(np.clip(
+            np.diagonal(np.array(Ps), axis1=1, axis2=2), 0, None
+        ))
+
+        # ── Trajectory summary PDF (EKF) ─────────────────────────────────────
+        _plot_trajectory_summary(
+            t_ax      = np.arange(1, num_windows + 1) * dt,
+            x_true    = np.array(x_true_at_boundaries),
+            x_est     = np.array(x_hats),
+            x_std     = ekf_std,
+            ic_idx    = ic_idx,
+            est_label = "EKF estimate",
+            save_path = os.path.join(
+                workdir, "figures", config.wandb.name,
+                f"trajectory_summary_ekf_ic_{ic_idx}.pdf",
+            ),
+            N         = model.N,
+        )
 
         # ── Metrics ───────────────────────────────────────────────────────────
         x_true_compare = x_true_windows[1:]           # (num_windows, N)
@@ -762,7 +932,23 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         )
         # x_means:   (num_windows, N)
         # x_spreads: (num_windows, N)
- 
+
+        # ──────────────────────────────────────────────────────────────────────
+        # Plot summary
+
+        _plot_trajectory_summary(
+            t_ax      = np.arange(1, num_windows + 1) * dt,
+            x_true    = np.array(x_true_at_boundaries),
+            x_est     = np.array(x_means),
+            x_std     = np.array(x_spreads),   # ensemble std, shape (T, N)
+            ic_idx    = ic_idx,
+            est_label = "EnKF mean",
+            save_path = os.path.join(
+                workdir, "figures", config.wandb.name,
+                f"trajectory_summary_enkf_ic_{ic_idx}.pdf",
+            ),
+            N         = model.N,
+        )
         # ── 5. Metrics ────────────────────────────────────────────────────────
         x_true_compare = x_true_windows[1:]   # (num_windows, N)
  
