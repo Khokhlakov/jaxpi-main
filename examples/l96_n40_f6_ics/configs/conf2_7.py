@@ -46,7 +46,7 @@ def get_config():
     training.use_cartesian_prod = True
     training.update_interval = 1000
     training.num_initial_ics = 8000
-    training.max_additions = 12
+    training.max_additions = 10
     training.augmentation_scheme = "file" #"model" 
     training.augmentation_file_name = "train_rollouts_025.mat"
 
