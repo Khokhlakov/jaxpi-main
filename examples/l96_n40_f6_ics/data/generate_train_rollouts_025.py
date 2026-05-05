@@ -24,7 +24,7 @@ F               = 6.0
 mean_ic         = 6.0
 std_ic          = 2.0
 num_initial_ics = 10000
-max_additions   = 7
+max_additions   = 12
 seed            = 42
  
 # Window length 
