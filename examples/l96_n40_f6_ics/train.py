@@ -105,12 +105,9 @@ def train_and_evaluate(config, workdir: str):
  
     # ── Reference data (used only for eval logging during training) ────────
     # Start with single window data
-    x_train_batch_all, u0_ref_orig_all, t_star_all = get_dataset()
-    u_ref_eval_all = u0_ref_orig_all[0, :]      # shape (N,)
-    x_ref_eval_all = x_train_batch_all[0, :, :] # shape (num_t, N)
-
-    u_ref_eval = u_ref_eval_all[0:5, :]
-    x_ref_eval = x_ref_eval_all[0:5, 0:50, :]
+    x_ref_eval_all, u_ref_eval_all, t_star_all = get_dataset()
+    u_ref_eval = u_ref_eval_all[0:5, :]        # shape (5, N)
+    x_ref_eval = x_ref_eval_all[0:5, 0:50, :]   # shape (5, num_t, N)
     t_star = t_star_all[0:50]
 
     # Parameters for l2 error computation
