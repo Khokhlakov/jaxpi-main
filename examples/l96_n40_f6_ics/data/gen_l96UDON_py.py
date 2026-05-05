@@ -7,10 +7,10 @@ import time
 # --- Parameters ---
 N = 40
 F = 6.0
-num_ics = 1000
+num_ics = 100
 
 # --- Window Configuration ---
-M = 12  # Number of windows.
+M = 10  # Number of windows.
 window_size = 0.25
 t_end = M * window_size
 t_span = (0.0, t_end)
