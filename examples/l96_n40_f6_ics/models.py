@@ -169,11 +169,18 @@ class L96UDON(ForwardIVP):
  
     
     @partial(jit, static_argnums=(0,))
-    def compute_l2_error(self, params, u_test, x_test):
-        # Predict the trajectory under initial condition 
-        x_pred = self.x_pred_fn(params, u_test, self.t_star)
-        error = jnp.linalg.norm(x_pred - x_test) / jnp.linalg.norm(x_test)
-        return error
+    def compute_l2_error(self, params, u_test_batch, x_test_batch):
+        # 1. Vectorize x_pred_fn to handle a batch of initial conditions (axis 0 of u_test_batch)
+        x_pred_batch_fn = vmap(self.x_pred_fn, (None, 0, None))
+        x_pred_batch = x_pred_batch_fn(params, u_test_batch, self.t_star)
+
+        # 2. Relative L2 error of a single trajectory
+        def single_traj_error(pred, test):
+            return jnp.linalg.norm(pred - test) / jnp.linalg.norm(test)
+        
+        # 3. Vectorize the error calculation across the batch and take the mean
+        batch_errors = vmap(single_traj_error)(x_pred_batch, x_test_batch)
+        return jnp.mean(batch_errors)
 
 class L96UDONEvaluator(BaseEvaluator):
     def __init__(self, config, model):
@@ -200,7 +207,7 @@ class L96UDONEvaluator(BaseEvaluator):
         self.log_dict["x_pred"] = fig
         plt.close()
 
-    def __call__(self, state, batch, u_ref, x_ref):
+    def __call__(self, state, batch, u_ref_batch, x_ref_batch):
         self.log_dict = super().__call__(state, batch)
 
         # Causal weights now need the full batch (batch_u, batch_t)
@@ -209,9 +216,9 @@ class L96UDONEvaluator(BaseEvaluator):
             self.log_dict["cas_weight"] = causal_weight.min()
 
         if self.config.logging.log_errors:
-            self.log_errors(state.params, u_ref, x_ref)
+            self.log_errors(state.params, u_ref_batch, x_ref_batch)
 
         if self.config.logging.log_preds:
-            self.log_preds(state.params, u_ref)
+            self.log_preds(state.params, u_ref_batch[0])
 
         return self.log_dict

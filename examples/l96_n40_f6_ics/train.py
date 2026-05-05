@@ -104,9 +104,19 @@ def train_and_evaluate(config, workdir: str):
     wandb.init(project=config.wandb.project, name=config.wandb.name)
  
     # ── Reference data (used only for eval logging during training) ────────
-    x_train_batch, u0_ref_orig, t_star = get_dataset()
-    u_ref_eval = u0_ref_orig[0, :]      # shape (N,)
-    x_ref_eval = x_train_batch[0, :, :] # shape (num_t, N)
+    # Start with single window data
+    x_train_batch_all, u0_ref_orig_all, t_star_all = get_dataset()
+    u_ref_eval_all = u0_ref_orig_all[0, :]      # shape (N,)
+    x_ref_eval_all = x_train_batch_all[0, :, :] # shape (num_t, N)
+
+    u_ref_eval = u_ref_eval_all[0:5, :]
+    x_ref_eval = x_ref_eval_all[0:5, 0:50, :]
+    t_star = t_star_all[0:50]
+
+    # Parameters for l2 error computation
+    trajs_per_window = 5
+    idx_jump = 50
+    time_steps = 50
  
     # ── Hyper-parameters ───────────────────────────────────────────────────
     num_vars        = 40
@@ -243,6 +253,18 @@ def train_and_evaluate(config, workdir: str):
         # Rebuild sampler over the enlarged active region.
         sampler_u   = SpaceSampler(u0_pool[:active_size], batch_size)
         res_sampler = zip(sampler_u, sampler_t)
+
+        # Update trajectories used on l2 error plotting
+        # 1. Dynamically build the list of indices
+        eval_indices = []
+        for k in range(max_additions + 1):
+            start_idx = k * idx_jump
+            eval_indices.extend(range(start_idx, start_idx + trajs_per_window))
+
+        # 2. Extract the batched evaluation data using the generated indices
+        u_ref_eval = u_ref_eval_all[eval_indices, :]
+        x_ref_eval = x_ref_eval_all[eval_indices, 0:time_steps, :]
+        t_star = t_star_all[0:time_steps]
             
 
     # ── Training loop ──────────────────────────────────────────────────────
@@ -298,6 +320,18 @@ def train_and_evaluate(config, workdir: str):
                 f"Step {step:>7d} | Pool expansion #{additions_done}: "
                 f"{expansion_msg} → active ICs {active_size}/{total_pool_size}"
             )
+
+            # Update trajectories used on l2 error plotting
+            # 1. Dynamically build the list of indices
+            eval_indices = []
+            for k in range(additions_done + 2):
+                start_idx = k * idx_jump
+                eval_indices.extend(range(start_idx, start_idx + trajs_per_window))
+
+            # 2. Extract the batched evaluation data using the generated indices
+            u_ref_eval = u_ref_eval_all[eval_indices, :]
+            x_ref_eval = x_ref_eval_all[eval_indices, 0:time_steps, :]
+            t_star = t_star_all[0:time_steps]
  
         # ── Logging ────────────────────────────────────────────────────────
         if jax.process_index() == 0:
