@@ -162,7 +162,7 @@ def _plot_trajectory_summary(
     )
  
     # ── Top panel: mean absolute error vs time ───────────────────────────────
-    ax_top = fig.add_subplot(gs[0, :])   # span both columns
+    ax_top = fig.add_subplot(gs[0, :])   # span both columns 
     ax_top.plot(t_ax, mean_abs_err, color="#E53935", linewidth=1.6,
                 label="Mean |error| over variables")
     ax_top.set_xlabel("Time  t", fontsize=11)
