@@ -321,14 +321,14 @@ def train_and_evaluate(config, workdir: str):
             # Update trajectories used on l2 error plotting
             # 1. Dynamically build the list of indices
             eval_indices = []
-            for k in range(additions_done + 2):
+            for k in range(additions_done + 1):
                 start_idx = k * idx_jump
                 eval_indices.extend(range(start_idx, start_idx + trajs_per_window))
 
             # 2. Extract the batched evaluation data using the generated indices
             u_ref_eval = u_ref_eval_all[eval_indices, :]
             x_ref_eval = x_ref_eval_all[eval_indices, 0:time_steps, :]
-            logging.info(f"###### Temporal: shape: {u_ref_eval.shape}, current addit.:{additions_done+1}")
+            logging.info(f"###### Temporal: shape: {u_ref_eval.shape}, current addit.:{additions_done}")
  
         # ── Logging ────────────────────────────────────────────────────────
         if jax.process_index() == 0:
