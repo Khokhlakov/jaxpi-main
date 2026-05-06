@@ -111,7 +111,7 @@ def train_and_evaluate(config, workdir: str):
     t_star = t_star_all[0:50]
 
     # Parameters for l2 error computation
-    trajs_per_window = 5
+    trajs_per_window = 45
     idx_jump = 50
     time_steps = 50
  
