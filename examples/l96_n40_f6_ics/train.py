@@ -104,17 +104,17 @@ def train_and_evaluate(config, workdir: str):
     wandb.init(project=config.wandb.project, name=config.wandb.name)
  
     # ── Reference data (used only for eval logging during training) ────────
-    # Start with single window data
-    x_ref_eval_all, u_ref_eval_all, t_star_all = get_dataset()
-    u_ref_eval = u_ref_eval_all[0:5, :]        # shape (5, N)
-    x_ref_eval = x_ref_eval_all[0:5, 0:50, :]   # shape (5, num_t, N)
-    t_star = t_star_all[0:50]
-    logging.info(f"###### Temporal: {u_ref_eval.shape}")
-
     # Parameters for l2 error computation
     trajs_per_window = 45
     idx_jump = 50
     time_steps = 50
+
+    # Start with single window data
+    x_ref_eval_all, u_ref_eval_all, t_star_all = get_dataset()
+    u_ref_eval = u_ref_eval_all[0:trajs_per_window, :]                  # shape (45, N)
+    x_ref_eval = x_ref_eval_all[0:trajs_per_window, 0:time_steps, :]    # shape (45, num_t, N)
+    t_star = t_star_all[0:time_steps]
+    logging.info(f"###### Temporal: shape: {u_ref_eval.shape}, current addit.: init}")
  
     # ── Hyper-parameters ───────────────────────────────────────────────────
     num_vars        = 40
@@ -262,7 +262,6 @@ def train_and_evaluate(config, workdir: str):
         # 2. Extract the batched evaluation data using the generated indices
         u_ref_eval = u_ref_eval_all[eval_indices, :]
         x_ref_eval = x_ref_eval_all[eval_indices, 0:time_steps, :]
-        t_star = t_star_all[0:time_steps]
             
 
     # ── Training loop ──────────────────────────────────────────────────────
@@ -329,7 +328,6 @@ def train_and_evaluate(config, workdir: str):
             # 2. Extract the batched evaluation data using the generated indices
             u_ref_eval = u_ref_eval_all[eval_indices, :]
             x_ref_eval = x_ref_eval_all[eval_indices, 0:time_steps, :]
-            t_star = t_star_all[0:time_steps]
             logging.info(f"###### Temporal: shape: {u_ref_eval.shape}, current addit.:{additions_done+1}")
  
         # ── Logging ────────────────────────────────────────────────────────
