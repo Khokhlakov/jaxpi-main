@@ -109,6 +109,7 @@ def train_and_evaluate(config, workdir: str):
     u_ref_eval = u_ref_eval_all[0:5, :]        # shape (5, N)
     x_ref_eval = x_ref_eval_all[0:5, 0:50, :]   # shape (5, num_t, N)
     t_star = t_star_all[0:50]
+    logging.info(f"###### Temporal: {u_ref_eval.shape}")
 
     # Parameters for l2 error computation
     trajs_per_window = 45
@@ -329,6 +330,7 @@ def train_and_evaluate(config, workdir: str):
             u_ref_eval = u_ref_eval_all[eval_indices, :]
             x_ref_eval = x_ref_eval_all[eval_indices, 0:time_steps, :]
             t_star = t_star_all[0:time_steps]
+            logging.info(f"###### Temporal: shape: {u_ref_eval.shape}, current addit.:{additions_done+1}")
  
         # ── Logging ────────────────────────────────────────────────────────
         if jax.process_index() == 0:
