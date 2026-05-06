@@ -114,7 +114,7 @@ def train_and_evaluate(config, workdir: str):
     u_ref_eval = u_ref_eval_all[0:trajs_per_window, :]                  # shape (45, N)
     x_ref_eval = x_ref_eval_all[0:trajs_per_window, 0:time_steps, :]    # shape (45, num_t, N)
     t_star = t_star_all[0:time_steps]
-    logging.info(f"###### Temporal: shape: {u_ref_eval.shape}, current addit.: init}")
+    logging.info(f"###### Temporal: shape: {u_ref_eval.shape}, current addit.: init")
  
     # ── Hyper-parameters ───────────────────────────────────────────────────
     num_vars        = 40
