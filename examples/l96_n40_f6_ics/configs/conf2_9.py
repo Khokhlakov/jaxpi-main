@@ -9,7 +9,7 @@ def get_config():
     # Causal, batches of 256, 350k iterations and smaller causal tolerance
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics-2"
-    wandb.name = "test2_8" 
+    wandb.name = "test2_9" 
     wandb.tag = None
 
     # Arch 
