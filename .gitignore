@@ -1,0 +1,17 @@
+examples/KS/data/X1train.mat
+examples/KS/data/X1train_1.mat
+examples/KS/data/sizing.py
+examples/KS/data/sizing copy.py
+examples/KS/data/KS_valid.h5
+examples/KS/data/KS_valid_1.h5
+examples/KS/data/KS_train.h5
+examples/KS/data/KS_train_1.h5
+examples/KS/data/KS_test_1.h5
+examples/KS/data/ks_1d_trajectories.h5
+examples/KS/data/generate_dataset.py
+examples/KS/data/diagnoze.py
+examples/KS/data/cpu_test.py
+examples/KS/data/asd.py
+ks_1d_trajectories_cox_matthews.h5
+ks_1d_trajectories_gaussian_ic.h5
+ks_1d_trajectories.h5
