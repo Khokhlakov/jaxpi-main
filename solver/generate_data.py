@@ -91,7 +91,7 @@ class KuramotoSivashinskyAdvanced:
 
 def generate_datasets(
     num_samples: int = 200, 
-    L: float = 32.0, 
+    L: float = 32.0 * jnp.pi, 
     N: int = 128, 
     dt: float = 0.005, 
     t_burn: float = 50.0,
@@ -118,7 +118,7 @@ def generate_datasets(
     # Pre-compute steps as pure Python integers
     # ==========================================
     burn_steps = int(t_burn / dt)
-    interval_steps = int(30.0 / dt)
+    interval_steps = int(0.5 / dt)
 
     # 2. Define Scanning Functions 
     # (No @jax.jit needed here; they inherit compilation from simulate_sample)
