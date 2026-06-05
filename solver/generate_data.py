@@ -114,8 +114,14 @@ def generate_datasets(
     keys = jax.random.split(key, num_samples)
     u_hat_initial = jax.vmap(create_single_ic)(keys)
 
-    # 2. Define Scanning Functions
-    @jax.jit
+    # ==========================================
+    # Pre-compute steps as pure Python integers
+    # ==========================================
+    burn_steps = int(t_burn / dt)
+    interval_steps = int(0.25 / dt)
+
+    # 2. Define Scanning Functions 
+    # (No @jax.jit needed here; they inherit compilation from simulate_sample)
     def advance_time(u_hat, steps):
         """Advances the state by `steps` without saving intermediate values."""
         def body_fn(u, _):
@@ -123,7 +129,6 @@ def generate_datasets(
         u_hat_final, _ = jax.lax.scan(body_fn, u_hat, None, length=steps)
         return u_hat_final
 
-    @jax.jit
     def advance_and_save(u_hat, interval_steps, num_intervals):
         """Advances and saves state at the end of each interval."""
         def step_interval(u, _):
@@ -132,7 +137,6 @@ def generate_datasets(
         u_hat_final, trajectory = jax.lax.scan(step_interval, u_hat, None, length=num_intervals)
         return u_hat_final, trajectory
 
-    @jax.jit
     def advance_save_all(u_hat, steps):
         """Advances and saves state at every single step."""
         def body_fn(u, _):
@@ -145,11 +149,9 @@ def generate_datasets(
     @jax.jit
     def simulate_sample(u_hat_0):
         # A. Burn-in Phase
-        burn_steps = int(t_burn / dt)
         u_hat_burned = advance_time(u_hat_0, burn_steps)
         
         # B. Train Phase: Save IC, then advance max_additions times saving every 0.25
-        interval_steps = int(0.25 / dt) # 50 steps
         u_train_end, train_trajectory = advance_and_save(u_hat_burned, interval_steps, max_additions)
         
         # Prepend the burned IC to the training trajectory
