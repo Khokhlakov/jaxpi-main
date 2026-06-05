@@ -3,7 +3,6 @@ from huggingface_hub import hf_hub_download
 import numpy as np
 import matplotlib.pyplot as plt
 
-# IMPORTANT: Import your local solver here
 from  ks_solver_advanced import KuramotoSivashinskyAdvanced 
 
 def load_split_and_calculate_L(num_test_samples: int = 128) -> dict:

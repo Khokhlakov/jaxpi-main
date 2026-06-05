@@ -3,15 +3,16 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    config.mode = "train_dd"
+    config.mode = "eval_pi_vs_dd"
 
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics-pi-vs-dd"
-    wandb.name = "test_pi_vs_dd" 
-    wandb.name_pi = "test2_11"
-    wandb.name_dd = "test_dd_1"
+    wandb.name_pi       = "test2_11" 
+    wandb.ckpt_name_pi  = "test2_11"
+    wandb.name_dd       = "test_dd_1"
+    wandb.ckpt_name_dd  = "test_dd_1"
     wandb.tag = None
 
     # Arch 

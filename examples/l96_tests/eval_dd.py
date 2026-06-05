@@ -656,448 +656,6 @@ def _evaluate_batch_l2_openloop(model, params, t_star_window, config, workdir):
     )
 
 
-def evaluate_with_ekf_dd(config: ml_collections.ConfigDict, workdir: str):
-    from examples.KS.kf import EKFState, run_ekf_smoother
-    import numpy as np
-
-    obs_every_n = config.ekf.get("obs_every_n",  4)
-    sigma_obs   = config.ekf.get("sigma_obs",    0.5)
-    sigma_proc  = config.ekf.get("sigma_proc",   0.1)
-    P0_sigma    = config.ekf.get("P0_sigma",     1.0)
-    dynamic_vars = config.ekf.get("dynamic_vars", False)
-
-    specify_obs_idx   = config.kf.get("specify_obs_idx", False)
-    obs_idx_list        = config.kf.get("obs_idx_list", None)
-
-    # ── fine-step and observation timing ─────────────────────────────────────
-    DT_WINDOW = float(config.get("dt_window", 0.25))
-    DT_FINE   = float(config.ekf.get("dt_fine",   DT_WINDOW))
-    DT_OBS    = float(config.ekf.get("dt_obs",    DT_WINDOW))
-    # ─────────────────────────────────────────────────────────────────────────
-    time_steps = 50
-
-    x_ref_all, u0_ref_all, _ = get_dataset()
-    t_star_window = jnp.linspace(0.0, 0.25, 51)
-
-    model     = models.L96UDON_DD(config, t_star_window)
-    ckpt_path = os.path.join(os.getcwd(), config.wandb.ckpt_name, "ckpt", "udon_dd_model")
-    model.state = restore_checkpoint(model.state, ckpt_path)
-    params    = model.state.params
-    N         = model.N
-
-    # ── Build propagator at DT_FINE  ──────────────────────────────────────────
-    predict_fn, update_fn = model.make_ekf_fns(params)
-
-    # ── Q scaled to per-fine-step ─────────────────────────────────────────────
-    steps_per_window = round(DT_WINDOW / DT_FINE)   # validated inside build_obs_schedule
-    Q_coarse = jnp.eye(N) * sigma_proc ** 2
-    Q_fine   = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
-    
-    if specify_obs_idx and obs_idx_list:
-        obs_indices = jnp.array(obs_idx_list)
-    else:
-        obs_indices = jnp.arange(0, N, obs_every_n)
-
-    m  = len(obs_indices)
-    R  = jnp.eye(m) * sigma_obs ** 2
-    P0 = jnp.eye(N) * P0_sigma ** 2
-
-    num_windows = config.training.num_time_windows
-    total_time  = num_windows * DT_WINDOW
-
-    # ── Build schedule once — validates all divisibility constraints ──────────
-    obs_times, obs_step_indices, total_fine_steps = build_obs_schedule(
-        total_time = total_time,
-        dt_fine    = DT_FINE,
-        dt_obs     = DT_OBS,
-    )
-
-    def lorenz_96(t, state, F=6.0):
-        xp1 = np.roll(state, -1); xm1 = np.roll(state, 1); xm2 = np.roll(state, 2)
-        return (xp1 - xm2) * xm1 - state + F
-
-    for ic_idx in range(config.saving.total_plots):
-        logging.info(f"--- EKF Evaluation for IC {ic_idx} ---")
-        u_current_true = u0_ref_all[ic_idx, :]
-
-        # ── Solve ODE at fine resolution (was: only at window boundaries) ─────
-        t_eval_fine = np.linspace(0.0, total_time, total_fine_steps + 1)
-        sol = solve_ivp(
-            lorenz_96,
-            t_span=[0.0, total_time],
-            y0=np.array(u_current_true),
-            t_eval=t_eval_fine,
-            rtol=1e-9, atol=1e-11,
-        )
-        x_true_fine = jnp.array(sol.y.T)              # (total_fine_steps+1, N)
-
-        # Extract ground truth at every observation time
-        # obs_step_indices[k] is 0-indexed; x_true_fine[s+1] is after step s
-        x_true_at_obs = x_true_fine[obs_step_indices + 1]   # (T_obs, N)
-
-        # ── Build observation sequence (indexed over T_obs, not num_windows) ──
-        key = jax.random.PRNGKey(ic_idx)
-        H_list, y_obs_list, obs_coords = [], [], []
-
-        for obs_idx in range(len(obs_times)):
-            x_true_t = x_true_at_obs[obs_idx]          # (N,)
-
-            specify_obs_idx   = config.kf.get("specify_obs_idx", False)
-            obs_idx_list      = config.kf.get("obs_idx_list", None)
-
-            if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
-                key, subkey = jax.random.split(key)
-                obs_idx_vars = jax.random.choice(subkey, N, shape=(m,), replace=False)
-            else:
-                obs_idx_vars = obs_indices
-
-            m_t = len(obs_idx_vars)
-            H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx_vars].set(1.0)
-
-            key, subkey = jax.random.split(key)
-            noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
-            y_t   = x_true_t[obs_idx_vars] + noise
-
-            H_list.append(H_t)
-            y_obs_list.append(y_t)
-            for j, vi in enumerate(obs_idx_vars):
-                obs_coords.append((int(vi), obs_times[obs_idx], float(y_t[j])))
-
-        H_seq     = jnp.stack(H_list)       # (T_obs, m, N)
-        y_obs_seq = jnp.stack(y_obs_list)   # (T_obs, m)
-
-        # ── Perturbed IC ──────────────────────────────────────────────────────
-        key, key_ic = jax.random.split(key)
-        x0_hat = u_current_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
-
-        # ── Run EKF smoother ──────────────────────────────────────────────────
-        x_hats, Ps, _ = run_ekf_smoother(
-            predict_fn, update_fn,
-            x0_hat, P0,
-            y_obs_seq,
-            obs_step_indices,      # replaces obs_mask
-            H_seq,
-            Q_fine,                # per-fine-step
-            R,
-            total_fine_steps,      # replaces observations.shape[0] as loop bound
-            dt_fine=DT_FINE,
-            dt_window=DT_WINDOW,
-        )
-        # x_hats: (total_fine_steps, N) — dense output at every fine step
-
-        # ── Extract states at window boundaries for L2 comparison ─────────────
-        window_step_indices = np.array([
-            round((w + 1) * DT_WINDOW / DT_FINE) - 1
-            for w in range(num_windows)
-        ])
-        x_hats_at_windows    = x_hats[window_step_indices]     # (num_windows, N)
-        x_true_at_windows    = x_true_fine[window_step_indices + 1]
-
-        ekf_std_fine = np.sqrt(np.clip(
-            np.diagonal(np.array(Ps), axis1=1, axis2=2), 0, None
-        ))
-        ekf_std_at_windows = ekf_std_fine[window_step_indices]
-
-        # ── Plots and metrics — pass fine time axis to summary plot ───────────
-        t_fine_axis = t_eval_fine[1:]   # (total_fine_steps,) — exclude t=0
-
-        _plot_trajectory_summary(
-            t_ax       = t_fine_axis,
-            x_true     = np.array(x_true_fine[1:]),
-            x_est      = np.array(x_hats),
-            x_std      = ekf_std_fine,
-            ic_idx     = ic_idx,
-            est_label  = "EKF estimate",
-            save_path  = os.path.join(
-                workdir, "figures", config.wandb.name,
-                f"trajectory_summary_ekf_ic_{ic_idx}.pdf",
-            ),
-            N          = model.N,
-            dt_window  = DT_WINDOW,    # NEW
-            obs_coords = obs_coords,   # NEW
-        )
-
-        l2_ekf = jnp.linalg.norm(x_hats_at_windows - x_true_at_windows) \
-               / jnp.linalg.norm(x_true_at_windows)
-        print(f"IC {ic_idx} | EKF L2 (at window boundaries): {l2_ekf:.3e}")
-
-    # batch evaluation
-    _evaluate_batch_l2_ekf(
-        model, params, t_star_window,
-        predict_fn, update_fn,
-        Q_fine, R, P0,
-        obs_every_n, sigma_obs, P0_sigma,
-        dynamic_vars,
-        DT_FINE, DT_OBS,
-        config, workdir,
-    )
-
-
-def _evaluate_batch_l2_ekf(
-    model, params, t_star_window,
-    predict_fn, update_fn,
-    Q_fine, R, P0,
-    obs_every_n, sigma_obs, P0_sigma,
-    dynamic_vars,
-    dt_fine: float,
-    dt_obs:  float,
-    config, workdir,
-):
-    """
-    Compute and plot the batch-averaged L2 error per window for both the
-    open-loop DeepONet rollout and the EKF estimate.
-
-    Called at the end of evaluate_with_ekf().
-
-    For each IC in the pool:
-      • Open-loop:  autoregressively roll out the model for k windows.
-      • EKF:        run run_ekf_smoother up to window k, take the final
-                    filtered estimate.
-    Both errors are averaged over all ICs and plotted together.
-
-    Notes
-    -----
-    Running the full EKF smoother for every IC in the pool can be expensive.
-    The batch size used here is capped at `ekf_batch_size` (default 200) ICs
-    to keep wall-clock time manageable; this can be overridden via
-    config.ekf.get("batch_l2_size", 200).
-    """
-    from examples.KS.kf import run_ekf_smoother, EKFState
-
-    specify_obs_idx = config.kf.get("specify_obs_idx", False)
-    obs_idx_list    = config.kf.get("obs_idx_list", None)
-
-    dt_window     = config.get("dt_window", 0.25)
-    max_additions = config.training.get("max_additions", 5)
-    N             = model.N
-    mat_path      = os.path.join(
-        "data",
-        config.training.get("augmentation_file_name_eval", "train_rollouts_025.mat"),
-    )
-    ekf_batch_size = config.ekf.get("batch_l2_size", 200)
-
-    logging.info("Computing batch L2 per window (open-loop vs EKF) …")
-    u0_original, rollout_states = _load_l2_eval_pool(mat_path, max_additions, N)
-
-    # Cap batch size
-    B = min(u0_original.shape[0], ekf_batch_size)
-    u0_original   = u0_original[:B]
-    rollout_states = [r[:B] for r in rollout_states]
-    logging.info(f"  Using {B} ICs from pool for batch L2 evaluation.")
-
-    # Open-loop: vmapped single-window predictor
-    predict_one_window = jax.jit(
-        jax.vmap(lambda u: model.x_pred_fn(params, u, t_star_window)[-1], in_axes=0)
-    )
-
-    if specify_obs_idx and obs_idx_list:
-        obs_indices = jnp.array(obs_idx_list)
-    else:
-        obs_indices = jnp.arange(0, N, obs_every_n)
-
-    m = len(obs_indices)
-
-    # ── Rebuild schedule for the batch duration ───────────────────────────────
-    total_time_batch = max_additions * dt_window
-    _, obs_step_indices_batch, total_fine_steps_batch = build_obs_schedule(
-        total_time = total_time_batch,
-        dt_fine    = dt_fine,
-        dt_obs     = dt_obs,
-    )
-    T_obs = len(obs_step_indices_batch)
-
-    # Absolute observation times (needed for the ERF x-axis)
-    obs_times_batch = np.array([(k + 1) * dt_obs for k in range(T_obs)])
-
-    # ── Window boundary indices derived directly from dt_fine ─────────────────
-    # Step s is 0-indexed; the state after step s corresponds to time
-    # (s + 1) * dt_fine.  Window k (1-indexed) ends at k * dt_window.
-    window_step_indices = np.array([
-        round((k + 1) * dt_window / dt_fine) - 1
-        for k in range(max_additions)
-    ])
-
-    # Accumulators
-    ekf_l2_sum = np.zeros(max_additions)
-
-    # ERF accumulators — shape (T_obs,); accumulated over B ICs
-    erf_sum    = np.zeros(T_obs)
-    erf_sq_sum = np.zeros(T_obs)   # for std computation
-
-    # ── RMSE accumulators ────────────────────────────────────────────────────
-    prior_rmse_sum    = np.zeros(T_obs)
-    prior_rmse_sq_sum = np.zeros(T_obs)
-    post_rmse_sum     = np.zeros(T_obs)
-    post_rmse_sq_sum  = np.zeros(T_obs)
-
-    for ic in range(B):
-        key    = jax.random.PRNGKey(ic + 9999)   # distinct from per-IC eval keys
-        u_true = u0_original[ic]   # (N,)
-
-        def lorenz_96(t, state, F=6.0):
-            xp1 = np.roll(state, -1)
-            xm1 = np.roll(state,  1)
-            xm2 = np.roll(state,  2)
-            return (xp1 - xm2) * xm1 - state + F
-
-        # ── Solve ODE for the batch duration (max_additions windows) ──────────
-        t_eval_fine = np.linspace(0.0, total_time_batch, total_fine_steps_batch + 1)
-        sol = solve_ivp(
-            lorenz_96,
-            t_span=[0.0, total_time_batch],
-            y0=np.array(u_true),
-            t_eval=t_eval_fine,
-            rtol=1e-9, atol=1e-11,
-        )
-        x_true_fine   = sol.y.T                                   # (total_fine_steps_batch+1, N)
-        x_true_at_obs = x_true_fine[obs_step_indices_batch + 1]  # (T_obs, N)
-
-        # ── Build observation sequence indexed over T_obs events ───────────────
-        H_list, y_obs_list = [], []
-
-        for obs_idx in range(T_obs):
-            x_true_t = x_true_at_obs[obs_idx]   # (N,)
-
-            if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
-                key, subkey = jax.random.split(key)
-                obs_idx_vars = jax.random.choice(subkey, N, shape=(m,), replace=False)
-            else:
-                obs_idx_vars = obs_indices
-
-            m_t = len(obs_idx_vars)
-            H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx_vars].set(1.0)
-            key, subkey = jax.random.split(key)
-            noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
-            y_t   = x_true_t[obs_idx_vars] + noise
-
-            H_list.append(H_t)
-            y_obs_list.append(y_t)
-
-        H_seq     = jnp.stack(H_list)      # (T_obs, m, N)
-        y_obs_seq = jnp.stack(y_obs_list)  # (T_obs, m)
-
-        # Perturbed IC
-        key, key_ic = jax.random.split(key)
-        x0_hat = u_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
-
-        # Run EKF smoother — returns (total_fine_steps_batch, N)
-        x_hats, _, prior_means_at_obs = run_ekf_smoother(
-            predict_fn, update_fn,
-            x0_hat, P0,
-            y_obs_seq,
-            obs_step_indices_batch,
-            H_seq,
-            Q_fine,
-            R,
-            total_fine_steps_batch,
-            dt_fine=dt_fine,
-            dt_window=dt_window,
-        )
-
-        # ── Posterior means at observation steps ──────────────────────────────
-        # x_hats is indexed by fine step (0-based); the update has already been
-        # applied at obs_step_indices_batch[k], so x_hats at that index is the
-        # *posterior* mean.
-        post_means_at_obs = x_hats[obs_step_indices_batch]   # (T_obs, N)
-
-        # ── ERF for this IC ───────────────────────────────────────────────────
-        prior_rmse = np.sqrt(np.mean(
-            (np.array(prior_means_at_obs) - x_true_at_obs) ** 2, axis=1
-        ))  # (T_obs,)
-        post_rmse  = np.sqrt(np.mean(
-            (np.array(post_means_at_obs)  - x_true_at_obs) ** 2, axis=1
-        ))  # (T_obs,)
-
-        erf_ic = prior_rmse / (post_rmse + 1e-12)              # (T_obs,)
-        erf_sum    += erf_ic
-        erf_sq_sum += erf_ic ** 2
-
-        prior_rmse_sum    += prior_rmse
-        prior_rmse_sq_sum += prior_rmse ** 2
-        post_rmse_sum     += post_rmse
-        post_rmse_sq_sum  += post_rmse ** 2
-
-        # Accumulate per-window L2 for this IC
-        for k in range(max_additions):
-            ref_k   = rollout_states[k][ic]   # (N,)
-            step_k  = window_step_indices[k]
-            x_hat_k = x_hats[step_k]          # (N,)
-
-            ekf_l2_sum[k] += float(
-                jnp.linalg.norm(x_hat_k - ref_k)
-                / (jnp.linalg.norm(ref_k) + 1e-12)
-            )
-
-    # Open-loop: much cheaper — run all ICs at once
-    ol_l2     = np.zeros(max_additions)
-    u_current = u0_original
-    for k in range(max_additions):
-        u_current = predict_one_window(u_current)
-        ref_k     = rollout_states[k]
-        numer     = jnp.linalg.norm(u_current - ref_k, axis=1)
-        denom     = jnp.linalg.norm(ref_k,              axis=1)
-        ol_l2[k]  = float(jnp.mean(numer / (denom + 1e-12)))
-
-    l2_ekf = ekf_l2_sum / B
-
-    # ── ERF statistics ────────────────────────────────────────────────────────
-    erf_mean = erf_sum    / B
-    erf_std  = np.sqrt(np.maximum(erf_sq_sum / B - erf_mean ** 2, 0.0))
-
-    # ── Plotting ──────────────────────────────────────────────────────────────
-    save_dir  = os.path.join(workdir, "figures", config.wandb.name)
-    save_path = os.path.join(save_dir, "batch_l2_per_window_ekf.pdf")
-    _plot_l2_per_window(
-        curves={
-            "Open-loop (DeepONet)": ol_l2,
-            "EKF estimate":         l2_ekf,
-        },
-        dt        = dt_window,
-        title     = f"EKF vs open-loop: batch-average L2 per window  (B={B})",
-        save_path = save_path,
-        colors    = {"Open-loop (DeepONet)": "#2196F3", "EKF estimate": "#FF5722"},
-    )
-
-    # ── Error Reduction Factor plot ────────────────────────────────────────────
-    erf_save_path = os.path.join(save_dir, "batch_erf_ekf.pdf")
-    _plot_erf(
-        obs_times  = obs_times_batch,
-        erf_mean   = erf_mean,
-        erf_std    = erf_std,
-        n_traj     = B,
-        title      = (
-            f"EKF Error Reduction Factor per observation time\n"
-            f"(B={B} trajectories, "
-            f"obs every {obs_every_n}th var, σ_obs={sigma_obs}, dt_obs={dt_obs:.3g})"
-        ),
-        save_path  = erf_save_path,
-    )
-
-    # ── Prior / Posterior RMSE vs noise level ────────────────────────────────
-    prior_rmse_mean = prior_rmse_sum    / B
-    prior_rmse_std  = np.sqrt(np.maximum(
-        prior_rmse_sq_sum / B - prior_rmse_mean ** 2, 0.0))
-    post_rmse_mean  = post_rmse_sum     / B
-    post_rmse_std   = np.sqrt(np.maximum(
-        post_rmse_sq_sum  / B - post_rmse_mean  ** 2, 0.0))
-
-    rmse_save_path = os.path.join(save_dir, "batch_rmse_ekf.pdf")
-    _plot_rmse_comparison(
-        obs_times       = obs_times_batch,
-        prior_rmse_mean = prior_rmse_mean,
-        prior_rmse_std  = prior_rmse_std,
-        post_rmse_mean  = post_rmse_mean,
-        post_rmse_std   = post_rmse_std,
-        sigma_obs       = sigma_obs,
-        n_traj          = B,
-        title           = (
-            f"EKF prior vs posterior RMSE\n"
-            f"(B={B} trajectories, "
-            f"obs every {obs_every_n}th var, σ_obs={sigma_obs}, dt_obs={dt_obs:.3g})"
-        ),
-        save_path       = rmse_save_path,
-    )
-
 
 def evaluate_with_enkf_dd(config: ml_collections.ConfigDict, workdir: str):
     from examples.KS.kf import EnKFState, run_enkf_smoother, init_ensemble
@@ -1573,3 +1131,448 @@ def _evaluate_batch_l2_enkf(
         save_path       = rmse_save_path,
     )
 
+
+
+# EKF
+
+def evaluate_with_ekf_dd(config: ml_collections.ConfigDict, workdir: str):
+    from examples.KS.kf import EKFState, run_ekf_smoother
+    import numpy as np
+
+    obs_every_n = config.ekf.get("obs_every_n",  4)
+    sigma_obs   = config.ekf.get("sigma_obs",    0.5)
+    sigma_proc  = config.ekf.get("sigma_proc",   0.1)
+    P0_sigma    = config.ekf.get("P0_sigma",     1.0)
+    dynamic_vars = config.ekf.get("dynamic_vars", False)
+
+    specify_obs_idx   = config.kf.get("specify_obs_idx", False)
+    obs_idx_list        = config.kf.get("obs_idx_list", None)
+
+    # ── fine-step and observation timing ─────────────────────────────────────
+    DT_WINDOW = float(config.get("dt_window", 0.25))
+    DT_FINE   = float(config.ekf.get("dt_fine",   DT_WINDOW))
+    DT_OBS    = float(config.ekf.get("dt_obs",    DT_WINDOW))
+    # ─────────────────────────────────────────────────────────────────────────
+    time_steps = 50
+
+    x_ref_all, u0_ref_all, _ = get_dataset()
+    t_star_window = jnp.linspace(0.0, 0.25, 51)
+
+    model     = models.L96UDON_DD(config, t_star_window)
+    ckpt_path = os.path.join(os.getcwd(), config.wandb.ckpt_name, "ckpt", "udon_dd_model")
+    model.state = restore_checkpoint(model.state, ckpt_path)
+    params    = model.state.params
+    N         = model.N
+
+    # ── Build propagator at DT_FINE  ──────────────────────────────────────────
+    predict_fn, update_fn = model.make_ekf_fns(params)
+
+    # ── Q scaled to per-fine-step ─────────────────────────────────────────────
+    steps_per_window = round(DT_WINDOW / DT_FINE)   # validated inside build_obs_schedule
+    Q_coarse = jnp.eye(N) * sigma_proc ** 2
+    Q_fine   = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
+    
+    if specify_obs_idx and obs_idx_list:
+        obs_indices = jnp.array(obs_idx_list)
+    else:
+        obs_indices = jnp.arange(0, N, obs_every_n)
+
+    m  = len(obs_indices)
+    R  = jnp.eye(m) * sigma_obs ** 2
+    P0 = jnp.eye(N) * P0_sigma ** 2
+
+    num_windows = config.training.num_time_windows
+    total_time  = num_windows * DT_WINDOW
+
+    # ── Build schedule once — validates all divisibility constraints ──────────
+    obs_times, obs_step_indices, total_fine_steps = build_obs_schedule(
+        total_time = total_time,
+        dt_fine    = DT_FINE,
+        dt_obs     = DT_OBS,
+    )
+
+    def lorenz_96(t, state, F=6.0):
+        xp1 = np.roll(state, -1); xm1 = np.roll(state, 1); xm2 = np.roll(state, 2)
+        return (xp1 - xm2) * xm1 - state + F
+
+    for ic_idx in range(config.saving.total_plots):
+        logging.info(f"--- EKF Evaluation for IC {ic_idx} ---")
+        u_current_true = u0_ref_all[ic_idx, :]
+
+        # ── Solve ODE at fine resolution (was: only at window boundaries) ─────
+        t_eval_fine = np.linspace(0.0, total_time, total_fine_steps + 1)
+        sol = solve_ivp(
+            lorenz_96,
+            t_span=[0.0, total_time],
+            y0=np.array(u_current_true),
+            t_eval=t_eval_fine,
+            rtol=1e-9, atol=1e-11,
+        )
+        x_true_fine = jnp.array(sol.y.T)              # (total_fine_steps+1, N)
+
+        # Extract ground truth at every observation time
+        # obs_step_indices[k] is 0-indexed; x_true_fine[s+1] is after step s
+        x_true_at_obs = x_true_fine[obs_step_indices + 1]   # (T_obs, N)
+
+        # ── Build observation sequence (indexed over T_obs, not num_windows) ──
+        key = jax.random.PRNGKey(ic_idx)
+        H_list, y_obs_list, obs_coords = [], [], []
+
+        for obs_idx in range(len(obs_times)):
+            x_true_t = x_true_at_obs[obs_idx]          # (N,)
+
+            specify_obs_idx   = config.kf.get("specify_obs_idx", False)
+            obs_idx_list      = config.kf.get("obs_idx_list", None)
+
+            if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
+                key, subkey = jax.random.split(key)
+                obs_idx_vars = jax.random.choice(subkey, N, shape=(m,), replace=False)
+            else:
+                obs_idx_vars = obs_indices
+
+            m_t = len(obs_idx_vars)
+            H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx_vars].set(1.0)
+
+            key, subkey = jax.random.split(key)
+            noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
+            y_t   = x_true_t[obs_idx_vars] + noise
+
+            H_list.append(H_t)
+            y_obs_list.append(y_t)
+            for j, vi in enumerate(obs_idx_vars):
+                obs_coords.append((int(vi), obs_times[obs_idx], float(y_t[j])))
+
+        H_seq     = jnp.stack(H_list)       # (T_obs, m, N)
+        y_obs_seq = jnp.stack(y_obs_list)   # (T_obs, m)
+
+        # ── Perturbed IC ──────────────────────────────────────────────────────
+        key, key_ic = jax.random.split(key)
+        x0_hat = u_current_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
+
+        # ── Run EKF smoother ──────────────────────────────────────────────────
+        x_hats, Ps, _ = run_ekf_smoother(
+            predict_fn, update_fn,
+            x0_hat, P0,
+            y_obs_seq,
+            obs_step_indices,      # replaces obs_mask
+            H_seq,
+            Q_fine,                # per-fine-step
+            R,
+            total_fine_steps,      # replaces observations.shape[0] as loop bound
+            dt_fine=DT_FINE,
+            dt_window=DT_WINDOW,
+        )
+        # x_hats: (total_fine_steps, N) — dense output at every fine step
+
+        # ── Extract states at window boundaries for L2 comparison ─────────────
+        window_step_indices = np.array([
+            round((w + 1) * DT_WINDOW / DT_FINE) - 1
+            for w in range(num_windows)
+        ])
+        x_hats_at_windows    = x_hats[window_step_indices]     # (num_windows, N)
+        x_true_at_windows    = x_true_fine[window_step_indices + 1]
+
+        ekf_std_fine = np.sqrt(np.clip(
+            np.diagonal(np.array(Ps), axis1=1, axis2=2), 0, None
+        ))
+        ekf_std_at_windows = ekf_std_fine[window_step_indices]
+
+        # ── Plots and metrics — pass fine time axis to summary plot ───────────
+        t_fine_axis = t_eval_fine[1:]   # (total_fine_steps,) — exclude t=0
+
+        _plot_trajectory_summary(
+            t_ax       = t_fine_axis,
+            x_true     = np.array(x_true_fine[1:]),
+            x_est      = np.array(x_hats),
+            x_std      = ekf_std_fine,
+            ic_idx     = ic_idx,
+            est_label  = "EKF estimate",
+            save_path  = os.path.join(
+                workdir, "figures", config.wandb.name,
+                f"trajectory_summary_ekf_ic_{ic_idx}.pdf",
+            ),
+            N          = model.N,
+            dt_window  = DT_WINDOW,    # NEW
+            obs_coords = obs_coords,   # NEW
+        )
+
+        l2_ekf = jnp.linalg.norm(x_hats_at_windows - x_true_at_windows) \
+               / jnp.linalg.norm(x_true_at_windows)
+        print(f"IC {ic_idx} | EKF L2 (at window boundaries): {l2_ekf:.3e}")
+
+    # batch evaluation
+    _evaluate_batch_l2_ekf(
+        model, params, t_star_window,
+        predict_fn, update_fn,
+        Q_fine, R, P0,
+        obs_every_n, sigma_obs, P0_sigma,
+        dynamic_vars,
+        DT_FINE, DT_OBS,
+        config, workdir,
+    )
+
+
+def _evaluate_batch_l2_ekf(
+    model, params, t_star_window,
+    predict_fn, update_fn,
+    Q_fine, R, P0,
+    obs_every_n, sigma_obs, P0_sigma,
+    dynamic_vars,
+    dt_fine: float,
+    dt_obs:  float,
+    config, workdir,
+):
+    """
+    Compute and plot the batch-averaged L2 error per window for both the
+    open-loop DeepONet rollout and the EKF estimate.
+
+    Called at the end of evaluate_with_ekf().
+
+    For each IC in the pool:
+      • Open-loop:  autoregressively roll out the model for k windows.
+      • EKF:        run run_ekf_smoother up to window k, take the final
+                    filtered estimate.
+    Both errors are averaged over all ICs and plotted together.
+
+    Notes
+    -----
+    Running the full EKF smoother for every IC in the pool can be expensive.
+    The batch size used here is capped at `ekf_batch_size` (default 200) ICs
+    to keep wall-clock time manageable; this can be overridden via
+    config.ekf.get("batch_l2_size", 200).
+    """
+    from examples.KS.kf import run_ekf_smoother, EKFState
+
+    specify_obs_idx = config.kf.get("specify_obs_idx", False)
+    obs_idx_list    = config.kf.get("obs_idx_list", None)
+
+    dt_window     = config.get("dt_window", 0.25)
+    max_additions = config.training.get("max_additions", 5)
+    N             = model.N
+    mat_path      = os.path.join(
+        "data",
+        config.training.get("augmentation_file_name_eval", "train_rollouts_025.mat"),
+    )
+    ekf_batch_size = config.ekf.get("batch_l2_size", 200)
+
+    logging.info("Computing batch L2 per window (open-loop vs EKF) …")
+    u0_original, rollout_states = _load_l2_eval_pool(mat_path, max_additions, N)
+
+    # Cap batch size
+    B = min(u0_original.shape[0], ekf_batch_size)
+    u0_original   = u0_original[:B]
+    rollout_states = [r[:B] for r in rollout_states]
+    logging.info(f"  Using {B} ICs from pool for batch L2 evaluation.")
+
+    # Open-loop: vmapped single-window predictor
+    predict_one_window = jax.jit(
+        jax.vmap(lambda u: model.x_pred_fn(params, u, t_star_window)[-1], in_axes=0)
+    )
+
+    if specify_obs_idx and obs_idx_list:
+        obs_indices = jnp.array(obs_idx_list)
+    else:
+        obs_indices = jnp.arange(0, N, obs_every_n)
+
+    m = len(obs_indices)
+
+    # ── Rebuild schedule for the batch duration ───────────────────────────────
+    total_time_batch = max_additions * dt_window
+    _, obs_step_indices_batch, total_fine_steps_batch = build_obs_schedule(
+        total_time = total_time_batch,
+        dt_fine    = dt_fine,
+        dt_obs     = dt_obs,
+    )
+    T_obs = len(obs_step_indices_batch)
+
+    # Absolute observation times (needed for the ERF x-axis)
+    obs_times_batch = np.array([(k + 1) * dt_obs for k in range(T_obs)])
+
+    # ── Window boundary indices derived directly from dt_fine ─────────────────
+    # Step s is 0-indexed; the state after step s corresponds to time
+    # (s + 1) * dt_fine.  Window k (1-indexed) ends at k * dt_window.
+    window_step_indices = np.array([
+        round((k + 1) * dt_window / dt_fine) - 1
+        for k in range(max_additions)
+    ])
+
+    # Accumulators
+    ekf_l2_sum = np.zeros(max_additions)
+
+    # ERF accumulators — shape (T_obs,); accumulated over B ICs
+    erf_sum    = np.zeros(T_obs)
+    erf_sq_sum = np.zeros(T_obs)   # for std computation
+
+    # ── RMSE accumulators ────────────────────────────────────────────────────
+    prior_rmse_sum    = np.zeros(T_obs)
+    prior_rmse_sq_sum = np.zeros(T_obs)
+    post_rmse_sum     = np.zeros(T_obs)
+    post_rmse_sq_sum  = np.zeros(T_obs)
+
+    for ic in range(B):
+        key    = jax.random.PRNGKey(ic + 9999)   # distinct from per-IC eval keys
+        u_true = u0_original[ic]   # (N,)
+
+        def lorenz_96(t, state, F=6.0):
+            xp1 = np.roll(state, -1)
+            xm1 = np.roll(state,  1)
+            xm2 = np.roll(state,  2)
+            return (xp1 - xm2) * xm1 - state + F
+
+        # ── Solve ODE for the batch duration (max_additions windows) ──────────
+        t_eval_fine = np.linspace(0.0, total_time_batch, total_fine_steps_batch + 1)
+        sol = solve_ivp(
+            lorenz_96,
+            t_span=[0.0, total_time_batch],
+            y0=np.array(u_true),
+            t_eval=t_eval_fine,
+            rtol=1e-9, atol=1e-11,
+        )
+        x_true_fine   = sol.y.T                                   # (total_fine_steps_batch+1, N)
+        x_true_at_obs = x_true_fine[obs_step_indices_batch + 1]  # (T_obs, N)
+
+        # ── Build observation sequence indexed over T_obs events ───────────────
+        H_list, y_obs_list = [], []
+
+        for obs_idx in range(T_obs):
+            x_true_t = x_true_at_obs[obs_idx]   # (N,)
+
+            if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
+                key, subkey = jax.random.split(key)
+                obs_idx_vars = jax.random.choice(subkey, N, shape=(m,), replace=False)
+            else:
+                obs_idx_vars = obs_indices
+
+            m_t = len(obs_idx_vars)
+            H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx_vars].set(1.0)
+            key, subkey = jax.random.split(key)
+            noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
+            y_t   = x_true_t[obs_idx_vars] + noise
+
+            H_list.append(H_t)
+            y_obs_list.append(y_t)
+
+        H_seq     = jnp.stack(H_list)      # (T_obs, m, N)
+        y_obs_seq = jnp.stack(y_obs_list)  # (T_obs, m)
+
+        # Perturbed IC
+        key, key_ic = jax.random.split(key)
+        x0_hat = u_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
+
+        # Run EKF smoother — returns (total_fine_steps_batch, N)
+        x_hats, _, prior_means_at_obs = run_ekf_smoother(
+            predict_fn, update_fn,
+            x0_hat, P0,
+            y_obs_seq,
+            obs_step_indices_batch,
+            H_seq,
+            Q_fine,
+            R,
+            total_fine_steps_batch,
+            dt_fine=dt_fine,
+            dt_window=dt_window,
+        )
+
+        # ── Posterior means at observation steps ──────────────────────────────
+        # x_hats is indexed by fine step (0-based); the update has already been
+        # applied at obs_step_indices_batch[k], so x_hats at that index is the
+        # *posterior* mean.
+        post_means_at_obs = x_hats[obs_step_indices_batch]   # (T_obs, N)
+
+        # ── ERF for this IC ───────────────────────────────────────────────────
+        prior_rmse = np.sqrt(np.mean(
+            (np.array(prior_means_at_obs) - x_true_at_obs) ** 2, axis=1
+        ))  # (T_obs,)
+        post_rmse  = np.sqrt(np.mean(
+            (np.array(post_means_at_obs)  - x_true_at_obs) ** 2, axis=1
+        ))  # (T_obs,)
+
+        erf_ic = prior_rmse / (post_rmse + 1e-12)              # (T_obs,)
+        erf_sum    += erf_ic
+        erf_sq_sum += erf_ic ** 2
+
+        prior_rmse_sum    += prior_rmse
+        prior_rmse_sq_sum += prior_rmse ** 2
+        post_rmse_sum     += post_rmse
+        post_rmse_sq_sum  += post_rmse ** 2
+
+        # Accumulate per-window L2 for this IC
+        for k in range(max_additions):
+            ref_k   = rollout_states[k][ic]   # (N,)
+            step_k  = window_step_indices[k]
+            x_hat_k = x_hats[step_k]          # (N,)
+
+            ekf_l2_sum[k] += float(
+                jnp.linalg.norm(x_hat_k - ref_k)
+                / (jnp.linalg.norm(ref_k) + 1e-12)
+            )
+
+    # Open-loop: much cheaper — run all ICs at once
+    ol_l2     = np.zeros(max_additions)
+    u_current = u0_original
+    for k in range(max_additions):
+        u_current = predict_one_window(u_current)
+        ref_k     = rollout_states[k]
+        numer     = jnp.linalg.norm(u_current - ref_k, axis=1)
+        denom     = jnp.linalg.norm(ref_k,              axis=1)
+        ol_l2[k]  = float(jnp.mean(numer / (denom + 1e-12)))
+
+    l2_ekf = ekf_l2_sum / B
+
+    # ── ERF statistics ────────────────────────────────────────────────────────
+    erf_mean = erf_sum    / B
+    erf_std  = np.sqrt(np.maximum(erf_sq_sum / B - erf_mean ** 2, 0.0))
+
+    # ── Plotting ──────────────────────────────────────────────────────────────
+    save_dir  = os.path.join(workdir, "figures", config.wandb.name)
+    save_path = os.path.join(save_dir, "batch_l2_per_window_ekf.pdf")
+    _plot_l2_per_window(
+        curves={
+            "Open-loop (DeepONet)": ol_l2,
+            "EKF estimate":         l2_ekf,
+        },
+        dt        = dt_window,
+        title     = f"EKF vs open-loop: batch-average L2 per window  (B={B})",
+        save_path = save_path,
+        colors    = {"Open-loop (DeepONet)": "#2196F3", "EKF estimate": "#FF5722"},
+    )
+
+    # ── Error Reduction Factor plot ────────────────────────────────────────────
+    erf_save_path = os.path.join(save_dir, "batch_erf_ekf.pdf")
+    _plot_erf(
+        obs_times  = obs_times_batch,
+        erf_mean   = erf_mean,
+        erf_std    = erf_std,
+        n_traj     = B,
+        title      = (
+            f"EKF Error Reduction Factor per observation time\n"
+            f"(B={B} trajectories, "
+            f"obs every {obs_every_n}th var, σ_obs={sigma_obs}, dt_obs={dt_obs:.3g})"
+        ),
+        save_path  = erf_save_path,
+    )
+
+    # ── Prior / Posterior RMSE vs noise level ────────────────────────────────
+    prior_rmse_mean = prior_rmse_sum    / B
+    prior_rmse_std  = np.sqrt(np.maximum(
+        prior_rmse_sq_sum / B - prior_rmse_mean ** 2, 0.0))
+    post_rmse_mean  = post_rmse_sum     / B
+    post_rmse_std   = np.sqrt(np.maximum(
+        post_rmse_sq_sum  / B - post_rmse_mean  ** 2, 0.0))
+
+    rmse_save_path = os.path.join(save_dir, "batch_rmse_ekf.pdf")
+    _plot_rmse_comparison(
+        obs_times       = obs_times_batch,
+        prior_rmse_mean = prior_rmse_mean,
+        prior_rmse_std  = prior_rmse_std,
+        post_rmse_mean  = post_rmse_mean,
+        post_rmse_std   = post_rmse_std,
+        sigma_obs       = sigma_obs,
+        n_traj          = B,
+        title           = (
+            f"EKF prior vs posterior RMSE\n"
+            f"(B={B} trajectories, "
+            f"obs every {obs_every_n}th var, σ_obs={sigma_obs}, dt_obs={dt_obs:.3g})"
+        ),
+        save_path       = rmse_save_path,
+    )
