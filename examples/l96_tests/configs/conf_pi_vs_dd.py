@@ -65,6 +65,30 @@ def get_config():
     weighting.causal_tol = 0.02
     weighting.num_chunks = 8
 
+    # KF settings
+    config.kf = kf = ml_collections.ConfigDict()
+    kf.specify_obs_idx  = False
+    kf.obs_idx_list     = [0,2,4,8,12,14,16,20,24,26,28,32,36]
+
+    # EKF settings
+    config.ekf = ekf = ml_collections.ConfigDict()
+    ekf.obs_every_n  = 4
+
+    ekf.sigma_obs       = 0.5
+    ekf.sigma_proc      = 0.9 # Unused in EnKF
+    ekf.P0_sigma        = 0.5
+    ekf.dynamic_vars    = False # True -> randpick vars
+    ekf.batch_l2_size   = 200
+
+    ekf.dt_fine = 0.005
+    ekf.dt_obs  = 0.25
+    # dt_fine must divide dt_obs and dt_window
+
+    # EnKF settings
+    config.enkf = ml_collections.ConfigDict()
+    config.enkf.sigma_model = 1.0
+    config.enkf.N_ens       = 100
+
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
     logging.log_every_steps = 500
