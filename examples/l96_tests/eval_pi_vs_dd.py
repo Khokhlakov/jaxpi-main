@@ -12,6 +12,7 @@ from typing import Callable
 from jaxpi.utils import restore_checkpoint
 import examples.l96_tests.models as models
 from examples.l96_tests.utils import get_dataset, build_obs_schedule, scale_Q_for_fine_steps
+from utils import dd_get_test_data_rollout, build_obs_schedule, scale_Q_for_fine_steps
 
 import numpy as np
 from scipy.integrate import solve_ivp
@@ -174,45 +175,6 @@ def _plot_rmse_comparison(
     fig.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
     logging.info(f"RMSE comparison plot saved to: {save_path}")
-
-
-def _evaluate_batch_l2_openloop(model, params, t_star_window, config, model_name):
-    """
-    Compute batch-averaged open-loop L2 error per window for a single model.
-    Returns l2_per_window array.
-    """
-    dt_window    = float(config.get("dt_window", 0.25))
-    max_additions = config.training.get("max_additions", 5)
-    num_vars      = model.N
-    mat_path      = os.path.join(
-        "data",
-        config.training.get("augmentation_file_name_eval", "train_rollouts_025.mat"),
-    )
-
-    logging.info(f"Computing batch L2 per window (open-loop) for {model_name} …")
-    u0_original, rollout_states = _load_l2_eval_pool(mat_path, max_additions, num_vars)
-    B = u0_original.shape[0]
-
-    predict_one_window = jax.jit(
-        jax.vmap(
-            lambda u: model.x_pred_fn(params, u, t_star_window)[-1],
-            in_axes=0,
-        )
-    )
-
-    l2_per_window: list[float] = []
-    u_current = u0_original
-
-    for k in range(max_additions):
-        u_current = predict_one_window(u_current)
-        x_ref_k = rollout_states[k]
-        numer   = jnp.linalg.norm(u_current - x_ref_k, axis=1)
-        denom   = jnp.linalg.norm(x_ref_k, axis=1)
-        l2_mean = float(jnp.mean(numer / (denom + 1e-12)))
-        l2_per_window.append(l2_mean)
-        logging.info(f"  {model_name} Window {k+1:>3d} | mean L2: {l2_mean:.3e}")
-
-    return np.array(l2_per_window), B
 
 
 def _evaluate_batch_l2_enkf(
@@ -424,15 +386,109 @@ def _evaluate_batch_l2_enkf(
     return results
 
 
+def _evaluate_batch_l2_openloop(model, params, t_star_window, config, model_name):
+    """
+    Compute batch-averaged open-loop L2 error per window for a single model.
+    Returns l2_per_window array.
+    """
+    dt_window    = float(config.get("dt_window", 0.25))
+    max_additions = config.training.get("max_additions", 5)
+    num_vars      = model.N
+    mat_path      = os.path.join(
+        "data",
+        config.training.get("augmentation_file_name_eval", "train_rollouts_025.mat"),
+    )
+
+    logging.info(f"Computing batch L2 per window (open-loop) for {model_name} …")
+    u0_original, rollout_states = _load_l2_eval_pool(mat_path, max_additions, num_vars)
+    B = u0_original.shape[0]
+
+    predict_one_window = jax.jit(
+        jax.vmap(
+            lambda u: model.x_pred_fn(params, u, t_star_window)[-1],
+            in_axes=0,
+        )
+    )
+
+    l2_per_window: list[float] = []
+    u_current = u0_original
+
+    for k in range(max_additions):
+        u_current = predict_one_window(u_current)
+        x_ref_k = rollout_states[k]
+        numer   = jnp.linalg.norm(u_current - x_ref_k, axis=1)
+        denom   = jnp.linalg.norm(x_ref_k, axis=1)
+        l2_mean = float(jnp.mean(numer / (denom + 1e-12)))
+        l2_per_window.append(l2_mean)
+        logging.info(f"  {model_name} Window {k+1:>3d} | mean L2: {l2_mean:.3e}")
+
+    return np.array(l2_per_window), B
+
+
+def _evaluate_batch_l2_openloop_dataset2(model, params, t_star_window, test_data_rollout, model_name):
+    """
+    Compute batch-averaged open-loop L2 error per window for a single model
+    using Dataset 2 (rollout tensor). Returns l2_per_window array.
+    """
+    # Unpack dimensions: (B, num_windows, time_steps, state_dim)
+    B, num_windows, time_steps, num_vars = test_data_rollout.shape
+
+    logging.info(f"Computing batch L2 per window (open-loop) for {model_name} (Dataset 2) …")
+
+    predict_one_window = jax.jit(
+        jax.vmap(
+            lambda u: model.x_pred_fn(params, u, t_star_window)[-1],
+            in_axes=0,
+        )
+    )
+
+    l2_per_window: list[float] = []
+    # Initialize with the first time step of the first window
+    u_current = test_data_rollout[:, 0, 0, :] 
+
+    for k in range(num_windows):
+        u_current = predict_one_window(u_current)
+        x_ref_k = test_data_rollout[:, k, -1, :]  # Ground truth at end of window k
+        
+        numer   = jnp.linalg.norm(u_current - x_ref_k, axis=1)
+        denom   = jnp.linalg.norm(x_ref_k, axis=1)
+        l2_mean = float(jnp.mean(numer / (denom + 1e-12)))
+        l2_per_window.append(l2_mean)
+        logging.info(f"  {model_name} DS2 Window {k+1:>3d} | mean L2: {l2_mean:.3e}")
+
+    return np.array(l2_per_window), B
+
+
 def evaluate_and_compare_openloop(config: ml_collections.ConfigDict, workdir: str):
     """
-    Run open-loop evaluation for both PI and DD models and create comparison plots.
+    Run open-loop evaluation for both PI and DD models and create comparison plots 
+    for both datasets.
     """
+    dt_window = float(config.get("dt_window", 0.25))
+    
+    # -------------------------------------------------------------------------
+    # 1. Prepare Data Grids
+    # -------------------------------------------------------------------------
+    # Dataset 1
     x_ref_all, u0_ref_all, t_star_window = get_dataset()
     time_steps = 50
     t_star_window = t_star_window[0:time_steps]
 
-    # Load PI model
+    # Data set 2
+    time_steps_2 = 51
+    num_windows_test_2 = 31
+    t_star_window_2 = jnp.linspace(0.0, dt_window, time_steps_2)
+    
+    # Load test data: shape (200, 31, 51, 40)
+    test_data_rollout = dd_get_test_data_rollout(
+        data_dir=config.training.get("data_dir", "data/"),
+        windows_per_traj=num_windows_test_2,
+    )
+    logging.info(f"Loaded test data (Dataset 2): {test_data_rollout.shape}")
+
+    # -------------------------------------------------------------------------
+    # 2. Load Models
+    # -------------------------------------------------------------------------
     logging.info("Loading PI model...")
     model_pi = models.L96UDON(config, t_star_window)
     ckpt_path_pi = os.path.join(
@@ -441,7 +497,6 @@ def evaluate_and_compare_openloop(config: ml_collections.ConfigDict, workdir: st
     model_pi.state = restore_checkpoint(model_pi.state, ckpt_path_pi)
     params_pi = model_pi.state.params
 
-    # Load DD model
     logging.info("Loading DD model...")
     model_dd = models.L96UDON_DD(config, t_star_window)
     ckpt_path_dd = os.path.join(
@@ -450,28 +505,51 @@ def evaluate_and_compare_openloop(config: ml_collections.ConfigDict, workdir: st
     model_dd.state = restore_checkpoint(model_dd.state, ckpt_path_dd)
     params_dd = model_dd.state.params
 
-    dt_window = float(config.get("dt_window", 0.25))
-
-    # Compute L2 for both models
-    l2_pi, B_pi = _evaluate_batch_l2_openloop(model_pi, params_pi, t_star_window, config, "PI")
-    l2_dd, B_dd = _evaluate_batch_l2_openloop(model_dd, params_dd, t_star_window, config, "DD")
-
-    assert B_pi == B_dd, "Batch sizes should match"
-    B = B_pi
-
-    # Plot comparison
+    # Create figure directory
     save_dir = os.path.join(workdir, "figures", "pi_vs_dd")
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, "batch_l2_per_window_openloop.pdf")
 
+    # -------------------------------------------------------------------------
+    # 3. Evaluate and Plot Dataset 1
+    # -------------------------------------------------------------------------
+    l2_pi_ds1, B_ds1 = _evaluate_batch_l2_openloop(model_pi, params_pi, t_star_window, config, "PI")
+    l2_dd_ds1, _ = _evaluate_batch_l2_openloop(model_dd, params_dd, t_star_window, config, "DD")
+
+    save_path_ds1 = os.path.join(save_dir, "batch_l2_per_window_openloop.pdf")
     _plot_l2_comparison(
         curves={
-            "Open-loop (PI DeepONet)": l2_pi,
-            "Open-loop (DD DeepONet)": l2_dd,
+            "Open-loop (PI DeepONet)": l2_pi_ds1,
+            "Open-loop (DD DeepONet)": l2_dd_ds1,
         },
         dt=dt_window,
-        title=f"Open-loop: PI vs DD (B={B})",
-        save_path=save_path,
+        title=f"Open-loop: PI vs DD (Dataset 1, B={B_ds1})",
+        save_path=save_path_ds1,
+        colors={
+            "Open-loop (PI DeepONet)": "#2196F3",
+            "Open-loop (DD DeepONet)": "#FF5722",
+        },
+    )
+
+    # -------------------------------------------------------------------------
+    # 4. Evaluate and Plot Dataset 2
+    # -------------------------------------------------------------------------
+    # Note: We pass t_star_window_2 here since Dataset 2 has 51 steps
+    l2_pi_ds2, B_ds2 = _evaluate_batch_l2_openloop_dataset2(
+        model_pi, params_pi, t_star_window_2, test_data_rollout, "PI"
+    )
+    l2_dd_ds2, _ = _evaluate_batch_l2_openloop_dataset2(
+        model_dd, params_dd, t_star_window_2, test_data_rollout, "DD"
+    )
+
+    save_path_ds2 = os.path.join(save_dir, "batch_l2_per_window_openloop_dataset2.pdf")
+    _plot_l2_comparison(
+        curves={
+            "Open-loop (PI DeepONet)": l2_pi_ds2,
+            "Open-loop (DD DeepONet)": l2_dd_ds2,
+        },
+        dt=dt_window,
+        title=f"Open-loop: PI vs DD (Dataset 2, B={B_ds2})",
+        save_path=save_path_ds2,
         colors={
             "Open-loop (PI DeepONet)": "#2196F3",
             "Open-loop (DD DeepONet)": "#FF5722",
