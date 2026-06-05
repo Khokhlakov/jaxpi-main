@@ -118,7 +118,7 @@ def generate_datasets(
     # Pre-compute steps as pure Python integers
     # ==========================================
     burn_steps = int(t_burn / dt)
-    interval_steps = int(5.5 / dt)
+    interval_steps = int(1.0 / dt)
 
     # 2. Define Scanning Functions 
     # (No @jax.jit needed here; they inherit compilation from simulate_sample)
@@ -202,4 +202,4 @@ if __name__ == "__main__":
                       N=256, 
                       dt=0.005, 
                       t_burn=100.0, 
-                      max_additions=2)
+                      max_additions=168)
