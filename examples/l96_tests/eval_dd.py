@@ -10,8 +10,8 @@ from flax.jax_utils import replicate
 from typing import Callable
 
 from jaxpi.utils import restore_checkpoint
-import examples.l96_n40_f6_ics.models as models
-from examples.l96_n40_f6_ics.utils import get_dataset, build_obs_schedule, scale_Q_for_fine_steps
+import examples.l96_tests.models as models
+from examples.l96_tests.utils import get_dataset, build_obs_schedule, scale_Q_for_fine_steps
 
 import numpy as np
 from scipy.integrate import solve_ivp

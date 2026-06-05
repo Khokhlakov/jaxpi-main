@@ -13,11 +13,11 @@ from ml_collections import config_flags
 import jax
 jax.config.update("jax_default_matmul_precision", "highest")
 
-import examples.l96_n40_f6_ics.train as train
-import examples.l96_n40_f6_ics.eval as eval
-import examples.l96_n40_f6_ics.MLP_models as MLP_models
-import examples.l96_n40_f6_ics.eval_dd as eval_dd
-import examples.l96_n40_f6_ics.eval_pi_vs_dd as eval_pi_vs_dd
+import examples.l96_tests.train as train
+import examples.l96_tests.eval as eval
+import examples.l96_tests.MLP_models as MLP_models
+import examples.l96_tests.eval_dd as eval_dd
+import examples.l96_tests.eval_pi_vs_dd as eval_pi_vs_dd
 
 
 FLAGS = flags.FLAGS
@@ -72,6 +72,13 @@ def main(argv):
 
     elif FLAGS.config.mode == "eval_mlp_enkf":
         MLP_models.evaluate_mlp_with_enkf(FLAGS.config, FLAGS.workdir)
+
+    elif FLAGS.config.mode == "eval_pi_vs_dd":
+        eval_pi_vs_dd.evaluate_and_compare_openloop(FLAGS.config, FLAGS.workdir)
+
+    elif FLAGS.config.mode == "eval_pi_vs_dd_enkf":
+        eval_pi_vs_dd.evaluate_and_compare_with_enkf(FLAGS.config, FLAGS.workdir)
+    
 
 if __name__ == "__main__":
     flags.mark_flags_as_required(["config", "workdir"])

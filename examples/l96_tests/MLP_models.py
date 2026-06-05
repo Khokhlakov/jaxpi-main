@@ -17,8 +17,8 @@ import matplotlib.pyplot as plt
 import wandb
  
 from jaxpi import archs
-from examples.KS.utils import build_obs_schedule, scale_Q_for_fine_steps, get_dataset
-from examples.KS.eval import (
+from examples.l96_tests.utils import build_obs_schedule, scale_Q_for_fine_steps, get_dataset
+from examples.l96_tests.eval import (
     _load_l2_eval_pool,
     _plot_l2_per_window,
     _plot_trajectory_summary,
