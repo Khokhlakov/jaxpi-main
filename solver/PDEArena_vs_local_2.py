@@ -1,103 +1,64 @@
 import h5py
-from huggingface_hub import hf_hub_download
 import numpy as np
 import matplotlib.pyplot as plt
 
-from  ks_solver_CPU import KuramotoSivashinskyAdvanced 
+from ks_solver_CPU import KuramotoSivashinskyAdvanced 
 
-def load_split_and_calculate_L(num_test_samples: int = 128) -> dict:
+def load_local_ks_data(file_path: str = "solver\ks_test_data.h5") -> dict:
     """
-    Loads the Kuramoto-Sivashinsky fixed viscosity dataset from an HDF5 file
-    and splits it into training and testing sets.
+    Loads the Kuramoto-Sivashinsky dataset from a local HDF5 file.
+    Expects a dataset 'u' and attributes 'L', 'N', 'dt'.
     """
-    repo_id     = "phlippe/Kuramoto-Sivashinsky-1D"
-    file_name   = "KS_train_fixed_viscosity.h5"
     print("=" * 60)
+    print(f"Loading local dataset from {file_path}...")
     
-    try:
-        print(f"Downloading {file_name}...")
-        file_path = hf_hub_download(
-            repo_id=repo_id,
-            filename=file_name,
-            repo_type="dataset"
-        )
-        print(f"Downloaded to cache. Opening file...\n")
-            
-    except Exception as e:
-        print(f"Error processing {file_name}: {e}")
-
-    split_data = {
-        "train": {},
-        "test": {}
-    }
-    
-    dataset_keys = ["dt", "dx", "pde_140-256", "t", "x"]
-    
+    data = {}
     with h5py.File(file_path, "r") as f:
-        for key in dataset_keys:
-            full_path = f"train/{key}"
-            data = f[full_path][:]
-            total_samples = data.shape[0]
-            
-            if total_samples <= num_test_samples:
-                raise ValueError(f"Dataset only has {total_samples} samples, cannot extract {num_test_samples} for testing.")
-            
-            train_size = total_samples - num_test_samples
-            
-            split_data["train"][key] = data[:train_size]
-            split_data["test"][key] = data[train_size:]
-            
-    for split_name in ["train", "test"]:
-        dx_array = split_data[split_name]["dx"]
-        x_array = split_data[split_name]["x"]
+        data["u"] = f["u"][:]
+        data["L"] = f.attrs["L"]
+        data["N"] = f.attrs["N"]
+        data["dt"] = f.attrs["dt"]
         
-        num_spatial_points = x_array.shape[1] 
-        split_data[split_name]["L"] = dx_array * num_spatial_points
-            
-    return split_data
+    return data
 
 if __name__ == "__main__":
-    file_path = "KS_train_fixed_viscosity.h5"  
+    file_path = "solver\ks_test_data.h5"  
     
     try:
-        data_splits = load_split_and_calculate_L(num_test_samples=128)
-        print("Data split successfully!\n")
+        data = load_local_ks_data(file_path)
+        print("Data loaded successfully!\n")
         
-        print("=" * 50)
-        print(" DOMAIN LENGTH (L) ANALYSIS ")
-        print("=" * 50)
+        u_dataset = data["u"]
+        L_val = data["L"]
+        N_modes = data["N"]
+        dt_val = data["dt"]
         
-        for split in ["train", "test"]:
-            L_values = data_splits[split]["L"]
+        # Handle potential 3D arrays (e.g., if multiple samples were saved as a batch)
+        if u_dataset.ndim == 3:
+            print("Dataset has 3 dimensions (Samples, Time, Space). Selecting the first sample.")
+            u = u_dataset[0]
+        else:
+            u = u_dataset
             
-            print(f"--- {split.upper()} SPLIT ---")
-            print(f"Number of L values: {len(L_values)}")
-            print(f"Minimum L value:    {np.min(L_values):.4f}")
-            print(f"Maximum L value:    {np.max(L_values):.4f}")
-            print(f"Mean L value:       {np.mean(L_values):.4f}")
-            print(f"Standard Dev of L:  {np.std(L_values):.4f}\n")
-            
+        # Reconstruct spatial and temporal grids missing from the basic .h5 structure
+        x = np.linspace(0, L_val, N_modes, endpoint=False)
+        t = np.arange(u.shape[0]) * dt_val
+        
         # ==========================================
-        # FIRST SAMPLE ANALYSIS 
+        # SAMPLE ANALYSIS 
         # ==========================================
         print("=" * 50)
-        print(" FIRST SAMPLE ANALYSIS ")
+        print(" DATASET SAMPLE ANALYSIS ")
         print("=" * 50)
-        
-        train_data = data_splits["train"]
-        
-        idx = 104
-        u = train_data["pde_140-256"][idx]  # Shape: (Time, Space)
-        x = train_data["x"][idx]            
-        t = train_data["t"][idx]            
-        L_val = train_data["L"][idx]        
         
         initial_condition = u[0, :]
         eval_start = t[0]
         eval_end = t[-1]
+        t_final = eval_end - eval_start
         
         print(f"Domain Length (L): {L_val:.4f}")
-        print(f"Evaluation Time:   {eval_start:.4f} to {eval_end:.4f} (Total Duration: {eval_end - eval_start:.4f})")
+        print(f"Number of Modes (N): {N_modes}")
+        print(f"Evaluation Time:   {eval_start:.4f} to {eval_end:.4f} (Total Duration: {t_final:.4f})")
         print(f"Initial Condition: \n{initial_condition}\n")
         
         # ==========================================
@@ -107,21 +68,17 @@ if __name__ == "__main__":
         print(" LOCAL SOLVER EXECUTION ")
         print("=" * 50)
         
-        N_modes = len(x)
-        dt_val = train_data["dt"][0] if "dt" in train_data else 0.05 
-        t_final = eval_end - eval_start
-        
-        dataset_frame_dt = t[1] - t[0]
-        calculated_save_freq = max(1, int(dataset_frame_dt / dt_val))
+        # Assuming the dt stored in the .h5 acts as both integration step and frame interval
+        calculated_save_freq = 1 
 
-        print(f"Configuration mapped from dataset:")
+        print(f"Configuration mapped from local dataset:")
         print(f"  Domain length: L = {L_val:.4f}")
         print(f"  Number of modes: N = {N_modes}")
         print(f"  Spatial step: Δx = {L_val/N_modes:.6f}")
         print(f"  Time step: Δt = {dt_val}")
         print(f"  Final time: T = {t_final:.4f}")
         print(f"  Integration steps: {int(t_final/dt_val)}")
-        print(f"  Save frequency: {calculated_save_freq} steps (to match dataset time grid)\n")
+        print(f"  Save frequency: {calculated_save_freq} steps (1:1 with dataset)\n")
 
         solver_ran_successfully = False
 
@@ -146,7 +103,6 @@ if __name__ == "__main__":
         if solver_ran_successfully:
             try:
                 # Convert the internal list history attributes into numpy arrays
-                # FIX: Add eval_start to shift the solver's clock to match the dataset phase
                 t_solver = np.array(solver.time_history) + eval_start
                 u_solver = np.array(solver.solution_history)
                 
@@ -156,12 +112,12 @@ if __name__ == "__main__":
                 # Dataset Plot
                 X, T = np.meshgrid(x, t)
                 mesh1 = axes[0].pcolormesh(X, T, u, shading='auto', cmap='inferno')
-                axes[0].set_title('Dataset')
+                axes[0].set_title('Dataset (ks_test_data.h5)')
                 axes[0].set_xlabel('Space ($x$)')
                 axes[0].set_ylabel('Absolute Time ($t$)')
                 fig.colorbar(mesh1, ax=axes[0], label='$u(x, t)$')
                 
-                # Solver Plot (Now perfectly in phase)
+                # Solver Plot
                 X_sol, T_sol = np.meshgrid(x, t_solver)
                 mesh2 = axes[1].pcolormesh(X_sol, T_sol, u_solver, shading='auto', cmap='inferno')
                 axes[1].set_title('Local Solver')
@@ -186,11 +142,13 @@ if __name__ == "__main__":
             mesh = plt.pcolormesh(X, T, u, shading='auto', cmap='inferno')
             plt.colorbar(mesh, label='$u(x, t)$')
             
-            plt.title('Kuramoto-Sivashinsky Dynamics - Dataset (First Sample)')
+            plt.title('Kuramoto-Sivashinsky Dynamics - Local Dataset')
             plt.xlabel('Space ($x$)')
             plt.ylabel('Time ($t$)')
             plt.tight_layout()
             plt.show()
 
     except FileNotFoundError:
-        print(f"Error: Could not find {file_path}. Please check your local path.")
+        print(f"Error: Could not find '{file_path}'. Please ensure the file is in the same directory as the script.")
+    except KeyError as e:
+        print(f"Error reading dataset structure: missing key {e}. Ensure the .h5 file has 'u' and attributes 'L', 'N', 'dt'.")

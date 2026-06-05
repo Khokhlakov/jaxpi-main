@@ -6,13 +6,49 @@ Examples of basic usage patterns and common workflows.
 
 import numpy as np
 import matplotlib.pyplot as plt
-from ks_solver_advanced import KuramotoSivashinskyAdvanced
+from solver.ks_solver_CPU import KuramotoSivashinskyAdvanced
 
 
 # ==============================================================================
 # EXAMPLE 1: Basic Usage
 # ==============================================================================
 def example_basic():
+    L_val   = 32
+    N_modes = 128
+    dt_val  = 0.05
+    t_final = 100
+
+    solver = KuramotoSivashinskyAdvanced(L=L_val, N=N_modes, dt=dt_val)
+    u0 = np.cos(solver.x / 16) + 0.1 * np.sin(solver.x / 8)
+    print(f"ASD {len(solver.x)}")
+    solver.set_initial_condition(u0)
+
+    solver.integrate(t_final, save_freq=10)
+    
+    t_solver = np.array(solver.time_history)
+    u_solver = np.array(solver.solution_history)
+    
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # Solver Plot
+    X_sol, T_sol = np.meshgrid(solver.x, t_solver)
+    mesh2 = ax.pcolormesh(X_sol, T_sol, u_solver, shading='auto', cmap='inferno')
+
+    # Configuración de etiquetas y títulos
+    ax.set_title(f'1D KS. L={L_val}, N_modes={N_modes}')
+    ax.set_xlabel('Space ($x$)')
+    ax.set_ylabel('Time ($t$)')  # Se agrega el eje Y ya que no se comparte
+
+    # Barra de color para el gráfico único
+    fig.colorbar(mesh2, ax=ax, label='$u(x, t)$')
+
+    plt.tight_layout()
+    plt.show()
+
+    solver.plot_solution()
+    plt.show()
+
+def example_basic2():
     """Minimal working example."""
     print("\nExample 1: Basic Usage")
     print("-" * 60)
@@ -94,7 +130,8 @@ def example_initial_conditions():
         axes[idx].grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('/home/claude/initial_conditions.png', dpi=150)
+    # Saves to current working directory in Windows
+    plt.savefig('initial_conditions.png', dpi=150)
     print("Figure saved: initial_conditions.png")
 
 
@@ -175,7 +212,8 @@ def example_monitoring():
         ax.set_xlabel('Time')
     
     plt.tight_layout()
-    plt.savefig('/home/claude/diagnostics.png', dpi=150)
+    # Saves to current working directory in Windows
+    plt.savefig('diagnostics.png', dpi=150)
     print("\nFigure saved: diagnostics.png")
 
 
@@ -224,7 +262,8 @@ def example_parameter_study():
             axes[idx].set_xlabel('$x$')
     
     plt.tight_layout()
-    plt.savefig('/home/claude/parameter_study.png', dpi=150)
+    # Saves to current working directory in Windows
+    plt.savefig('parameter_study.png', dpi=150)
     print("\nFigure saved: parameter_study.png")
 
 
@@ -293,7 +332,8 @@ def example_animation_data():
     cbar.set_label('$u(x,t)$')
     
     plt.tight_layout()
-    plt.savefig('/home/claude/animation_data.png', dpi=150)
+    # Saves to current working directory in Windows
+    plt.savefig('animation_data.png', dpi=150)
     print("Space-time diagram saved: animation_data.png")
     print(f"Generated {len(times)} time steps from t=0 to t={times[-1]:.2f}")
 
@@ -308,11 +348,6 @@ def main():
     print("="*70)
     
     example_basic()
-    example_initial_conditions()
-    example_monitoring()
-    example_parameter_study()
-    example_high_resolution()
-    example_animation_data()
     
     print("\n" + "="*70)
     print("All examples completed!")
@@ -322,3 +357,4 @@ def main():
 if __name__ == "__main__":
     main()
     plt.show()
+

@@ -1,5 +1,5 @@
 """
-Improved Kuramoto-Sivashinsky spectral solver with robust ETDRK4 implementation.
+Kuramoto-Sivashinsky spectral solver with robust ETDRK4 implementation.
 
 Uses contour integrals in the complex plane to compute ETD coefficients,
 avoiding the cancellation errors that occur with naive formulas for small dt.
