@@ -1,10 +1,3 @@
-"""
-Data-driven evaluation functions for L96 UDON.
- 
-Mirrors the physics-informed eval functions but uses pre-computed test data
-instead of reference ODE solutions.
-"""
- 
 import os
 import logging
 import numpy as np
@@ -422,268 +415,6 @@ def _evaluate_batch_l2_dd(config, workdir, test_data_rollout):
     )
  
  
-# ── EKF with data-driven model ─────────────────────────────────────────────────
- 
-def evaluate_with_ekf_dd(config: ml_collections.ConfigDict, workdir: str):
-    """
-    Data-driven EKF evaluation: combine DeepONet predictions with Kalman filtering
-    using test dataset as ground truth reference.
-    
-    Uses the same EKF machinery as the physics-informed version, but:
-      - Predictions come from the data-driven DeepONet
-      - Ground truth comes from the test dataset instead of ODE solve
-    """
-    from examples.KS.kf import make_ekf, run_ekf_smoother, scale_Q_for_fine_steps, build_obs_schedule
-    
-    # EKF hyperparameters
-    obs_every_n = config.ekf.get("obs_every_n",  4)
-    sigma_obs   = config.ekf.get("sigma_obs",    0.5)
-    sigma_proc  = config.ekf.get("sigma_proc",   0.1)
-    P0_sigma    = config.ekf.get("P0_sigma",     1.0)
-    dynamic_vars = config.ekf.get("dynamic_vars", False)
-    
-    specify_obs_idx = config.kf.get("specify_obs_idx", False)
-    obs_idx_list    = config.kf.get("obs_idx_list",    None)
-    
-    DT_WINDOW = float(config.get("dt_window", 0.25))
-    DT_FINE   = float(config.ekf.get("dt_fine",   DT_WINDOW))
-    DT_OBS    = float(config.ekf.get("dt_obs",    DT_WINDOW))
-    
-    time_steps = 51
-    num_windows_test = 31
-    
-    # Load test data
-    test_data_rollout = dd_get_test_data_rollout(
-        data_dir=config.training.get("data_dir", "data/"),
-        windows_per_traj=num_windows_test,
-    )
-    
-    # Load model
-    t_star_window = jnp.linspace(0.0, DT_WINDOW, time_steps)
-    model = models.L96UDON_DD(config, t_star_window)
-    ckpt_path = os.path.join(
-        os.getcwd(), config.wandb.name, "ckpt", "udon_dd_model"
-    )
-    model.state = restore_checkpoint(model.state, ckpt_path)
-    params = model.state.params
-    N = model.N
-    
-    # Build EKF propagator using the DeepONet
-    # Wrapper that makes DeepONet callable as (u, t_query) -> u
-    def predict_fn_wrapper(u: jnp.ndarray, t: float) -> tuple[jnp.ndarray, jnp.ndarray]:
-        """Wrapped predictor: returns (x_pred, jacobian)."""
-        # For data-driven, we predict over a window using the network
-        # Map t to appropriate position within window
-        t_query = jnp.array([t])
-        x_pred = model.x_net(params, u, t_query)  # (1, N) or shape with 1 time point
-        x_pred = jnp.squeeze(x_pred)
-        
-        # Compute Jacobian via jacfwd
-        jacobian = jax.jacfwd(lambda u_in: model.x_net(params, u_in, t_query))(u)
-        jacobian = jnp.squeeze(jacobian)
-        
-        return x_pred, jacobian
-    
-    def update_fn(x_prior: jnp.ndarray, P_prior: jnp.ndarray, 
-                  H: jnp.ndarray, y: jnp.ndarray, R: jnp.ndarray) -> tuple:
-        """EKF update step (standard Kalman update)."""
-        innovation = y - H @ x_prior
-        S = H @ P_prior @ H.T + R
-        K = P_prior @ H.T @ jnp.linalg.inv(S)
-        x_post = x_prior + K @ innovation
-        P_post = (jnp.eye(len(x_prior)) - K @ H) @ P_prior
-        return x_post, P_post
-    
-    # Noise covariances
-    steps_per_window = round(DT_WINDOW / DT_FINE)
-    Q_coarse = jnp.eye(N) * sigma_proc ** 2
-    Q_fine   = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
-    
-    if specify_obs_idx and obs_idx_list:
-        obs_indices = jnp.array(obs_idx_list)
-    else:
-        obs_indices = jnp.arange(0, N, obs_every_n)
-    
-    m  = len(obs_indices)
-    R  = jnp.eye(m) * sigma_obs ** 2
-    P0 = jnp.eye(N) * P0_sigma ** 2
-    
-    # Observation schedule
-    total_time = num_windows_test * DT_WINDOW
-    obs_times, obs_step_indices, total_fine_steps = build_obs_schedule(
-        total_time=total_time,
-        dt_fine=DT_FINE,
-        dt_obs=DT_OBS,
-    )
-    
-    # Per-IC evaluation
-    for ic_idx in range(min(config.saving.total_plots, test_data_rollout.shape[0])):
-        logging.info(f"--- EKF (DD) Evaluation for IC {ic_idx} ---")
-        u_current_true = test_data_rollout[ic_idx, 0, 0, :]
-        
-        # Ground truth: concatenate all windows from test data (skip overlaps)
-        x_true_windows = []
-        for win_idx in range(num_windows_test):
-            if win_idx == 0:
-                x_true_windows.append(test_data_rollout[ic_idx, win_idx, :, :])
-            else:
-                x_true_windows.append(test_data_rollout[ic_idx, win_idx, 1:, :])
-        
-        x_true_full = jnp.concatenate(x_true_windows, axis=0)  # (total_t, N)
-        
-        # Build time axis matching the test data
-        t_eval = np.linspace(0.0, total_time, x_true_full.shape[0])
-        
-        # Extract ground truth at observation times (interpolate if necessary)
-        # For simplicity, we'll assume observations happen at available time steps
-        x_true_at_obs_list = []
-        for obs_t in obs_times:
-            # Find closest time step in t_eval
-            closest_idx = np.argmin(np.abs(t_eval - obs_t))
-            x_true_at_obs_list.append(x_true_full[closest_idx])
-        x_true_at_obs = jnp.stack(x_true_at_obs_list)
-        
-        # Build observation sequence
-        key = jax.random.PRNGKey(ic_idx)
-        H_list, y_obs_list, obs_coords = [], [], []
-        
-        for obs_idx in range(len(obs_times)):
-            x_true_t = x_true_at_obs[obs_idx]
-            
-            if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
-                key, subkey = jax.random.split(key)
-                obs_idx_vars = jax.random.choice(subkey, N, shape=(m,), replace=False)
-            else:
-                obs_idx_vars = obs_indices
-            
-            m_t = len(obs_idx_vars)
-            H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx_vars].set(1.0)
-            
-            key, subkey = jax.random.split(key)
-            noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
-            y_t   = x_true_t[obs_idx_vars] + noise
-            
-            H_list.append(H_t)
-            y_obs_list.append(y_t)
-            for j, vi in enumerate(obs_idx_vars):
-                obs_coords.append((int(vi), obs_times[obs_idx], float(y_t[j])))
-        
-        H_seq     = jnp.stack(H_list)
-        y_obs_seq = jnp.stack(y_obs_list)
-        
-        # Perturbed IC
-        key, key_ic = jax.random.split(key)
-        x0_hat = u_current_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
-        
-        # Run EKF smoother
-        x_hats, Ps, _ = run_ekf_smoother(
-            predict_fn_wrapper, update_fn,
-            x0_hat, P0,
-            y_obs_seq,
-            obs_step_indices,
-            H_seq,
-            Q_fine,
-            R,
-            total_fine_steps,
-            dt_fine=DT_FINE,
-            dt_window=DT_WINDOW,
-        )
-        
-        ekf_std = np.sqrt(np.clip(
-            np.diagonal(np.array(Ps), axis1=1, axis2=2), 0, None
-        ))
-        
-        # Upsample true trajectory to match filter output if needed
-        # For now, use the available test data
-        _plot_trajectory_summary(
-            t_ax       = t_eval,
-            x_true     = np.array(x_true_full),
-            x_est      = np.array(x_hats[:x_true_full.shape[0]]),
-            x_std      = ekf_std[:x_true_full.shape[0]] if ekf_std.shape[0] >= x_true_full.shape[0] else None,
-            ic_idx     = ic_idx,
-            est_label  = "EKF (DD) estimate",
-            save_path  = os.path.join(
-                workdir, "figures", config.wandb.name,
-                f"trajectory_summary_ekf_dd_ic_{ic_idx}.pdf",
-            ),
-            N          = N,
-            dt_window  = DT_WINDOW,
-            obs_coords = obs_coords,
-        )
-        
-        # L2 error at window boundaries
-        window_indices = [
-            np.argmin(np.abs(t_eval - (w + 1) * DT_WINDOW))
-            for w in range(num_windows_test)
-        ]
-        x_hats_at_windows = x_hats[window_indices]
-        x_true_at_windows = x_true_full[window_indices]
-        
-        l2_ekf = jnp.linalg.norm(x_hats_at_windows - x_true_at_windows) \
-               / jnp.linalg.norm(x_true_at_windows)
-        print(f"IC {ic_idx} | EKF (DD) L2 (at window boundaries): {l2_ekf:.3e}")
-    
-    # Batch evaluation
-    _evaluate_batch_l2_ekf_dd(config, workdir, test_data_rollout)
- 
- 
-def _evaluate_batch_l2_ekf_dd(config, workdir, test_data_rollout):
-    """
-    Batch-averaged L2 error comparison between data-driven DeepONet and EKF.
-    
-    This is a simplified version that focuses on the open-loop comparison.
-    Full EKF smoother for all ICs is computationally expensive.
-    """
-    time_steps = 51
-    dt_window = float(config.get("dt_window", 0.25))
-    num_windows_test = test_data_rollout.shape[1]
-    num_ics = test_data_rollout.shape[0]
-    N = test_data_rollout.shape[3]
-    
-    # Load model
-    model = models.L96UDON_DD(config, jnp.linspace(0.0, 0.25, time_steps))
-    ckpt_path = os.path.join(
-        os.getcwd(), config.wandb.name, "ckpt", "udon_dd_model"
-    )
-    model.state = restore_checkpoint(model.state, ckpt_path)
-    params = model.state.params
-    
-    t_star_window = jnp.linspace(0.0, dt_window, time_steps)
-    
-    logging.info("Computing batch L2 per window (data-driven open-loop) …")
-    
-    l2_per_window: list[float] = []
-    u_current_batch = test_data_rollout[:, 0, 0, :]
-    
-    predict_one_window = jax.jit(
-        jax.vmap(
-            lambda u: model.x_net(params, u, t_star_window)[-1],
-            in_axes=0,
-        )
-    )
-    
-    for w in range(num_windows_test - 1):
-        u_current_batch = predict_one_window(u_current_batch)
-        x_ref_w = test_data_rollout[:, w + 1, 0, :]
-        
-        numer = jnp.linalg.norm(u_current_batch - x_ref_w, axis=1)
-        denom = jnp.linalg.norm(x_ref_w, axis=1)
-        l2_mean = float(jnp.mean(numer / (denom + 1e-12)))
-        l2_per_window.append(l2_mean)
-        
-        logging.info(f"  Window {w + 1:>3d} | mean L2: {l2_mean:.3e}")
-    
-    save_dir  = os.path.join(workdir, "figures", config.wandb.name)
-    save_path = os.path.join(save_dir, "batch_l2_per_window_ekf_dd.pdf")
-    _plot_l2_per_window(
-        curves    = {"Open-loop (DeepONet DD)": np.array(l2_per_window)},
-        dt        = dt_window,
-        title     = f"Data-driven: batch-average L2 per window  (B={num_ics})",
-        save_path = save_path,
-        colors    = {"Open-loop (DeepONet DD)": "#2196F3"},
-    )
- 
-
 def _plot_erf(
     obs_times:  np.ndarray,   # (T_obs,)  absolute observation times
     erf_mean:   np.ndarray,   # (T_obs,)  mean ERF across trajectories
@@ -815,8 +546,6 @@ def _plot_rmse_comparison(
     fig.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
     logging.info(f"RMSE comparison plot saved to: {save_path}")
-
-
 
 
 # ── EnKF with data-driven model ────────────────────────────────────────────────
@@ -1351,3 +1080,269 @@ def _evaluate_batch_l2_enkf_dd(
     )
     
     logging.info(f"EnKF (DD) batch evaluation complete: B={B}, mean L2 final window = {l2_enkf[-1]:.3e}")
+
+
+
+
+
+# ── EKF with data-driven model ─────────────────────────────────────────────────
+ 
+def evaluate_with_ekf_dd(config: ml_collections.ConfigDict, workdir: str):
+    """
+    Data-driven EKF evaluation: combine DeepONet predictions with Kalman filtering
+    using test dataset as ground truth reference.
+    
+    Uses the same EKF machinery as the physics-informed version, but:
+      - Predictions come from the data-driven DeepONet
+      - Ground truth comes from the test dataset instead of ODE solve
+    """
+    from examples.KS.kf import make_ekf, run_ekf_smoother, scale_Q_for_fine_steps, build_obs_schedule
+    
+    # EKF hyperparameters
+    obs_every_n = config.ekf.get("obs_every_n",  4)
+    sigma_obs   = config.ekf.get("sigma_obs",    0.5)
+    sigma_proc  = config.ekf.get("sigma_proc",   0.1)
+    P0_sigma    = config.ekf.get("P0_sigma",     1.0)
+    dynamic_vars = config.ekf.get("dynamic_vars", False)
+    
+    specify_obs_idx = config.kf.get("specify_obs_idx", False)
+    obs_idx_list    = config.kf.get("obs_idx_list",    None)
+    
+    DT_WINDOW = float(config.get("dt_window", 0.25))
+    DT_FINE   = float(config.ekf.get("dt_fine",   DT_WINDOW))
+    DT_OBS    = float(config.ekf.get("dt_obs",    DT_WINDOW))
+    
+    time_steps = 51
+    num_windows_test = 31
+    
+    # Load test data
+    test_data_rollout = dd_get_test_data_rollout(
+        data_dir=config.training.get("data_dir", "data/"),
+        windows_per_traj=num_windows_test,
+    )
+    
+    # Load model
+    t_star_window = jnp.linspace(0.0, DT_WINDOW, time_steps)
+    model = models.L96UDON_DD(config, t_star_window)
+    ckpt_path = os.path.join(
+        os.getcwd(), config.wandb.name, "ckpt", "udon_dd_model"
+    )
+    model.state = restore_checkpoint(model.state, ckpt_path)
+    params = model.state.params
+    N = model.N
+    
+    # Build EKF propagator using the DeepONet
+    # Wrapper that makes DeepONet callable as (u, t_query) -> u
+    def predict_fn_wrapper(u: jnp.ndarray, t: float) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Wrapped predictor: returns (x_pred, jacobian)."""
+        # For data-driven, we predict over a window using the network
+        # Map t to appropriate position within window
+        t_query = jnp.array([t])
+        x_pred = model.x_net(params, u, t_query)  # (1, N) or shape with 1 time point
+        x_pred = jnp.squeeze(x_pred)
+        
+        # Compute Jacobian via jacfwd
+        jacobian = jax.jacfwd(lambda u_in: model.x_net(params, u_in, t_query))(u)
+        jacobian = jnp.squeeze(jacobian)
+        
+        return x_pred, jacobian
+    
+    def update_fn(x_prior: jnp.ndarray, P_prior: jnp.ndarray, 
+                  H: jnp.ndarray, y: jnp.ndarray, R: jnp.ndarray) -> tuple:
+        """EKF update step (standard Kalman update)."""
+        innovation = y - H @ x_prior
+        S = H @ P_prior @ H.T + R
+        K = P_prior @ H.T @ jnp.linalg.inv(S)
+        x_post = x_prior + K @ innovation
+        P_post = (jnp.eye(len(x_prior)) - K @ H) @ P_prior
+        return x_post, P_post
+    
+    # Noise covariances
+    steps_per_window = round(DT_WINDOW / DT_FINE)
+    Q_coarse = jnp.eye(N) * sigma_proc ** 2
+    Q_fine   = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
+    
+    if specify_obs_idx and obs_idx_list:
+        obs_indices = jnp.array(obs_idx_list)
+    else:
+        obs_indices = jnp.arange(0, N, obs_every_n)
+    
+    m  = len(obs_indices)
+    R  = jnp.eye(m) * sigma_obs ** 2
+    P0 = jnp.eye(N) * P0_sigma ** 2
+    
+    # Observation schedule
+    total_time = num_windows_test * DT_WINDOW
+    obs_times, obs_step_indices, total_fine_steps = build_obs_schedule(
+        total_time=total_time,
+        dt_fine=DT_FINE,
+        dt_obs=DT_OBS,
+    )
+    
+    # Per-IC evaluation
+    for ic_idx in range(min(config.saving.total_plots, test_data_rollout.shape[0])):
+        logging.info(f"--- EKF (DD) Evaluation for IC {ic_idx} ---")
+        u_current_true = test_data_rollout[ic_idx, 0, 0, :]
+        
+        # Ground truth: concatenate all windows from test data (skip overlaps)
+        x_true_windows = []
+        for win_idx in range(num_windows_test):
+            if win_idx == 0:
+                x_true_windows.append(test_data_rollout[ic_idx, win_idx, :, :])
+            else:
+                x_true_windows.append(test_data_rollout[ic_idx, win_idx, 1:, :])
+        
+        x_true_full = jnp.concatenate(x_true_windows, axis=0)  # (total_t, N)
+        
+        # Build time axis matching the test data
+        t_eval = np.linspace(0.0, total_time, x_true_full.shape[0])
+        
+        # Extract ground truth at observation times (interpolate if necessary)
+        # For simplicity, we'll assume observations happen at available time steps
+        x_true_at_obs_list = []
+        for obs_t in obs_times:
+            # Find closest time step in t_eval
+            closest_idx = np.argmin(np.abs(t_eval - obs_t))
+            x_true_at_obs_list.append(x_true_full[closest_idx])
+        x_true_at_obs = jnp.stack(x_true_at_obs_list)
+        
+        # Build observation sequence
+        key = jax.random.PRNGKey(ic_idx)
+        H_list, y_obs_list, obs_coords = [], [], []
+        
+        for obs_idx in range(len(obs_times)):
+            x_true_t = x_true_at_obs[obs_idx]
+            
+            if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
+                key, subkey = jax.random.split(key)
+                obs_idx_vars = jax.random.choice(subkey, N, shape=(m,), replace=False)
+            else:
+                obs_idx_vars = obs_indices
+            
+            m_t = len(obs_idx_vars)
+            H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx_vars].set(1.0)
+            
+            key, subkey = jax.random.split(key)
+            noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
+            y_t   = x_true_t[obs_idx_vars] + noise
+            
+            H_list.append(H_t)
+            y_obs_list.append(y_t)
+            for j, vi in enumerate(obs_idx_vars):
+                obs_coords.append((int(vi), obs_times[obs_idx], float(y_t[j])))
+        
+        H_seq     = jnp.stack(H_list)
+        y_obs_seq = jnp.stack(y_obs_list)
+        
+        # Perturbed IC
+        key, key_ic = jax.random.split(key)
+        x0_hat = u_current_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
+        
+        # Run EKF smoother
+        x_hats, Ps, _ = run_ekf_smoother(
+            predict_fn_wrapper, update_fn,
+            x0_hat, P0,
+            y_obs_seq,
+            obs_step_indices,
+            H_seq,
+            Q_fine,
+            R,
+            total_fine_steps,
+            dt_fine=DT_FINE,
+            dt_window=DT_WINDOW,
+        )
+        
+        ekf_std = np.sqrt(np.clip(
+            np.diagonal(np.array(Ps), axis1=1, axis2=2), 0, None
+        ))
+        
+        # Upsample true trajectory to match filter output if needed
+        # For now, use the available test data
+        _plot_trajectory_summary(
+            t_ax       = t_eval,
+            x_true     = np.array(x_true_full),
+            x_est      = np.array(x_hats[:x_true_full.shape[0]]),
+            x_std      = ekf_std[:x_true_full.shape[0]] if ekf_std.shape[0] >= x_true_full.shape[0] else None,
+            ic_idx     = ic_idx,
+            est_label  = "EKF (DD) estimate",
+            save_path  = os.path.join(
+                workdir, "figures", config.wandb.name,
+                f"trajectory_summary_ekf_dd_ic_{ic_idx}.pdf",
+            ),
+            N          = N,
+            dt_window  = DT_WINDOW,
+            obs_coords = obs_coords,
+        )
+        
+        # L2 error at window boundaries
+        window_indices = [
+            np.argmin(np.abs(t_eval - (w + 1) * DT_WINDOW))
+            for w in range(num_windows_test)
+        ]
+        x_hats_at_windows = x_hats[window_indices]
+        x_true_at_windows = x_true_full[window_indices]
+        
+        l2_ekf = jnp.linalg.norm(x_hats_at_windows - x_true_at_windows) \
+               / jnp.linalg.norm(x_true_at_windows)
+        print(f"IC {ic_idx} | EKF (DD) L2 (at window boundaries): {l2_ekf:.3e}")
+    
+    # Batch evaluation
+    _evaluate_batch_l2_ekf_dd(config, workdir, test_data_rollout)
+ 
+ 
+def _evaluate_batch_l2_ekf_dd(config, workdir, test_data_rollout):
+    """
+    Batch-averaged L2 error comparison between data-driven DeepONet and EKF.
+    
+    This is a simplified version that focuses on the open-loop comparison.
+    Full EKF smoother for all ICs is computationally expensive.
+    """
+    time_steps = 51
+    dt_window = float(config.get("dt_window", 0.25))
+    num_windows_test = test_data_rollout.shape[1]
+    num_ics = test_data_rollout.shape[0]
+    N = test_data_rollout.shape[3]
+    
+    # Load model
+    model = models.L96UDON_DD(config, jnp.linspace(0.0, 0.25, time_steps))
+    ckpt_path = os.path.join(
+        os.getcwd(), config.wandb.name, "ckpt", "udon_dd_model"
+    )
+    model.state = restore_checkpoint(model.state, ckpt_path)
+    params = model.state.params
+    
+    t_star_window = jnp.linspace(0.0, dt_window, time_steps)
+    
+    logging.info("Computing batch L2 per window (data-driven open-loop) …")
+    
+    l2_per_window: list[float] = []
+    u_current_batch = test_data_rollout[:, 0, 0, :]
+    
+    predict_one_window = jax.jit(
+        jax.vmap(
+            lambda u: model.x_net(params, u, t_star_window)[-1],
+            in_axes=0,
+        )
+    )
+    
+    for w in range(num_windows_test - 1):
+        u_current_batch = predict_one_window(u_current_batch)
+        x_ref_w = test_data_rollout[:, w + 1, 0, :]
+        
+        numer = jnp.linalg.norm(u_current_batch - x_ref_w, axis=1)
+        denom = jnp.linalg.norm(x_ref_w, axis=1)
+        l2_mean = float(jnp.mean(numer / (denom + 1e-12)))
+        l2_per_window.append(l2_mean)
+        
+        logging.info(f"  Window {w + 1:>3d} | mean L2: {l2_mean:.3e}")
+    
+    save_dir  = os.path.join(workdir, "figures", config.wandb.name)
+    save_path = os.path.join(save_dir, "batch_l2_per_window_ekf_dd.pdf")
+    _plot_l2_per_window(
+        curves    = {"Open-loop (DeepONet DD)": np.array(l2_per_window)},
+        dt        = dt_window,
+        title     = f"Data-driven: batch-average L2 per window  (B={num_ics})",
+        save_path = save_path,
+        colors    = {"Open-loop (DeepONet DD)": "#2196F3"},
+    )
+ 
