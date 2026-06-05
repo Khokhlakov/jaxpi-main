@@ -118,7 +118,7 @@ def generate_datasets(
     # Pre-compute steps as pure Python integers
     # ==========================================
     burn_steps = int(t_burn / dt)
-    interval_steps = int(1.0 / dt)
+    interval_steps = int(3.0 / dt)
 
     # 2. Define Scanning Functions 
     # (No @jax.jit needed here; they inherit compilation from simulate_sample)
