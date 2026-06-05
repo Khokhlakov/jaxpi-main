@@ -91,8 +91,8 @@ class KuramotoSivashinskyAdvanced:
 
 def generate_datasets(
     num_samples: int = 200, 
-    L: float = 32.0, 
-    N: int = 512, 
+    L: float = 64.0, 
+    N: int = 256, 
     dt: float = 0.005, 
     t_burn: float = 50.0,
     max_additions: int = 4
@@ -197,10 +197,9 @@ def generate_datasets(
     print("Saved 'ks_train_data.h5' and 'ks_test_data.h5'.")
 
 if __name__ == "__main__":
-    domain_length = 32.0 * jnp.pi
     generate_datasets(num_samples=200, 
-                      L=domain_length, 
-                      N=512, 
+                      L=64, 
+                      N=256, 
                       dt=0.005, 
                       t_burn=100.0, 
                       max_additions=2)
