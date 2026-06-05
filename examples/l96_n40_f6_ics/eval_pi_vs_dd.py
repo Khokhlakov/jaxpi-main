@@ -212,24 +212,14 @@ def _plot_rmse_comparison(
 def evaluate_pi_vs_dd(config: ml_collections.ConfigDict, workdir: str):
     """
     Evaluate and compare Physics-Informed (PI) and Data-Driven (DD) DeepONets
-    in open-loop mode. Plots batch-level metrics side-by-side without individual
-    trajectory plots.
+    in open-loop mode across both evaluation datasets.
     """
-    # Data set 1 (PI)
+    # -------------------------------------------------------------------------
+    # Data set 1 (PI Mat-file Based)
+    # -------------------------------------------------------------------------
     time_steps = 50
     x_ref_all, u0_ref_all, t_star_window = get_dataset()
     t_star_window = t_star_window[0:time_steps]
-
-    # Data set 2 (DD)
-    time_steps_2 = 51
-    num_windows_test_2 = 31
-    
-    # Load test data: shape (200, 31, 51, 40)
-    test_data_rollout = dd_get_test_data_rollout(
-        data_dir=config.training.get("data_dir", "data/"),
-        windows_per_traj=num_windows_test_2,
-    )
-    logging.info(f"Loaded test data: {test_data_rollout.shape}")
 
     # Load both models
     logging.info("Loading PI model...")
@@ -254,6 +244,18 @@ def evaluate_pi_vs_dd(config: ml_collections.ConfigDict, workdir: str):
         t_star_window, config, workdir
     )
 
+    # -------------------------------------------------------------------------
+    # Data set 2 (Rollout Tensor Based)
+    # -------------------------------------------------------------------------
+    num_windows_test_2 = 31
+    
+    # Load test data: shape (200, 31, 51, 40) -> (B, num_windows, time_steps, state_dim)
+    test_data_rollout = dd_get_test_data_rollout(
+        data_dir=config.training.get("data_dir", "data/"),
+        windows_per_traj=num_windows_test_2,
+    )
+    logging.info(f"Loaded dataset 2 test data: {test_data_rollout.shape}")
+
     # Run batch evaluation for Dataset 2
     _evaluate_batch_l2_openloop_comparison_dataset2(
         model_pi, params_pi, model_dd, params_dd,
@@ -267,52 +269,51 @@ def _evaluate_batch_l2_openloop_comparison_dataset2(
 ):
     """
     Compute and plot the batch-averaged open-loop L2 error per window for both
-    PI and DD models side-by-side using the second test dataset.
+    PI and DD models side-by-side using the second test dataset rollout tensor.
     """
     dt_window = float(config.get("dt_window", 0.25))
-    B, num_windows, time_steps_dd, num_vars = test_data_rollout.shape
-
+    
+    # Unpack dimensions from rollout shape: (B, num_windows, time_steps, state_dim)
+    B, num_windows, time_steps, num_vars = test_data_rollout.shape
+    
     logging.info("Computing batch L2 per window for Dataset 2 (PI vs DD) ...")
+    
+    # Create the time grid matching Dataset 2's window resolution (51 steps)
+    t_star_window_2 = jnp.linspace(0.0, dt_window, time_steps)
 
-    # Extract initial conditions for all trajectories from the first time step of the first window
-    u_current_pi = test_data_rollout[:, 0, 0, :]  # shape (B, 40)
-    u_current_dd = test_data_rollout[:, 0, 0, :]  # shape (B, 40)
-
-    # Define the precise time discretization expectations for each network grid
-    t_star_window_pi = jnp.linspace(0.0, dt_window, 50)  # PI network uses 50 points
-    t_star_window_dd = jnp.linspace(0.0, dt_window, 51)  # DD network uses 51 points
-
-    # Vectorized step predictors mapping batch elements to the end of the window index [-1]
+    # Create vmapped predictors for both models using the dataset 2 time grid
     predict_one_window_pi = jax.jit(
         jax.vmap(
-            lambda u: model_pi.x_pred_fn(params_pi, u, t_star_window_pi)[-1],
+            lambda u: model_pi.x_pred_fn(params_pi, u, t_star_window_2)[-1],
             in_axes=0,
         )
     )
 
     predict_one_window_dd = jax.jit(
         jax.vmap(
-            lambda u: model_dd.x_pred_fn(params_dd, u, t_star_window_dd)[-1],
+            lambda u: model_dd.x_pred_fn(params_dd, u, t_star_window_2)[-1],
             in_axes=0,
         )
     )
 
     l2_per_window_pi: list[float] = []
     l2_per_window_dd: list[float] = []
+    
+    # Extract global batch initial conditions: first window, first time step -> shape (B, 40)
+    u_current_pi = test_data_rollout[:, 0, 0, :]
+    u_current_dd = test_data_rollout[:, 0, 0, :]
 
-    # Autoregressive evaluation across windows
     for k in range(num_windows):
-        # Ground truth values at the end of window k across the entire batch
-        x_ref_k = test_data_rollout[:, k, -1, :]  # shape (B, 40)
-        denom = jnp.linalg.norm(x_ref_k, axis=1)
-
-        # PI Forward Rollout & Metric Calculation
+        # 1. PI Model autoregressive step & error evaluation
         u_current_pi = predict_one_window_pi(u_current_pi)
+        x_ref_k = test_data_rollout[:, k, -1, :]  # Ground truth at end of window k
+        
         numer_pi = jnp.linalg.norm(u_current_pi - x_ref_k, axis=1)
+        denom = jnp.linalg.norm(x_ref_k, axis=1)
         l2_mean_pi = float(jnp.mean(numer_pi / (denom + 1e-12)))
         l2_per_window_pi.append(l2_mean_pi)
 
-        # DD Forward Rollout & Metric Calculation
+        # 2. DD Model autoregressive step & error evaluation
         u_current_dd = predict_one_window_dd(u_current_dd)
         numer_dd = jnp.linalg.norm(u_current_dd - x_ref_k, axis=1)
         l2_mean_dd = float(jnp.mean(numer_dd / (denom + 1e-12)))
@@ -322,9 +323,8 @@ def _evaluate_batch_l2_openloop_comparison_dataset2(
             f"  DS2 Window {k+1:>3d} | PI L2: {l2_mean_pi:.3e} | DD L2: {l2_mean_dd:.3e}"
         )
 
-    # Plotting routine for Dataset 2
+    # Generate PDF summary for Dataset 2
     save_dir = os.path.join(workdir, "figures", config.wandb.name)
-    os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, "batch_l2_per_window_pi_vs_dd_dataset2.pdf")
     
     _plot_l2_per_window(
@@ -333,12 +333,10 @@ def _evaluate_batch_l2_openloop_comparison_dataset2(
             "DD (DeepONet)": np.array(l2_per_window_dd),
         },
         dt=dt_window,
-        title=f"PI vs DD (Dataset 2): batch-average L2 per window  (B={B})",
+        title=f"PI vs DD (Dataset 2): batch-average L2 per window (B={B})",
         save_path=save_path,
         colors={"PI (DeepONet)": "#2196F3", "DD (DeepONet)": "#FF5722"},
     )
-
-
 def _evaluate_batch_l2_openloop_comparison(
     model_pi, params_pi, model_dd, params_dd,
     t_star_window, config, workdir
