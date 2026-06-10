@@ -30,8 +30,8 @@ def train_and_evaluate(config, workdir: str):
     wandb.init(project=config.wandb.project, name=config.wandb.name)
 
     # ── Load Dataset from HDF5 ─────────────────────────────────────────────
-    train_file = os.path.join(workdir, "examples/l96_forcing/data/l96_forcing_train.h5")
-    test_file  = os.path.join(workdir, "examples/l96_forcing/data/l96_forcing_test.h5")
+    train_file = "data/l96_forcing_train.h5"
+    test_file  = "data/l96_forcing_test.h5"
 
     with h5py.File(train_file, 'r') as f_train:
         # u_pool contains states pooled across all trajectories and windows. 
