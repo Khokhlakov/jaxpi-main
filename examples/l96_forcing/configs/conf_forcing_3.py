@@ -2,7 +2,7 @@ import ml_collections
 import jax.numpy as jnp
 
 def get_config():
-    # Config 1 but init weights 10:1 and using causal training
+    # Config 2 with no causal and with cosine decay schedule
     config = ml_collections.ConfigDict()
     config.mode = "train"
 
@@ -61,7 +61,7 @@ def get_config():
     weighting.update_every_steps = 500
 
     # Causal Weighting
-    weighting.use_causal = True
+    weighting.use_causal = False
     weighting.causal_tol = 0.05
     weighting.num_chunks = 10
 
