@@ -94,7 +94,7 @@ def _create_optimizer(config):
             alpha=config.alpha
         )
         if config.optimizer == "Soap":
-            tx = soap(learning_rate=lr, b1=config.beta1, b2=config.beta2, eps=config.eps, precondition_frequency=20)
+            tx = soap(learning_rate=lr, b1=config.beta1, b2=config.beta2, eps=config.eps, precondition_frequency=15)
         elif config.optimizer == "Adam":
             tx = optax.adam(learning_rate=lr, b1=config.beta1, b2=config.beta2, eps=config.eps)
         else:
