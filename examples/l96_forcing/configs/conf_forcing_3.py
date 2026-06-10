@@ -32,7 +32,7 @@ def get_config():
     # Optim
     config.optim = optim = ml_collections.ConfigDict()
     optim.grad_accum_steps = 0
-    optim.optimizer = "Soap"
+    optim.optimizer = "Adam"#"Soap"
     optim.beta1 = 0.9
     optim.beta2 = 0.999
     optim.eps = 1e-8
@@ -47,7 +47,7 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 300000
-    training.batch_size_per_device = 100#16384
+    training.batch_size_per_device = 50#16384
     training.use_cartesian_prod = True
     training.update_interval = 1000
     training.num_initial_ics = 8000
@@ -56,7 +56,7 @@ def get_config():
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 50.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
 
