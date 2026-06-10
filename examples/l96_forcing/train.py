@@ -110,7 +110,7 @@ def train_and_evaluate(config, workdir: str):
                 model.state = model.update_weights(model.state, batch)
 
         # ── Logging ────────────────────────────────────────────────────────
-        """if jax.process_index() == 0:
+        if jax.process_index() == 0:
             if step % config.logging.log_every_steps == 0:
                 state     = jax.device_get(tree_map(lambda x: x[0], model.state))
                 batch_dev = jax.device_get(tree_map(lambda x: x[0], batch))
@@ -126,32 +126,8 @@ def train_and_evaluate(config, workdir: str):
 
                 end_time = time.time()
                 logger.log_iter(step, start_time, end_time, log_dict)
-                start_time = end_time"""
-
-        # ── Logging ────────────────────────────────────────────────────────
-        if jax.process_index() == 0:
-            if step % config.logging.log_every_steps == 0:
-                state     = jax.device_get(tree_map(lambda x: x[0], model.state))
-                batch_dev = jax.device_get(tree_map(lambda x: x[0], batch))
-
-                log_dict = evaluator(state, batch_dev, u_ref_eval, x_ref_eval)
-
-                # FOOLPROOF CAST: Force JAX scalars into native Python floats
-                safe_log_dict = {}
-                for k, v in log_dict.items():
-                    try:
-                        safe_log_dict[k] = float(v)
-                    except (TypeError, ValueError):
-                        # Keep it as-is if it's already a string or unsupported type
-                        safe_log_dict[k] = v 
-
-                # Log to W&B using explicit keyword arguments
-                wandb.log(safe_log_dict, step=int(step))
-
-                end_time = time.time()
-                logger.log_iter(step, start_time, end_time, log_dict)
                 start_time = end_time
-
+        
         # ── Checkpointing ──────────────────────────────────────────────────
         if config.saving.save_every_steps is not None:
             if ((step + 1) % config.saving.save_every_steps == 0
