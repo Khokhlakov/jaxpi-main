@@ -122,6 +122,7 @@ def train_and_evaluate(config, workdir: str):
                 log_dict["pool/active_ics"] = pool_size
 
                 wandb.log(log_dict, step)
+                logging.info({k: getattr(v, "shape", type(v)) for k, v in log_dict.items()})
 
                 end_time = time.time()
                 logger.log_iter(step, start_time, end_time, log_dict)
