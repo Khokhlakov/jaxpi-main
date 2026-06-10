@@ -36,7 +36,7 @@ if __name__ == "__main__":
         # Handle potential 3D arrays (e.g., if multiple samples were saved as a batch)
         if u_dataset.ndim == 3:
             print("Dataset has 3 dimensions (Samples, Time, Space). Selecting the first sample.")
-            u = u_dataset[0]
+            u = u_dataset[132]
         else:
             u = u_dataset
             
