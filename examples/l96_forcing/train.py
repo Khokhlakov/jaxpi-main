@@ -118,10 +118,13 @@ def train_and_evaluate(config, workdir: str):
                 # Evaluator expects state, train batch, branch eval input, and ground truth trajectory
                 log_dict = evaluator(state, batch_dev, u_ref_eval, x_ref_eval)
 
-                # Track pool parameters (Fixed values now, since augmentation is dropped)
-                log_dict["pool/active_ics"] = pool_size
+                # 1. Convert JAX DeviceArrays to NumPy arrays
+                log_dict = jax.device_get(log_dict)
+                # 2. Convert 0-D NumPy arrays to standard Python floats for W&B serialization
+                log_dict = {k: v.item() if hasattr(v, 'item') else v for k, v in log_dict.items()}
 
-                wandb.log(log_dict, step)
+                # Pass 'step' explicitly as a keyword argument
+                wandb.log(log_dict, step=step)
 
                 end_time = time.time()
                 logger.log_iter(step, start_time, end_time, log_dict)
