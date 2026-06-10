@@ -64,28 +64,43 @@ def _create_arch(config):
 
 
 def _create_optimizer(config):
-    if config.optimizer == "Adam":
-        lr = optax.exponential_decay(
-            init_value=config.learning_rate,
-            transition_steps=config.decay_steps,
-            decay_rate=config.decay_rate,
-        )
-        tx = optax.adam(
-            learning_rate=lr, b1=config.beta1, b2=config.beta2, eps=config.eps
-        )
-    elif config.optimizer == "Soap":
-        lr = optax.exponential_decay(
-            init_value=config.learning_rate,
-            transition_steps=config.decay_steps,
-            decay_rate=config.decay_rate,
-            staircase=False
-        )
-        tx = soap(
-            learning_rate=lr, b1=config.beta1, b2=config.beta2, weight_decay=0.0, precondition_frequency=2
+    if config.decay_schedule == "Exponential":
+        if config.optimizer == "Adam":
+            lr = optax.exponential_decay(
+                init_value=config.learning_rate,
+                transition_steps=config.decay_steps,
+                decay_rate=config.decay_rate,
             )
+            tx = optax.adam(
+                learning_rate=lr, b1=config.beta1, b2=config.beta2, eps=config.eps
+            )
+        elif config.optimizer == "Soap":
+            lr = optax.exponential_decay(
+                init_value=config.learning_rate,
+                transition_steps=config.decay_steps,
+                decay_rate=config.decay_rate,
+                staircase=False
+            )
+            tx = soap(
+                learning_rate=lr, b1=config.beta1, b2=config.beta2, weight_decay=0.0, precondition_frequency=2
+                )
 
+        else:
+            raise NotImplementedError(f"Optimizer {config.optimizer} not supported yet!")
+    elif config.decay_schedule == "Cosine":
+        lr = optax.cosine_decay_schedule(
+            init_value=config.learning_rate,
+            decay_steps=config.decay_steps,
+            alpha=config.alpha
+        )
+        if config.optimizer == "Soap":
+            tx = optax.soap(learning_rate=lr, b1=config.beta1, b2=config.beta2, eps=config.eps, precondition_frequency=20)
+        elif config.optimizer == "Adam":
+            tx = optax.adam(learning_rate=lr, b1=config.beta1, b2=config.beta2, eps=config.eps)
+        else:
+            raise NotImplementedError(f"Optimizer {config.optimizer} not supported yet!")
     else:
-        raise NotImplementedError(f"Optimizer {config.optimizer} not supported yet!")
+            raise NotImplementedError(f"Decay schedule {config.decay_schedule} not supported yet!")
 
     # Gradient accumulation
     if config.grad_accum_steps > 1:
