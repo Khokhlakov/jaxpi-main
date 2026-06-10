@@ -15,8 +15,6 @@ jax.config.update("jax_default_matmul_precision", "highest")
 
 import examples.l96_forcing.train as train
 import examples.l96_forcing.eval as eval
-import examples.l96_forcing.MLP_models as MLP_models
-import examples.l96_forcing.eval_dd as eval_dd
 import examples.l96_forcing.eval_pi_vs_dd as eval_pi_vs_dd
 
 
@@ -53,25 +51,6 @@ def main(argv):
 
     elif FLAGS.config.mode == "train_dd":
         train.train_and_evaluate_dd(FLAGS.config, FLAGS.workdir)
-    
-    elif FLAGS.config.mode == "eval_dd":
-        eval_dd.evaluate_dd(FLAGS.config, FLAGS.workdir)
-    
-    elif FLAGS.config.mode == "eval_dd_enkf":
-        eval_dd.evaluate_with_enkf_dd(FLAGS.config, FLAGS.workdir)
-
-    # MLP:
-    elif FLAGS.config.mode == "train_mlp":
-        MLP_models.train_mlp(FLAGS.config, FLAGS.workdir)
-    
-    elif FLAGS.config.mode == "eval_mlp":
-        MLP_models.evaluate_mlp(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_mlp_ekf":
-        MLP_models.evaluate_mlp_with_ekf(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_mlp_enkf":
-        MLP_models.evaluate_mlp_with_enkf(FLAGS.config, FLAGS.workdir)
 
     elif FLAGS.config.mode == "eval_pi_vs_dd":
         eval_pi_vs_dd.evaluate_and_compare_openloop(FLAGS.config, FLAGS.workdir)
