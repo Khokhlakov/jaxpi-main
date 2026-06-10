@@ -79,7 +79,7 @@ class L96UDON(ForwardIVP):
 
         # IC Loss
         x_pred_ic = vmap(self.x_net, (None, 0, None))(params, batch_u, self.t0)
-        ics_loss = jnp.mean((batch_u - x_pred_ic) ** 2)
+        ics_loss = jnp.mean((batch_u[:, :-1] - x_pred_ic) ** 2)
 
         # Residual loss
         if self.config.weighting.use_causal == True: 
