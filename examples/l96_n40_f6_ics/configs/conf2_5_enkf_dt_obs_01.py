@@ -69,12 +69,11 @@ def get_config():
     config.ekf.obs_every_n  = 4
 
     config.ekf.sigma_obs    = 0.2
-    config.ekf.sigma_proc   = 0.1 # Unused in EnKF
-    config.ekf.P0_sigma     = 0.3 # <-
-    config.ekf.dynamic_vars = False # True -> randpick vars
+    config.ekf.P0_sigma     = 0.3 
+    config.ekf.dynamic_vars = False
 
     config.ekf.dt_fine   = 0.01
-    config.ekf.dt_obs    = 0.1
+    config.ekf.dt_obs    = 0.1 
     config.ekf.dt_window = 0.25
     # dt_fine must divide dt_obs and dt_window
 

@@ -75,9 +75,8 @@ def get_config():
     ekf.obs_every_n  = 4
 
     ekf.sigma_obs       = 0.2
-    ekf.sigma_proc      = 0.9 # Unused in EnKF
     ekf.P0_sigma        = 0.3
-    ekf.dynamic_vars    = False # True -> randpick vars
+    ekf.dynamic_vars    = False 
     ekf.batch_l2_size   = 200
 
     ekf.dt_fine = 0.005
