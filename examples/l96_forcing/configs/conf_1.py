@@ -19,8 +19,8 @@ def get_config():
     arch.num_branch_layers = 5
     arch.num_trunk_layers = 5
     arch.hidden_dim = 1024
-    arch.branch_input_dim = 40
-    arch.out_dim = 41
+    arch.branch_input_dim = 41
+    arch.out_dim = 40
     arch.activation = "tanh"
     arch.periodicity = None
     arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 1024})
