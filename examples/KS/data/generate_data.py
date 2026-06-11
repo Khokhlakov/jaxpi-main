@@ -74,7 +74,6 @@ class KuramotoSivashinskyAdvanced:
         du2dxi_hat = 1j * self.k_xi * u_squared_hat
         # Apply the (c_u / c_x) scaling coefficient
         N_hat = 0.5 * (self.c_u / self.c_x) * du2dxi_hat
-        N_hat = 0.5 * du2dx_hat
         return -self._dealias(N_hat)
     
     @partial(jax.jit, static_argnums=(0,))

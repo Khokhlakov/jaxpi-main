@@ -18,7 +18,7 @@ from flax.jax_utils import replicate
 
 import models
 from utils import get_dataset
-from scipy.io import loadmat
+import h5py
 
 
 def train_and_evaluate(config, workdir: str):
