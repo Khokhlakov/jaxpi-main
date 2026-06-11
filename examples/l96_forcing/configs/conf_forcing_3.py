@@ -2,12 +2,11 @@ import ml_collections
 import jax.numpy as jnp
 
 def get_config():
-    # Config 2 with no causal and with cosine decay schedule
+    # Config 2 with with cosine decay schedule and coside decay schedule
     config = ml_collections.ConfigDict()
     config.mode = "train"
 
     # Weights & Biases
-    # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "PI-UDON-L96-F"
     wandb.name          = "test_forcing_3" 
@@ -56,7 +55,7 @@ def get_config():
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 50.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 10.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
 
