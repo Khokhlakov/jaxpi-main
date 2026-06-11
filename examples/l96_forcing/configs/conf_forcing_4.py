@@ -2,7 +2,7 @@ import ml_collections
 import jax.numpy as jnp
 
 def get_config():
-    # Config 3 with depth 6 and causal
+    # Config 2 with depth 6 and causal and cosine decay rate schedule
     config = ml_collections.ConfigDict()
     config.mode = "train"
 
@@ -56,7 +56,7 @@ def get_config():
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 50.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 10.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
 
