@@ -2,9 +2,10 @@ import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 
-def visualize_ks_data(filename="ks_test_data.h5", sample_idx=0):
+def visualize_ks_data(filename="ks_test_data.h5", sample_idx=0, save_pdf=False):
     """
-    Reads the HDF5 dataset and plots line profiles and a trajectory heatmap.
+    Reads the HDF5 dataset, plots line profiles and a trajectory heatmap, 
+    and optionally saves the figure to a PDF.
     """
     # 1. Load the dataset and metadata
     with h5py.File(filename, "r") as f:
@@ -55,12 +56,23 @@ def visualize_ks_data(filename="ks_test_data.h5", sample_idx=0):
     fig.colorbar(im, ax=ax2, label="Amplitude (u)")
 
     plt.tight_layout()
+
+    # --- NEW: Save to PDF ---
+    if save_pdf:
+        # Create a dynamic filename (e.g., "ks_test_data_sample_0.pdf")
+        base_name = filename.replace('.h5', '')
+        pdf_filename = f"{base_name}_sample_{sample_idx}.pdf"
+        
+        # bbox_inches='tight' ensures the labels and colorbars aren't cut off
+        plt.savefig(pdf_filename, format='pdf', bbox_inches='tight')
+        print(f"Saved plot to {pdf_filename}")
+
     plt.show()
 
 # ==========================================
 # Example usage block
 # ==========================================
 if __name__ == "__main__":
-    # To visualize the 50 time-unit trajectory, use the test data
-    visualize_ks_data("ks_test_data.h5", sample_idx=0)
-    visualize_ks_data("ks_train_data.h5", sample_idx=0)
+    # Set save_pdf=True to generate the PDF files
+    visualize_ks_data("ks_test_data.h5", sample_idx=0, save_pdf=True)
+    visualize_ks_data("ks_train_data.h5", sample_idx=0, save_pdf=True)
