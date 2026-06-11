@@ -41,13 +41,13 @@ def get_config():
     #optim.decay_steps = 5000 
     
     optim.decay_schedule    = "Cosine"
-    optim.alpha             = 0.005
+    optim.alpha             = 0.001
     optim.decay_steps       = 300_000
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 300000
-    training.batch_size_per_device = 50#16384
+    training.batch_size_per_device = 60#16384
     training.use_cartesian_prod = True
     training.update_interval = 1000
     training.num_initial_ics = 8000
