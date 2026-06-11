@@ -163,17 +163,23 @@ def generate_datasets(
     # 3. Parallel Execution over Samples via vmap
     @jax.jit
     def simulate_sample(u_hat_0):
-        # A. Burn-in Phase
+        # Burn-in Phase
         u_hat_burned = advance_time(u_hat_0, burn_steps)
         
-        # B. Train Phase: Save IC, then advance max_additions times saving every 1.0
-        u_train_end, train_trajectory = advance_and_save(u_hat_burned, interval_steps, max_additions)
+        # Train Phase: Dense and Sparse Generation
+        total_train_steps = max_additions * interval_steps
+
+        # Advance and save ALL steps to generate the dense dataset
+        u_train_end, train_trajectory_dd = advance_save_all(u_hat_burned, total_train_steps)
         
-        # Prepend the burned IC to the training trajectory
-        train_data = jnp.concatenate([u_hat_burned[None, ...], train_trajectory], axis=0)
-        
-        # C. Test Phase: advance 1.0 without saving, then save every step for the last 1.0
-        u_test_start = advance_time(u_train_end, interval_steps) # First 1.0 silent
+        # Dense train data: prepend the IC (yields total_train_steps + 1 states)
+        train_data_dd = jnp.concatenate([u_hat_burned[None, ...], train_trajectory_dd], axis=0)
+
+        # Sparse train data: recover original behavior by slicing every 200 steps
+        train_data = train_data_dd[::interval_steps]
+
+        # Test Phase: advance 1.0 without saving, then save every step for the last 1.0
+        u_test_start = advance_time(u_train_end, interval_steps)
         
         # Compute total steps needed for test_windows windows
         total_test_steps = test_windows * interval_steps
@@ -181,20 +187,23 @@ def generate_datasets(
         _, test_trajectory = advance_save_all(u_test_start, total_test_steps)
         test_data = jnp.concatenate([u_test_start[None, ...], test_trajectory], axis=0)
         
-        return train_data, test_data
+        return train_data, train_data_dd, test_data
 
     print("Simulating (JIT compiling first time)...")
-    train_data_hat, test_data_hat = jax.vmap(simulate_sample)(u_hat_initial)
+    train_data_hat, train_data_dd_hat, test_data_hat = jax.vmap(simulate_sample)(u_hat_initial)
     
     # Convert Fourier modes back to Physical space for the Neural Network
     train_data_real = jnp.fft.irfft(train_data_hat, axis=-1)
+    train_data_dd_real = jnp.fft.irfft(train_data_dd_hat, axis=-1)
     test_data_real = jnp.fft.irfft(test_data_hat, axis=-1)
     
     # Convert to standard numpy for HDF5 compatibility
     train_data_np = np.array(train_data_real)
+    train_data_dd_np = np.array(train_data_dd_real)
     test_data_np = np.array(test_data_real)
     
     print(f"Train dataset shape: {train_data_np.shape} -> (samples, time_states, spatial_grid)")
+    print(f"Train dataset (dense) shape:  {train_data_dd_np.shape}")
     print(f"Test dataset shape:  {test_data_np.shape}")
 
     # 4. Save to HDF5
@@ -204,7 +213,14 @@ def generate_datasets(
         f.attrs["N"] = N
         f.attrs["dt"] = dt
         f.attrs["max_additions"] = max_additions
-        
+    
+    with h5py.File("ks_train_data_dd.h5", "w") as f:
+        f.create_dataset("u", data=train_data_dd_np)
+        f.attrs["L"] = L
+        f.attrs["N"] = N
+        f.attrs["dt"] = dt
+        f.attrs["max_additions"] = max_additions
+
     with h5py.File("ks_test_data.h5", "w") as f:
         f.create_dataset("u", data=test_data_np)
         f.attrs["L"] = L
@@ -212,13 +228,13 @@ def generate_datasets(
         f.attrs["dt"] = dt
         f.attrs["test_windows"] = test_windows
 
-    print("Saved 'ks_train_data.h5' and 'ks_test_data.h5'.")
+    print("Saved 'ks_train_data.h5', 'ks_train_data_dd.h5', and 'ks_test_data.h5'.")
 
 if __name__ == "__main__":
     generate_datasets(num_samples=100, 
                       L=64, 
                       N=256, 
-                      dt=0.005, 
+                      dt=0.02, 
                       t_burn=100.0, 
-                      max_additions=3,#950,
-                      test_windows=50)
+                      max_additions=500,
+                      test_windows=30)
