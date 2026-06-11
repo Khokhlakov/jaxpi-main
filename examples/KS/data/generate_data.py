@@ -166,19 +166,19 @@ def generate_datasets(
         # A. Burn-in Phase
         u_hat_burned = advance_time(u_hat_0, burn_steps)
         
-        # B. Train Phase: Save IC, then advance max_additions times saving every 0.25
+        # B. Train Phase: Save IC, then advance max_additions times saving every 1.0
         u_train_end, train_trajectory = advance_and_save(u_hat_burned, interval_steps, max_additions)
         
         # Prepend the burned IC to the training trajectory
         train_data = jnp.concatenate([u_hat_burned[None, ...], train_trajectory], axis=0)
         
-        # C. Test Phase: advance 0.25 without saving, then save every step for the last 0.25
-        u_test_start = advance_time(u_train_end, interval_steps) # First 0.25 silent
+        # C. Test Phase: advance 1.0 without saving, then save every step for the last 1.0
+        u_test_start = advance_time(u_train_end, interval_steps) # First 1.0 silent
         
         # Compute total steps needed for test_windows windows
         total_test_steps = test_windows * interval_steps
-        #Advance and save every step
-        _, test_trajectory = advance_save_all(u_test_start, interval_steps)
+        # Advance and save every step
+        _, test_trajectory = advance_save_all(u_test_start, total_test_steps)
         test_data = jnp.concatenate([u_test_start[None, ...], test_trajectory], axis=0)
         
         return train_data, test_data
