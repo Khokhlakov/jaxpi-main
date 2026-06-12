@@ -38,6 +38,8 @@ def get_config():
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
     optim.decay_steps = 5000 
+    
+    optim.decay_schedule    = "Exponential"
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
