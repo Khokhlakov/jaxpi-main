@@ -18,8 +18,8 @@ def get_config():
     arch.num_branch_layers = 5
     arch.num_trunk_layers = 5
     arch.hidden_dim = 1024
-    arch.branch_input_dim = 256
-    arch.out_dim = 256
+    arch.branch_input_dim = 128
+    arch.out_dim = 128
     arch.activation = "tanh"
     arch.periodicity = None
     arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 1024})
@@ -42,7 +42,7 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 300_000
-    training.batch_size_per_device = 50
+    training.batch_size_per_device = 30
     training.use_cartesian_prod = True
     training.update_interval = 1000
     training.num_initial_ics = 8000
@@ -101,7 +101,7 @@ def get_config():
     saving.total_plots = 2
 
     # Input shape (t is the only input)
-    config.input_dim = 257
+    config.input_dim = 128 + 1
 
     # Training window size
     config.dt_window = 1.0

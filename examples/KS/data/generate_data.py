@@ -192,15 +192,15 @@ def generate_datasets(
     print("Simulating (JIT compiling first time)...")
     train_data_hat, train_data_dd_hat, test_data_hat = jax.vmap(simulate_sample)(u_hat_initial)
     
-    # Convert Fourier modes back to Physical space for the Neural Network
+    # Convert Fourier modes back to Physical space for the Neural Network (256 points)
     train_data_real = jnp.fft.irfft(train_data_hat, axis=-1)
     train_data_dd_real = jnp.fft.irfft(train_data_dd_hat, axis=-1)
     test_data_real = jnp.fft.irfft(test_data_hat, axis=-1)
     
-    # Convert to standard numpy for HDF5 compatibility
-    train_data_np = np.array(train_data_real)
-    train_data_dd_np = np.array(train_data_dd_real)
-    test_data_np = np.array(test_data_real)
+    # DOWNSAMPLE: Slice the spatial array to keep 128 points [..., ::2]
+    train_data_np = np.array(train_data_real)[..., ::2]
+    train_data_dd_np = np.array(train_data_dd_real)[..., ::2]
+    test_data_np = np.array(test_data_real)[..., ::2]
     
     print(f"Train dataset shape: {train_data_np.shape} -> (samples, time_states, spatial_grid)")
     print(f"Train dataset (dense) shape:  {train_data_dd_np.shape}")

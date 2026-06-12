@@ -82,7 +82,7 @@ def _create_optimizer(config):
                 staircase=False
             )
             tx = soap(
-                learning_rate=lr, b1=config.beta1, b2=config.beta2, weight_decay=0.0, precondition_frequency=2
+                learning_rate=lr, b1=config.beta1, b2=config.beta2, weight_decay=0.0, precondition_frequency=10#2
                 )
 
         else:
