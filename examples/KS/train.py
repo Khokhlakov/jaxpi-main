@@ -189,7 +189,7 @@ def train_and_evaluate_dd(config, workdir: str):
     
     key = jax.random.PRNGKey(config.training.get("seed", 42))
 
-    @jax.map
+    @jax.pmap
     def get_batch(device_key):
         """Samples random pairs natively ON each GPU to avoid PCIe transfers."""
         key_traj, key_t = jax.random.split(device_key)
