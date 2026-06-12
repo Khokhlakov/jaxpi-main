@@ -20,7 +20,7 @@ def plot_sparse_training_lines(filename="ks_train_data.h5", sample_idx=0, save_p
         plt.plot(x_nodes, u_data[t_idx, :], label=f"t = {t_idx}.0")
         
     plt.title(f"Sparse Training Data: Node Profiles (Sample {sample_idx})")
-    plt.xlabel("Spatial Points (0 to 255)")
+    plt.xlabel("Spatial Points (0 to 127)")
     plt.ylabel("Amplitude (u)")
     plt.xlim(0, N - 1)
     plt.legend()
@@ -46,7 +46,7 @@ def plot_heatmap(filename, sample_idx=0, states_to_plot=None, title_prefix="", s
         else:
             u_data = f["u"][sample_idx]
             
-        N = f.attrs["N"]
+        N = 128
         
     time_steps = u_data.shape[0]
     
@@ -59,7 +59,7 @@ def plot_heatmap(filename, sample_idx=0, states_to_plot=None, title_prefix="", s
         cmap='viridis'
     )
     plt.title(f"{title_prefix} Heatmap (Sample {sample_idx})")
-    plt.xlabel("Spatial Points (0 to 255)")
+    plt.xlabel("Spatial Points (0 to 127)")
     plt.ylabel("Time Steps (states)")
     plt.colorbar(im, label="Amplitude (u)")
     plt.tight_layout()
