@@ -15,7 +15,6 @@ jax.config.update("jax_default_matmul_precision", "highest")
 
 import examples.KS.train as train
 import examples.KS.eval as eval
-import examples.KS.MLP_models as MLP_models
 
 
 FLAGS = flags.FLAGS
@@ -52,18 +51,6 @@ def main(argv):
     elif FLAGS.config.mode == "train_dd":
         train.train_and_evaluate_dd(FLAGS.config, FLAGS.workdir)
 
-    # MLP:
-    elif FLAGS.config.mode == "train_mlp":
-        MLP_models.train_mlp(FLAGS.config, FLAGS.workdir)
-    
-    elif FLAGS.config.mode == "eval_mlp":
-        MLP_models.evaluate_mlp(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_mlp_ekf":
-        MLP_models.evaluate_mlp_with_ekf(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_mlp_enkf":
-        MLP_models.evaluate_mlp_with_enkf(FLAGS.config, FLAGS.workdir)
 
 if __name__ == "__main__":
     flags.mark_flags_as_required(["config", "workdir"])
