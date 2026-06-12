@@ -157,7 +157,7 @@ def _plot_batch_l2_over_time(
 
 def evaluate(config: ml_collections.ConfigDict, workdir: str):
     # ── 1. Load Dense Test Dataset ──────────────────────────────────────────
-    data_dir = config.training.get("data_dir", os.path.join("examples", "l96_forcing", "data"))
+    data_dir = config.training.get("data_dir", "data")
     test_file = os.path.join(data_dir, "l96_forcing_test.h5")
 
     logging.info(f"Loading test dataset from {test_file}...")
