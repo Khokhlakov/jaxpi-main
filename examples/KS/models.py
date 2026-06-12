@@ -247,7 +247,7 @@ class KSUDONEvaluator_DD(BaseEvaluator):
         fig, ax = plt.subplots(figsize=(10, 8))
         
         c = ax.pcolormesh(np.arange(self.model.N), t, x_pred, cmap='viridis', shading='auto')
-        ax.set_xlabel("Spatial Points (0 to 255)")
+        ax.set_xlabel("Spatial Points (0 to 128)")
         ax.set_ylabel("Time (t)")
         ax.set_title("KS UDON (Data-Driven) Trajectory Heatmap")
         fig.colorbar(c, ax=ax)
