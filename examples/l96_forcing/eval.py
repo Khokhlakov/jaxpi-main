@@ -7,7 +7,7 @@ import matplotlib.gridspec as gridspec
 import jax
 from jax.tree_util import tree_map
 from flax.jax_utils import replicate
-from typing import Callable
+from typing import Callable, Dict, Optional
 
 from jaxpi.utils import restore_checkpoint
 import examples.l96_forcing.models as models
