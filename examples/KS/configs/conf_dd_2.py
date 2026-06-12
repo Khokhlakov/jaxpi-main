@@ -39,7 +39,7 @@ def get_config():
     #optim.decay_steps = 5000 
     optim.decay_schedule    = "Cosine"
     optim.decay_steps = 300_000
-    optim.beta1 = 0.005
+    optim.alpha = 0.005
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
