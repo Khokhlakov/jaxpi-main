@@ -182,7 +182,7 @@ class KSUDON_DD(ForwardIVP):
     def __init__(self, config, t_star):
         super().__init__(config)
         self.t_star = t_star 
-        self.N = 256
+        self.N = 128
         self.t0 = t_star[0]
         self.t1 = t_star[-1]
 

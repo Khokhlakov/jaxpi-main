@@ -62,7 +62,7 @@ def get_config():
     # KF settings
     config.kf = kf = ml_collections.ConfigDict()
     kf.specify_obs_idx  = False
-    kf.obs_idx_list     = list(range(0, 256, 16))
+    kf.obs_idx_list     = list(range(0, 128, 8))
 
     # EKF settings
     config.ekf = ekf = ml_collections.ConfigDict()
