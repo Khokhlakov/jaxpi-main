@@ -52,7 +52,7 @@ F_high      = 9.0      # Maximum forcing value
 
 M           = 20       # Training windows per trajectory
 window_size = 0.25     # Window duration [time units]
-L           = 5        # Test trajectory length [in windows]
+L           = 20       # Test trajectory length [in windows]
 
 burn_time   = 5.0      # Initial transient to discard [time units]
 dt          = 0.005    # Dense-output time step for test trajectories
