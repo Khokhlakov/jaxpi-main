@@ -9,7 +9,7 @@ def plot_sparse_training_lines(filename="ks_train_data.h5", sample_idx=0, save_p
     """
     with h5py.File(filename, "r") as f:
         u_data = f["u"][sample_idx]
-        N = f.attrs["N"]
+        N = 128
         
     x_nodes = np.arange(N)
     
