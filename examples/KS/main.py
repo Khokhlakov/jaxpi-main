@@ -50,7 +50,7 @@ def main(argv):
         eval.evaluate_with_enkf_numerical(FLAGS.config, FLAGS.workdir)
 
     elif FLAGS.config.mode == "train_dd":
-        train.train_and_evaluate_data(FLAGS.config, FLAGS.workdir)
+        train.train_and_evaluate_dd(FLAGS.config, FLAGS.workdir)
 
     # MLP:
     elif FLAGS.config.mode == "train_mlp":

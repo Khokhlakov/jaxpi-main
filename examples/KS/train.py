@@ -20,43 +20,44 @@ import models
 from utils import get_dataset
 import h5py
 
-
+# ==========================================
+# Physics-Informed Training Pipeline
+# ==========================================
 def train_and_evaluate(config, workdir: str):
 
     # ── W&B ────────────────────────────────────────────────────────────────
     wandb.init(project=config.wandb.project, name=config.wandb.name)
 
     # ── Load Dataset from HDF5 ─────────────────────────────────────────────
-    train_file = "data/l96_forcing_train.h5"
-    test_file  = "data/l96_forcing_test.h5"
+    # Assuming the script runs from jaxpi-main/examples/KS/
+    train_file = "data/ks_train_data.h5"
+    test_file  = "data/ks_test_data.h5"
 
     with h5py.File(train_file, 'r') as f_train:
-        # u_pool contains states pooled across all trajectories and windows. 
-        # Shape: (num_ics * M, 41) -> [40 state variables + 1 F value]
-        u_pool = jnp.array(f_train['u'][:])
+        # u_train shape: (num_samples, time_states, 256)
+        u_train = jnp.array(f_train['u'][:])
+        
+        # Flatten the first two dimensions so EVERY recorded state acts 
+        # as a valid initial condition (IC) for the physics residual sampler.
+        # u_pool Shape: (num_samples * time_states, 256)
+        u_pool = u_train.reshape(-1, u_train.shape[-1])
         
     with h5py.File(test_file, 'r') as f_test:
-        # Dense test trajectories. Shape: (num_ics, num_test_pts, 40)
+        # Dense test trajectories. Shape: (num_ics, num_test_pts, 256)
         x_ref_eval_all = jnp.array(f_test['u'][:])
-        # Per-trajectory F values. Shape: (num_ics,)
-        F_test_all = jnp.array(f_test['F'][:])
-        # Times relative to M·window_size. Shape: (num_test_pts,)
-        t_star_all = jnp.array(f_test['t'][:])
+        dt = f_test.attrs.get("dt", 0.02)
 
     # ── Reference data (used only for eval logging during training) ────────
-    trajs_per_window = 100
-    time_steps = 50
+    # Evaluate against the first 50 fine-grained integration steps of the test set
+    trajs_per_window = min(100, x_ref_eval_all.shape[0])
+    time_steps = 50 
 
-    # L2 evaluation dataset setup (First window only)
-    t_star = t_star_all[0:time_steps]
+    # t_star represents the physical time for these 50 evaluation steps
+    t_star = jnp.arange(time_steps) * dt
     
-    # Extract the first 100 trajectories for the first time_steps (40 variables)
-    x_ref_eval = x_ref_eval_all[0:trajs_per_window, 0:time_steps, :]  # Shape: (100, 50, 40)
-    
-    # Construct the branch network input [u(t0), F] for evaluation
-    u_init_eval = x_ref_eval_all[0:trajs_per_window, 0, :]            # Shape: (100, 40)
-    F_eval = F_test_all[0:trajs_per_window].reshape(-1, 1)            # Shape: (100, 1)
-    u_ref_eval = jnp.concatenate([u_init_eval, F_eval], axis=1)       # Shape: (100, 41)
+    # Extract the trajectories and the initial branch inputs [u(t0)]
+    x_ref_eval = x_ref_eval_all[0:trajs_per_window, 0:time_steps, :]  # Shape: (100, 50, 256)
+    u_ref_eval = x_ref_eval_all[0:trajs_per_window, 0, :]             # Shape: (100, 256)
 
     logging.info("L2 dataset imported:")
     logging.info(f"x_ref_eval: {x_ref_eval.shape}")
@@ -64,7 +65,6 @@ def train_and_evaluate(config, workdir: str):
     logging.info(f"t_star: {t_star.shape}")
 
     # ── Hyper-parameters ───────────────────────────────────────────────────
-    num_vars   = 40
     batch_size = config.training.batch_size_per_device
     seed       = config.training.get("seed", 42)
     pool_size  = u_pool.shape[0]
@@ -72,8 +72,9 @@ def train_and_evaluate(config, workdir: str):
     logging.info(f"Static Training Pool Ready: {pool_size} samples.")
 
     # ── Samplers ───────────────────────────────────────────────────────────
-    # t is sampled uniformly over the training window [t0, t1].
-    dom_t     = jnp.array([[t_star[0], t_star[-1]]])
+    # t is sampled uniformly over the training window [0, 1.0].
+    # Adjust dom_t if your DeepONet is learning a different temporal window length
+    dom_t     = jnp.array([[0.0, 1.0]]) 
     sampler_t = UniformSampler(dom_t, batch_size)
 
     # IC sampler: samples rows uniformly at random from the full pre-computed pool.
@@ -81,8 +82,8 @@ def train_and_evaluate(config, workdir: str):
     res_sampler = zip(sampler_u, sampler_t)
 
     # ── Build model ────────────────────────────────────────────────────────
-    model     = models.L96UDON(config, t_star)
-    evaluator = models.L96UDONEvaluator(config, model)
+    model     = models.KSUDON(config, t_star)
+    evaluator = models.KSUDONEvaluator(config, model)
 
     if config.saving.get("restore_checkpoint", False):
         ckpt_path   = os.path.join(os.getcwd(), config.saving.restore_checkpoint_path)
@@ -114,8 +115,6 @@ def train_and_evaluate(config, workdir: str):
 
                 # Evaluator expects state, train batch, branch eval input, and ground truth trajectory
                 log_dict = evaluator(state, batch_dev, u_ref_eval, x_ref_eval)
-
-                # Track pool parameters (Fixed values now, since augmentation is dropped)
                 log_dict["pool/active_ics"] = pool_size
 
                 wandb.log(log_dict, step)
@@ -129,7 +128,7 @@ def train_and_evaluate(config, workdir: str):
             if ((step + 1) % config.saving.save_every_steps == 0
                     or (step + 1) == config.training.max_steps):
                 ckpt_path = os.path.join(
-                    os.getcwd(), config.wandb.name, "ckpt", "udon_model"
+                    os.getcwd(), config.wandb.name, "ckpt", "ks_udon_model"
                 )
                 save_checkpoint(
                     model.state, ckpt_path, keep=config.saving.num_keep_ckpts
@@ -137,32 +136,43 @@ def train_and_evaluate(config, workdir: str):
 
     return model
 
-# Data driven
+
+# ==========================================
+# Data-Driven Training Pipeline
+# ==========================================
 def train_and_evaluate_dd(config, workdir: str):
+    
     # ── W&B ────────────────────────────────────────────────────────────────
     wandb.init(project=config.wandb.project, name=config.wandb.name)
  
     # ── Reference data & Time Grid ─────────────────────────────────────────
-    # The dataset provides 51 steps of 0.005 from 0 to 0.25 units of time
-    t_star = jnp.linspace(0.0, 0.25, 51)
+    # CORRECTED: Now using the dense data-driven dataset
+    train_file = "data/ks_train_data_dd.h5"
     
-    # Import full explicit dataset
-    data_dir = config.training.get("data_dir", "data/")
-    train_data_np = dd_get_train_data(data_dir) # Shape (62000, 51, 40)
-    train_data = jnp.array(train_data_np)
+    with h5py.File(train_file, 'r') as f_train:
+        # train_data shape: (num_samples, time_states, 256)
+        train_data = jnp.array(f_train['u'][:])
+        
+        # Extract the integration step to map physical time correctly
+        dt = f_train.attrs.get("dt", 0.02)
+        
+    logging.info(f"Loaded Dense Supervised Data: {train_data.shape}")
     
-    logging.info(f"Loaded Supervised Data: {train_data.shape}")
+    num_t  = train_data.shape[1]
+    
+    # Map the time grid using the dense dataset's dt
+    t_star = jnp.arange(num_t, dtype=float) * dt
     
     # Parameters for validation
-    trajs_per_window = 100
+    trajs_per_window = min(100, train_data.shape[0])
     
     # U_ref represents the initial condition (t=0) for each trajectory 
     u_ref_eval = train_data[0:trajs_per_window, 0, :]               
     x_ref_eval = train_data[0:trajs_per_window, :, :] 
   
     # ── Model & Evaluator ──────────────────────────────────────────────────
-    model     = models.L96UDON_DD(config, t_star)
-    evaluator = models.L96UDONEvaluator_DD(config, model)
+    model     = models.KSUDON_DD(config, t_star)
+    evaluator = models.KSUDONEvaluator_DD(config, model)
  
     if config.saving.get("restore_checkpoint", False):
         ckpt_path   = os.path.join(os.getcwd(), config.saving.restore_checkpoint_path)
@@ -176,7 +186,6 @@ def train_and_evaluate_dd(config, workdir: str):
     global_batch_size     = num_devices * batch_size_per_device
 
     num_trajs  = train_data.shape[0]
-    num_t      = train_data.shape[1]
     
     key = jax.random.PRNGKey(config.training.get("seed", 42))
 
@@ -194,7 +203,7 @@ def train_and_evaluate_dd(config, workdir: str):
         batch_x = train_data[idx_traj, idx_t, :]  
         
         # 2. Reshape to explicitly add the device dimension
-        # Resulting shapes: (3, 100, 40), (3, 100, 1), (3, 100, 40)
+        # Resulting shapes: (num_devices, batch_size, 256), (..., 1), (..., 256)
         batch_u = batch_u.reshape(num_devices, batch_size_per_device, -1)
         batch_t = batch_t.reshape(num_devices, batch_size_per_device, 1)
         batch_x = batch_x.reshape(num_devices, batch_size_per_device, -1)
@@ -231,11 +240,10 @@ def train_and_evaluate_dd(config, workdir: str):
             if ((step + 1) % config.saving.save_every_steps == 0
                     or (step + 1) == config.training.max_steps):
                 ckpt_path = os.path.join(
-                    os.getcwd(), config.wandb.name, "ckpt", "udon_dd_model"
+                    os.getcwd(), config.wandb.name, "ckpt", "ks_udon_dd_model"
                 )
                 save_checkpoint(
                     model.state, ckpt_path, keep=config.saving.num_keep_ckpts
                 )
  
     return model
-
