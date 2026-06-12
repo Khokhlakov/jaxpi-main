@@ -189,24 +189,20 @@ def train_and_evaluate_dd(config, workdir: str):
     
     key = jax.random.PRNGKey(config.training.get("seed", 42))
 
-    @jax.jit
-    def get_batch(key):
-        """Samples random pairs and reshapes for pmap (num_devices, batch_size, ...)."""
-        key_traj, key_t = jax.random.split(key)
+    @jax.map
+    def get_batch(device_key):
+        """Samples random pairs natively ON each GPU to avoid PCIe transfers."""
+        key_traj, key_t = jax.random.split(device_key)
         
-        # 1. Sample globally (for all devices at once)
-        idx_traj = jax.random.randint(key_traj, (global_batch_size,), 0, num_trajs)
-        idx_t    = jax.random.randint(key_t, (global_batch_size,), 0, num_t)
+        # Sample locally
+        idx_traj = jax.random.randint(key_traj, (batch_size_per_device,), 0, num_trajs)
+        idx_t    = jax.random.randint(key_t, (batch_size_per_device,), 0, num_t)
         
-        batch_u = train_data[idx_traj, 0, :]      
-        batch_t = t_star[idx_t]                   
+        batch_u = train_data[idx_traj, 0, :]  
+
+        # reshape for local device    
+        batch_t = t_star[idx_t].reshape(batch_size_per_device, 1)                   
         batch_x = train_data[idx_traj, idx_t, :]  
-        
-        # 2. Reshape to explicitly add the device dimension
-        # Resulting shapes: (num_devices, batch_size, 256), (..., 1), (..., 256)
-        batch_u = batch_u.reshape(num_devices, batch_size_per_device, -1)
-        batch_t = batch_t.reshape(num_devices, batch_size_per_device, 1)
-        batch_x = batch_x.reshape(num_devices, batch_size_per_device, -1)
         
         return (batch_u, batch_t, batch_x)
 
@@ -218,8 +214,10 @@ def train_and_evaluate_dd(config, workdir: str):
     for step in range(config.training.max_steps):
  
         # ── Data Sampling + Gradient Step ──────────────────────────────────
-        key, subkey = jax.random.split(key)
-        batch       = get_batch(subkey)
+        key, subkey_master = jax.random.split(key)
+        subkeys = jax.random.split(subkey_master, num_devices)
+
+        batch       = get_batch(subkeys)
         model.state = model.step(model.state, batch)
  
         # ── Logging ────────────────────────────────────────────────────────
