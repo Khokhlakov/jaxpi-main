@@ -26,7 +26,7 @@ def _plot_trajectory_summary(
     test_windows: int,
     pts_pw: int,
     save_path: str,
-    N: int = 128,
+    N: int = 256,
 ) -> None:
     """
     Generate and save the trajectory-summary PDF for a single KS IC.
@@ -172,13 +172,13 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
 
     logging.info(f"Loading test dataset from {test_file}...")
     with h5py.File(test_file, 'r') as f:
-        u_test = jnp.array(f['u'][:])     # Shape: (num_ics, num_test_pts, 128)
+        u_test = jnp.array(f['u'][:])     # Shape: (num_ics, num_test_pts, 256)
         N = f.attrs['N']
         dt = f.attrs['dt']
         test_windows = f.attrs['test_windows']
         
     num_ics, num_test_pts, N_loaded = u_test.shape
-    assert N_loaded == 128, f"Expected state dimension 128, got {N_loaded}"
+    assert N_loaded == 256, f"Expected state dimension 256, got {N_loaded}"
 
     # Reconstruct time definitions
     # 1 time unit = 1 window
@@ -197,18 +197,18 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     params = model.state.params
 
     # JIT-compile a vmapped batch predictor
-    # KS is autonomous, so input is just u (shape: 128)
+    # KS is autonomous, so input is just u (shape: 256)
     predict_batch = jax.jit(jax.vmap(lambda u: model.x_pred_fn(params, u, t_star_window), in_axes=0))
 
     # ── 3. Batched Autoregressive Rollout ───────────────────────────────────
     logging.info(f"Initiating batched rollout across all {num_ics} test trajectories...")
     
-    u_current_batch = u_test[:, 0, :]               # Shape: (num_ics, 128)
+    u_current_batch = u_test[:, 0, :]               # Shape: (num_ics, 256)
     x_pred_list = []
     
     for w in range(test_windows):
         # Predict the full trajectory for the current time window
-        pred_window = predict_batch(u_current_batch)    # Shape: (num_ics, pts_pw+1, 128)
+        pred_window = predict_batch(u_current_batch)    # Shape: (num_ics, pts_pw+1, 256)
 
         # Avoid duplicating the overlapping boundary states between windows
         if w == 0:
@@ -220,7 +220,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         u_current_batch = pred_window[:, -1, :]
 
     # Reconstruct the continuous dense time series
-    x_pred_full = jnp.concatenate(x_pred_list, axis=1)  # Shape: (num_ics, num_test_pts, 128)
+    x_pred_full = jnp.concatenate(x_pred_list, axis=1)  # Shape: (num_ics, num_test_pts, 256)
 
     # ── 4. Generate Individual Trajectory Plots ─────────────────────────────
     total_plots = config.saving.get("total_plots", 5)
