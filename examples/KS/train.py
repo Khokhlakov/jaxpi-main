@@ -146,7 +146,6 @@ def train_and_evaluate_dd(config, workdir: str):
     wandb.init(project=config.wandb.project, name=config.wandb.name)
  
     # ── Reference data & Time Grid ─────────────────────────────────────────
-    # CORRECTED: Now using the dense data-driven dataset
     train_file = "data/ks_train_data_dd.h5"
     
     with h5py.File(train_file, 'r') as f_train:
@@ -189,8 +188,7 @@ def train_and_evaluate_dd(config, workdir: str):
     
     key = jax.random.PRNGKey(config.training.get("seed", 42))
 
-    @jax.pmap
-    def get_batch(device_key):
+    def sample_fn(device_key, data_array, t_array):
         """Samples random pairs natively ON each GPU to avoid PCIe transfers."""
         key_traj, key_t = jax.random.split(device_key)
         
@@ -198,13 +196,17 @@ def train_and_evaluate_dd(config, workdir: str):
         idx_traj = jax.random.randint(key_traj, (batch_size_per_device,), 0, num_trajs)
         idx_t    = jax.random.randint(key_t, (batch_size_per_device,), 0, num_t)
         
-        batch_u = train_data[idx_traj, 0, :]  
+        batch_u = data_array[idx_traj, 0, :]  
 
         # reshape for local device    
-        batch_t = t_star[idx_t].reshape(batch_size_per_device, 1)                   
-        batch_x = train_data[idx_traj, idx_t, :]  
+        batch_t = t_array[idx_t].reshape(batch_size_per_device, 1)                   
+        batch_x = data_array[idx_traj, idx_t, :]  
         
         return (batch_u, batch_t, batch_x)
+
+    # Compile the mapped function.
+    # in_axes: (0 -> split keys across GPUs, None -> broadcast full data to GPUs, None -> broadcast full time array)
+    get_batch = jax.pmap(sample_fn, in_axes=(0, None, None))
 
     # ── Training loop ──────────────────────────────────────────────────────
     logger     = Logger()
@@ -217,7 +219,7 @@ def train_and_evaluate_dd(config, workdir: str):
         key, subkey_master = jax.random.split(key)
         subkeys = jax.random.split(subkey_master, num_devices)
 
-        batch       = get_batch(subkeys)
+        batch       = get_batch(subkeys, train_data, t_star)
         model.state = model.step(model.state, batch)
  
         # ── Logging ────────────────────────────────────────────────────────
