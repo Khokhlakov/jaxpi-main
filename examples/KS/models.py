@@ -182,7 +182,7 @@ class KSUDON_DD(ForwardIVP):
     def __init__(self, config, t_star):
         super().__init__(config)
         self.t_star = t_star 
-        self.N = 128
+        self.N = 256
         self.t0 = t_star[0]
         self.t1 = t_star[-1]
 
@@ -247,7 +247,7 @@ class KSUDONEvaluator_DD(BaseEvaluator):
         fig, ax = plt.subplots(figsize=(10, 8))
         
         c = ax.pcolormesh(np.arange(self.model.N), t, x_pred, cmap='viridis', shading='auto')
-        ax.set_xlabel("Spatial Points (0 to 128)")
+        ax.set_xlabel("Spatial Points (0 to 256)")
         ax.set_ylabel("Time (t)")
         ax.set_title("KS UDON (Data-Driven) Trajectory Heatmap")
         fig.colorbar(c, ax=ax)

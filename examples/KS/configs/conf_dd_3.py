@@ -53,7 +53,7 @@ def get_config():
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = None#"grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"data_loss": 1.0})
+    weighting.init_weights = ml_collections.ConfigDict({"data": 1.0})
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
 
@@ -65,7 +65,7 @@ def get_config():
     # KF settings
     config.kf = kf = ml_collections.ConfigDict()
     kf.specify_obs_idx  = False
-    kf.obs_idx_list     = list(range(0, 128, 8))
+    kf.obs_idx_list     = list(range(0, 256, 8))
 
     # EKF settings
     config.ekf = ekf = ml_collections.ConfigDict()
