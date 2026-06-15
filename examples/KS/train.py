@@ -188,6 +188,10 @@ def train_and_evaluate_dd(config, workdir: str):
     
     key = jax.random.PRNGKey(config.training.get("seed", 42))
 
+    # copy the dataset onto every GPU
+    train_data_repl = jax.device_put_replicated(train_data, jax.devices())
+    t_star_repl     = jax.device_put_replicated(t_star, jax.devices())
+
     def sample_fn(device_key, data_array, t_array):
         """Samples random pairs natively ON each GPU to avoid PCIe transfers."""
         key_traj, key_t = jax.random.split(device_key)
@@ -205,8 +209,8 @@ def train_and_evaluate_dd(config, workdir: str):
         return (batch_u, batch_t, batch_x)
 
     # Compile the mapped function.
-    # in_axes: (0 -> split keys across GPUs, None -> broadcast full data to GPUs, None -> broadcast full time array)
-    get_batch = jax.pmap(sample_fn, in_axes=(0, None, None))
+    # in_axes: (0 -> split across GPUs, None -> broadcast to GPUs)
+    get_batch = jax.pmap(sample_fn, in_axes=(0, 0, 0))
 
     # ── Training loop ──────────────────────────────────────────────────────
     logger     = Logger()
@@ -219,7 +223,7 @@ def train_and_evaluate_dd(config, workdir: str):
         key, subkey_master = jax.random.split(key)
         subkeys = jax.random.split(subkey_master, num_devices)
 
-        batch       = get_batch(subkeys, train_data, t_star)
+        batch       = get_batch(subkeys, train_data_repl, t_star_repl)
         model.state = model.step(model.state, batch)
  
         # ── Logging ────────────────────────────────────────────────────────
