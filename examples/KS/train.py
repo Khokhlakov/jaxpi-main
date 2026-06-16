@@ -195,28 +195,23 @@ def train_and_evaluate_dd(config, workdir: str):
     train_data_repl = jax.device_put_replicated(train_data, jax.devices())
     t_star_repl     = jax.device_put_replicated(t_star, jax.devices())
 
-    @functools.partial(jax.pmap, axis_name='devices')
-    def train_step(state, device_key, data, t_array):
-        """Samples random pairs natively ON each GPU to avoid PCIe transfers."""
+    @jax.pmap
+    def get_batch_on_device(device_key, data, t_array):
+        """Splits keys and samples entirely on-device. No host involvement."""
         new_key, sample_key = jax.random.split(device_key)
-        
+
         key_traj, key_t = jax.random.split(sample_key)
-        
-        # Sample locally
+
+        # Sample
         idx_traj = jax.random.randint(key_traj, (batch_size_per_device,), 0, num_trajs)
         idx_t    = jax.random.randint(key_t,    (batch_size_per_device,), 0, num_t)
 
-        batch_u  = data[idx_traj, 0, :] 
-
-        # reshape for local device    
-        batch_t = t_array[idx_t].reshape(batch_size_per_device, 1)                 
+        batch_u = data[idx_traj, 0, :]
+        # reshape for local device
+        batch_t = t_array[idx_t].reshape(batch_size_per_device, 1)
         batch_x = data[idx_traj, idx_t, :]
 
-        batch = (batch_u, batch_t, batch_x)
-
-        new_state = model.step(state, batch)
-        
-        return new_state, new_key
+        return new_key, (batch_u, batch_t, batch_x)
 
     # ── Training loop ──────────────────────────────────────────────────────
     logger     = Logger()
@@ -226,9 +221,10 @@ def train_and_evaluate_dd(config, workdir: str):
     for step in range(config.training.max_steps):
  
         # ── Data Sampling + Gradient Step ──────────────────────────────────
-        model.state, device_keys = train_step(
-            model.state, device_keys, train_data_repl, t_star_repl
+        device_keys, batch = get_batch_on_device(
+            device_keys, train_data_repl, t_star_repl
         )
+        model.state = model.step(model.state, batch)
         # ── Logging ────────────────────────────────────────────────────────
         if jax.process_index() == 0:
             if step % config.logging.log_every_steps == 0:
