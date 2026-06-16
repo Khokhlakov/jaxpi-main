@@ -189,7 +189,11 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     t_star_window = t_ax[:pts_pw + 1]
 
     # ── 2. Setup Model & Load Checkpoint ────────────────────────────────────
-    model = models.KSUDON(config, t_star_window)
+    if config.mode == "eval":
+        model = models.KSUDON(config, t_star_window)
+    else:
+        model = models.KSUDON_DD(config, t_star_window)
+        
     ckpt_path = os.path.join(os.getcwd(), config.wandb.name, "ckpt", "udon_model")
     
     logging.info(f"Restoring DeepONet model from: {ckpt_path}")

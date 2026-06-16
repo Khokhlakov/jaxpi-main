@@ -149,13 +149,14 @@ def train_and_evaluate_dd(config, workdir: str):
     train_file = "data/ks_train_data_dd.h5"
     
     with h5py.File(train_file, 'r') as f_train:
-        # train_data shape: (num_samples, time_states, 128)
+        # train_data shape: (num_samples, time_states, 256)
         train_data = jnp.array(f_train['u'][:])
         
         # Extract the integration step to map physical time correctly
         dt = f_train.attrs.get("dt", 0.02)
-        
-    logging.info(f"Loaded Dense Supervised Data: {train_data.shape}")
+        interval_steps = f_train.attrs.get("interval_steps", train_data.shape[1] - 1)
+
+    logging.info(f"Loaded Windowed Data-Driven Dataset: {train_data.shape}")
     
     num_t  = train_data.shape[1]
     

@@ -40,7 +40,7 @@ class ETDCoefficients:
 
 class KuramotoSivashinskyAdvanced:
     def __init__(self, L: float = 64.0, N: int = 256, 
-                 dt: float = 0.005, dealiasing: float = 2/3):
+                 dt: float = 0.02, dealiasing: float = 2/3):
         self.L = L
         self.N = N
         self.dt = dt
@@ -104,7 +104,7 @@ def generate_datasets(
     num_samples: int = 200, 
     L: float = 64.0, 
     N: int = 256, 
-    dt: float = 0.005, 
+    dt: float = 0.02, 
     t_burn: float = 50.0,
     max_additions: int = 4,
     test_windows: int = 50
@@ -136,7 +136,6 @@ def generate_datasets(
     interval_steps = int(1.0 / dt)
 
     # 2. Define Scanning Functions 
-    # (No @jax.jit needed here; they inherit compilation from simulate_sample)
     def advance_time(u_hat, steps):
         """Advances the state by `steps` without saving intermediate values."""
         def body_fn(u, _):
@@ -193,22 +192,43 @@ def generate_datasets(
     train_data_hat, train_data_dd_hat, test_data_hat = jax.vmap(simulate_sample)(u_hat_initial)
     
     # Convert Fourier modes back to Physical space for the Neural Network (256 points)
-    train_data_real = jnp.fft.irfft(train_data_hat, axis=-1)
-    train_data_dd_real = jnp.fft.irfft(train_data_dd_hat, axis=-1)
-    test_data_real = jnp.fft.irfft(test_data_hat, axis=-1)
+    train_data_real     = jnp.fft.irfft(train_data_hat, axis=-1)
+    train_data_dd_real  = jnp.fft.irfft(train_data_dd_hat, axis=-1)
+    test_data_real      = jnp.fft.irfft(test_data_hat, axis=-1)
     
     # Keep 256 points
-    train_data_np = np.array(train_data_real)
-    train_data_dd_np = np.array(train_data_dd_real)
-    test_data_np = np.array(test_data_real)
+    train_data_np       = np.array(train_data_real)
+    train_data_dd_np    = np.array(train_data_dd_real)
+    test_data_np        = np.array(test_data_real)
 
     # DOWNSAMPLE: Slice the spatial array to keep 128 points [..., ::2]
     #train_data_np = np.array(train_data_real)[..., ::2]
     #train_data_dd_np = np.array(train_data_dd_real)[..., ::2]
     #test_data_np = np.array(test_data_real)[..., ::2]
     
-    print(f"Train dataset shape: {train_data_np.shape} -> (samples, time_states, spatial_grid)")
-    print(f"Train dataset (dense) shape:  {train_data_dd_np.shape}")
+    print(f"PI  train data shape : {train_data_np.shape}"
+          f"  →  (samples, time_states, N)  [pooled at load time in train.py]")
+    
+    # ── Data-Driven pool — split long trajectories into 1-unit windows ──
+    starts  = np.arange(max_additions) * interval_steps          # (max_additions,)
+    offsets = np.arange(interval_steps + 1)                      # (interval_steps+1,)  e.g. 51
+    indices = starts[:, None] + offsets[None, :]                 # (max_additions, interval_steps+1)
+
+    # Advanced index into time axis:
+    #   train_data_dd_np[:, indices, :]  →  (num_samples, max_additions, interval_steps+1, N)
+    train_data_dd_windowed = train_data_dd_np[:, indices, :]
+
+    # Merge the first two dimensions → flat pool of windows
+    #   (num_samples * max_additions, interval_steps+1, N)
+    #   e.g. (100 * 500, 51, 256) = (50000, 51, 256)
+    train_data_dd_windowed = train_data_dd_windowed.reshape(
+        -1, interval_steps + 1, train_data_dd_np.shape[-1]
+    )
+
+    print(f"DD  train data shape : {train_data_dd_windowed.shape}"
+          f"  →  (windows, time_pts_per_window, N)")
+    print(f"    = {num_samples} trajectories × {max_additions} windows"
+          f" × {interval_steps + 1} time pts × {train_data_dd_np.shape[-1]} spatial pts")
     print(f"Test dataset shape:  {test_data_np.shape}")
 
     # 4. Save to HDF5
@@ -220,11 +240,14 @@ def generate_datasets(
         f.attrs["max_additions"] = max_additions
     
     with h5py.File("ks_train_data_dd.h5", "w") as f:
-        f.create_dataset("u", data=train_data_dd_np)
-        f.attrs["L"] = L
-        f.attrs["N"] = N
-        f.attrs["dt"] = dt
-        f.attrs["max_additions"] = max_additions
+        f.create_dataset("u", data=train_data_dd_windowed)
+        f.attrs["L"]              = L
+        f.attrs["N"]              = N
+        f.attrs["dt"]             = dt
+        f.attrs["interval_steps"] = interval_steps   # pts per window (excl. IC) = 1/dt
+        f.attrs["num_windows"]    = max_additions     # windows per original trajectory
+        f.attrs["num_samples"]    = num_samples       # original IC count
+        # total pool size = num_samples * num_windows
 
     with h5py.File("ks_test_data.h5", "w") as f:
         f.create_dataset("u", data=test_data_np)
