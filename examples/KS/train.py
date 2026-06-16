@@ -19,6 +19,7 @@ from flax.jax_utils import replicate
 import models
 from utils import get_dataset
 import h5py
+import functools
 
 # ==========================================
 # Physics-Informed Training Pipeline
@@ -187,31 +188,35 @@ def train_and_evaluate_dd(config, workdir: str):
 
     num_trajs  = train_data.shape[0]
     
-    key = jax.random.PRNGKey(config.training.get("seed", 42))
+    init_key = jax.random.PRNGKey(config.training.get("seed", 42))
+    device_keys = jax.pmap(lambda i: jax.random.PRNGKey(i))(jnp.arange(num_devices))
 
     # copy the dataset onto every GPU
     train_data_repl = jax.device_put_replicated(train_data, jax.devices())
     t_star_repl     = jax.device_put_replicated(t_star, jax.devices())
 
-    def sample_fn(device_key, data_array, t_array):
+    @functools.partial(jax.pmap, axis_name='devices')
+    def train_step(state, device_key, data, t_array):
         """Samples random pairs natively ON each GPU to avoid PCIe transfers."""
-        key_traj, key_t = jax.random.split(device_key)
+        new_key, sample_key = jax.random.split(device_key)
+        
+        key_traj, key_t = jax.random.split(sample_key)
         
         # Sample locally
         idx_traj = jax.random.randint(key_traj, (batch_size_per_device,), 0, num_trajs)
-        idx_t    = jax.random.randint(key_t, (batch_size_per_device,), 0, num_t)
-        
-        batch_u = data_array[idx_traj, 0, :]  
+        idx_t    = jax.random.randint(key_t,    (batch_size_per_device,), 0, num_t)
+
+        batch_u  = data[idx_traj, 0, :] 
 
         # reshape for local device    
-        batch_t = t_array[idx_t].reshape(batch_size_per_device, 1)                   
-        batch_x = data_array[idx_traj, idx_t, :]  
-        
-        return (batch_u, batch_t, batch_x)
+        batch_t = t_array[idx_t].reshape(batch_size_per_device, 1)                 
+        batch_x = data[idx_traj, idx_t, :]
 
-    # Compile the mapped function.
-    # in_axes: (0 -> split across GPUs, None -> broadcast to GPUs)
-    get_batch = jax.pmap(sample_fn, in_axes=(0, 0, 0))
+        batch = (batch_u, batch_t, batch_x)
+
+        new_state = model.step(state, batch)
+        
+        return new_state, new_key
 
     # ── Training loop ──────────────────────────────────────────────────────
     logger     = Logger()
@@ -221,12 +226,9 @@ def train_and_evaluate_dd(config, workdir: str):
     for step in range(config.training.max_steps):
  
         # ── Data Sampling + Gradient Step ──────────────────────────────────
-        key, subkey_master = jax.random.split(key)
-        subkeys = jax.random.split(subkey_master, num_devices)
-
-        batch       = get_batch(subkeys, train_data_repl, t_star_repl)
-        model.state = model.step(model.state, batch)
- 
+        model.state, device_keys = train_step(
+            model.state, device_keys, train_data_repl, t_star_repl
+        )
         # ── Logging ────────────────────────────────────────────────────────
         if jax.process_index() == 0:
             if step % config.logging.log_every_steps == 0:
