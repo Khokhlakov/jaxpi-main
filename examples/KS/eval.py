@@ -68,30 +68,32 @@ def _plot_trajectory_summary(
 
     # --- ROW 0: Heatmaps ---
     ax_heat_pred = fig.add_subplot(gs[0, 0:4])
-    ax_heat_true = fig.add_subplot(gs[0, 4:8])
-    ax_heat_diff = fig.add_subplot(gs[0, 8:12])
+    ax_heat_true = fig.add_subplot(gs[0, 4:8], sharey=ax_heat_pred)
+    ax_heat_diff = fig.add_subplot(gs[0, 8:12], sharey=ax_heat_pred)
 
-    extent = [0, N-1, t_ax[-1], t_ax[0]] # [xmin, xmax, ymin, ymax] for imshow
+    extent = [0, N-1, t_ax[0], t_ax[-1]]
     
     # Prediction
-    im_pred = ax_heat_pred.imshow(x_est, aspect='auto', extent=extent, cmap='viridis')
+    im_pred = ax_heat_pred.imshow(x_est, aspect='auto', extent=extent, cmap='viridis', origin='lower')
     ax_heat_pred.set_title("DeepONet Prediction", fontsize=12, fontweight='bold')
     ax_heat_pred.set_ylabel("Time (t)")
     fig.colorbar(im_pred, ax=ax_heat_pred, fraction=0.046, pad=0.04)
 
     # Truth
-    im_true = ax_heat_true.imshow(x_true, aspect='auto', extent=extent, cmap='viridis')
+    im_true = ax_heat_true.imshow(x_true, aspect='auto', extent=extent, cmap='viridis', origin='lower')
     ax_heat_true.set_title("Reference Truth", fontsize=12, fontweight='bold')
     ax_heat_true.set_xlabel("Spatial Points")
+    ax_heat_true.tick_params(labelleft=False)
     fig.colorbar(im_true, ax=ax_heat_true, fraction=0.046, pad=0.04)
 
     # Difference (Centered at 0)
     vmax_diff = np.max(np.abs(diff))
     im_diff = ax_heat_diff.imshow(diff, aspect='auto', extent=extent, cmap='RdBu_r', 
-                                  vmin=-vmax_diff, vmax=vmax_diff)
+                                  vmin=-vmax_diff, vmax=vmax_diff, origin='lower')
     ax_heat_diff.set_title("Absolute Difference", fontsize=12, fontweight='bold')
+    ax_heat_diff.tick_params(labelleft=False)
     fig.colorbar(im_diff, ax=ax_heat_diff, fraction=0.046, pad=0.04)
-
+    
     # --- ROW 1: Mean L2 Error Plot ---
     ax_l2 = fig.add_subplot(gs[1, :])
     ax_l2.plot(t_ax, l2_rel, color="#E53935", linewidth=2.0, label="Relative L2 Error")

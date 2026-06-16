@@ -265,4 +265,4 @@ if __name__ == "__main__":
                       dt=0.02, 
                       t_burn=100.0, 
                       max_additions=500,
-                      test_windows=30)
+                      test_windows=50)
