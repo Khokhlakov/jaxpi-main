@@ -198,16 +198,13 @@ def generate_datasets(
     
     # Keep 256 points
     train_data_np       = np.array(train_data_real)
+    # Flatten
+    train_data_np       = train_data_np.reshape(-1, train_data_np.shape[-1])
     train_data_dd_np    = np.array(train_data_dd_real)
     test_data_np        = np.array(test_data_real)
-
-    # DOWNSAMPLE: Slice the spatial array to keep 128 points [..., ::2]
-    #train_data_np = np.array(train_data_real)[..., ::2]
-    #train_data_dd_np = np.array(train_data_dd_real)[..., ::2]
-    #test_data_np = np.array(test_data_real)[..., ::2]
     
     print(f"PI  train data shape : {train_data_np.shape}"
-          f"  →  (samples, time_states, N)  [pooled at load time in train.py]")
+          f"  →  (samples, N)")
     
     # ── Data-Driven pool — split long trajectories into 1-unit windows ──
     starts  = np.arange(max_additions) * interval_steps          # (max_additions,)
