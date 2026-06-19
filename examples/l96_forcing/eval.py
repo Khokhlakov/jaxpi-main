@@ -114,7 +114,7 @@ def _plot_trajectory_summary(
             
         if i in obs_by_var:
             obs_times_i, obs_vals_i = zip(*obs_by_var[i])
-            ax.scatter(obs_times_i, obs_vals_i, marker="x", s=25, linewidths=0.9,
+            ax.scatter(obs_times_i, obs_vals_i, marker="x", s=20, linewidths=0.7,
                        color=OBS_COLOR, zorder=5, label="Observation" if i == min(obs_by_var) else None)
  
         ax.set_title(f"$x_{{{i}}}$", fontsize=9, pad=2)
