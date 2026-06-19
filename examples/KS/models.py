@@ -58,7 +58,10 @@ class KSUDON(ForwardIVP):
 
         # Normalized Kuramoto-Sivashinsky Residual
         term_t = x_t / self.c_t
-        term_nonlin = (self.c_u / self.c_x) * x * x_xi
+
+        x_filtered = jnp.fft.ifft(x_hat).real
+
+        term_nonlin = (self.c_u / self.c_x) * x_filtered * x_xi
         term_2nd = x_xixi / self.c_x**2
         term_4th = x_4xi / self.c_x**4
 
