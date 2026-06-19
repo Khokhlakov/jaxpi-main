@@ -16,6 +16,7 @@ from examples.l96_forcing.utils import get_dataset, build_obs_schedule, scale_Q_
 import numpy as np
 from scipy.integrate import solve_ivp
 import h5py
+from functools import partial
 
 
 def _plot_trajectory_summary(
@@ -450,8 +451,8 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
     else:
         obs_indices = jnp.arange(0, N, obs_every_n)
 
-    m  = len(obs_indices)
-    R  = jnp.eye(m) * sigma_obs ** 2
+    m_vars = len(obs_indices)
+    R  = jnp.eye(m_vars) * sigma_obs ** 2
     P0 = jnp.eye(N) * P0_sigma ** 2
 
     num_windows = L_windows
@@ -461,9 +462,29 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         total_time = total_time, dt_fine = DT_FINE, dt_obs = DT_OBS,
     )
 
-    total_plots = config.saving.get("total_plots", 2)
+    # ── Binned Trajectory Selection ─────────────────────────────────────────
+    try:
+        # Attempt to parse m from ckpt_name as requested
+        m_samples = int(config.wandb.ckpt_name)
+    except (ValueError, TypeError, AttributeError):
+        # Fallback if ckpt_name is a standard string
+        m_samples = config.saving.get("total_plots", 2)
 
-    for ic_idx in range(min(total_plots, num_ics)):
+    F_np = np.array(F_test)
+    bins = [(5, 6), (6, 7), (7, 8), (8, 9.01)]
+    selected_ic_indices = []
+
+    for lower, upper in bins:
+        # Find all IC indices falling within the current F bin
+        indices_in_bin = np.where((F_np >= lower) & (F_np < upper))[0]
+        # Pick the first m_samples (or as many as available)
+        selected_for_bin = indices_in_bin[:m_samples]
+        selected_ic_indices.extend(selected_for_bin.tolist())
+        
+    logging.info(f"Selected {len(selected_ic_indices)} total trajectories across {len(bins)} F-parameter bins (target m={m_samples} per bin).")
+
+    # ── Individual Trajectory Evaluation ────────────────────────────────────
+    for ic_idx in selected_ic_indices:
         logging.info(f"--- EnKF Evaluation for IC {ic_idx} (N_ens={N_ens}, F={F_test[ic_idx]:.2f}) ---")
         u_current_true = u_test[ic_idx, 0, :]
         F_val = float(F_test[ic_idx])
@@ -493,7 +514,7 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
 
             if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
                 key, subkey = jax.random.split(key)
-                obs_idx_vars = jax.random.choice(subkey, N, shape=(m,), replace=False)
+                obs_idx_vars = jax.random.choice(subkey, N, shape=(m_vars,), replace=False)
             else:
                 obs_idx_vars = obs_indices
 
@@ -518,7 +539,9 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         # Build custom DeepONet propagator matching current trajectory's F
         def propagator(u, t):
             u_aug = jnp.concatenate([u, jnp.array([F_val])], axis=-1)
-            return model.x_pred_fn(params, u_aug, t_star_window)[-1]
+            preds = model.x_pred_fn(params, u_aug, t_star_window)  # (pts_pw+1, N)
+            idx   = round(t / DT_FINE)
+            return preds[idx]
             
         predict_fn, update_fn = make_enkf(propagator, N, N_ens)
 
@@ -530,8 +553,10 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         )
 
         t_fine_axis = t_eval_fine[1:]
+        
+        # Added F_val directly into the output filename for easy visual sorting
         save_path = os.path.join(
-            workdir, "figures", config.wandb.name, f"trajectory_summary_enkf_ic_{ic_idx}.pdf",
+            workdir, "figures", config.wandb.name, f"trajectory_summary_F_{F_val:.2f}_ic_{ic_idx}.pdf",
         )
 
         _plot_trajectory_summary(
@@ -556,6 +581,7 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         mean_spread = float(jnp.mean(x_spreads))
         logging.info(f"IC {ic_idx} | EnKF L2: {l2_enkf:.3e} | Mean σ: {mean_spread:.3e}")
 
+    # ── Batch Evaluation ────────────────────────────────────────────────────
     _evaluate_batch_l2_enkf(
         model, params, t_star_window,
         Q_fine, P0, N_ens, obs_every_n, sigma_obs, P0_sigma,
@@ -637,10 +663,25 @@ def _evaluate_batch_l2_enkf(
     post_rmse_sum_unobs     = np.zeros(T_obs)
     post_rmse_sq_sum_unobs  = np.zeros(T_obs)
 
+    @partial(jax.jit, static_argnums=(3,))   # t is still static; F is dynamic
+    def _propagator_kernel(u, F_jax, t_star, t):
+        u_aug = jnp.concatenate([u, F_jax], axis=-1)
+        preds = model.x_pred_fn(params, u_aug, t_star)
+        return preds[round(t / dt)]
+
+    # Build predict_fn/update_fn ONCE with a placeholder F (any concrete array works
+    # to set the shape; JAX will compile a general version)
+    _F_placeholder = jnp.array([0.0])
+    def _base_propagator(u, t):
+        return _propagator_kernel(u, _F_placeholder, t_star_window, t)
+    
+    predict_fn, update_fn = make_enkf(_base_propagator, N, N_ens)
+
     for ic in range(B):
         key = jax.random.PRNGKey(ic + 77777)
         u_true = u_test[ic, 0, :]
         F_val = float(F_test[ic])
+        F_val_jax = jnp.array([float(F_test[ic])])
 
         def lorenz_96(t, state, F=F_val):
             xp1 = np.roll(state, -1)
@@ -686,14 +727,12 @@ def _evaluate_batch_l2_enkf(
         x0_hat    = u_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
         ensemble0 = init_ensemble(x0_hat, P0, N_ens, key_ens)
 
-        def propagator(u, t):
-            u_aug = jnp.concatenate([u, jnp.array([F_val])], axis=-1)
-            return model.x_pred_fn(params, u_aug, t_star_window)[-1]
+        def propagator(u, t, _F=F_val_jax):       # default-arg trick captures current value
+            return _propagator_kernel(u, _F, t_star_window, t)
             
-        predict_fn, update_fn = make_enkf(propagator, N, N_ens)
-
+        predict_fn_ic, update_fn_ic = make_enkf(propagator, N, N_ens)
         x_means, x_spreads, prior_means_at_obs = run_enkf_smoother(
-            predict_fn, update_fn,
+            predict_fn_ic, update_fn_ic,
             ensemble0, y_obs_seq, obs_step_indices_batch,
             H_seq, Q_fine, R_fixed, key, total_fine_steps_batch,
             dt_fine=dt_fine, dt_window=dt_window,
