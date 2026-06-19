@@ -23,6 +23,9 @@ class KSUDON(ForwardIVP):
         self.c_t = 1.0
         self.c_x = 32.0
         
+        # Dealiasing convention (2/3 rule)
+        self.dealiasing_cutoff = int(self.N * (2/3) / 2)
+
         self.t0 = t_star[0]
         self.t1 = t_star[-1]
 
@@ -44,9 +47,12 @@ class KSUDON(ForwardIVP):
 
         # Compute Fourier transform of the spatial state
         x_hat = jnp.fft.fft(x)
+
+        mask = (jnp.abs(jnp.fft.fftfreq(self.N) * self.N) < self.dealiasing_cutoff)
+        x_hat = x_hat * mask
         # Zero out the Nyquist frequency to prevent gradient 
         # blowup in the 2nd and 4th (even) derivatives.
-        k = k.at[self.N // 2].set(0.0)
+        #k = k.at[self.N // 2].set(0.0)
 
         # Spectral derivatives via IFFT (dropping negligible imaginary artifacts)
         x_xi = jnp.fft.ifft(1j * k * x_hat).real
