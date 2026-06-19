@@ -44,6 +44,9 @@ class KSUDON(ForwardIVP):
 
         # Compute Fourier transform of the spatial state
         x_hat = jnp.fft.fft(x)
+        # Zero out the Nyquist frequency to prevent gradient 
+        # blowup in the 2nd and 4th (even) derivatives.
+        k = k.at[self.N // 2].set(0.0)
 
         # Spectral derivatives via IFFT (dropping negligible imaginary artifacts)
         x_xi = jnp.fft.ifft(1j * k * x_hat).real
