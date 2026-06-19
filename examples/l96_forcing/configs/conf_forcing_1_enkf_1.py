@@ -3,7 +3,7 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    config.mode = "eval_enk"
+    config.mode = "eval_enkf"
 
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
