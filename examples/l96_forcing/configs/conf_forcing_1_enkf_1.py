@@ -74,7 +74,7 @@ def get_config():
     ekf.sigma_obs       = 0.2
     ekf.P0_sigma        = 0.3
     ekf.dynamic_vars    = False 
-    ekf.batch_l2_size   = 200
+    ekf.batch_l2_size   = 100
 
     ekf.dt_fine = 0.005
     ekf.dt_obs  = 0.25
