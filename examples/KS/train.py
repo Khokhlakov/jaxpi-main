@@ -10,7 +10,6 @@ import ml_collections
 from absl import logging
 import wandb
 
-from jaxpi.samplers import UniformSampler, SpaceSampler
 from jaxpi.logging import Logger
 from jaxpi.utils import save_checkpoint, restore_checkpoint
 
@@ -35,13 +34,8 @@ def train_and_evaluate(config, workdir: str):
     test_file  = "data/ks_test_data.h5"
 
     with h5py.File(train_file, 'r') as f_train:
-        # u_train shape: (num_samples, time_states, 256)
-        u_train = jnp.array(f_train['u'][:])
-        
-        # Flatten the first two dimensions so EVERY recorded state acts 
-        # as a valid initial condition (IC) for the physics residual sampler.
-        # u_pool Shape: (num_samples * time_states, 256)
-        u_pool = u_train.reshape(-1, u_train.shape[-1])
+        # u_pool shape: (50100, 256)
+        u_pool = jnp.array(f_train['u'][:])
         
     with h5py.File(test_file, 'r') as f_test:
         # Dense test trajectories. Shape: (num_ics, num_test_pts, 256)
@@ -66,21 +60,35 @@ def train_and_evaluate(config, workdir: str):
     logging.info(f"t_star: {t_star.shape}")
 
     # ── Hyper-parameters ───────────────────────────────────────────────────
-    batch_size = config.training.batch_size_per_device
+    batch_size_per_device = config.training.batch_size_per_device
     seed       = config.training.get("seed", 42)
     pool_size  = u_pool.shape[0]
 
     logging.info(f"Static Training Pool Ready: {pool_size} samples.")
 
-    # ── Samplers ───────────────────────────────────────────────────────────
-    # t is sampled uniformly over the training window [0, 1.0].
-    # Adjust dom_t if your DeepONet is learning a different temporal window length
-    dom_t     = jnp.array([[0.0, 1.0]]) 
-    sampler_t = UniformSampler(dom_t, batch_size)
+    # ── On-device Sampler ──────────────────────────────────────────────────
+    num_devices = jax.local_device_count()
+    init_key    = jax.random.PRNGKey(seed)
+    device_keys = jax.pmap(lambda i: jax.random.fold_in(init_key, i))(jnp.arange(num_devices))
 
-    # IC sampler: samples rows uniformly at random from the full pre-computed pool.
-    sampler_u   = SpaceSampler(u_pool, batch_size)
-    res_sampler = zip(sampler_u, sampler_t)
+    # Copy the IC pool onto every device once
+    u_pool_repl = jax.device_put_replicated(u_pool, jax.devices())
+    
+    t_lo, t_hi = 0.0, 1.0
+
+    @jax.pmap
+    def get_batch_on_device(device_key, pool):
+        """Splits keys and samples entirely on-device. No host involvement."""
+        new_key, sample_key = jax.random.split(device_key)
+        key_u, key_t = jax.random.split(sample_key)
+
+        idx_u   = jax.random.randint(key_u, (batch_size_per_device,), 0, pool_size)
+        batch_u = pool[idx_u]
+        batch_t = jax.random.uniform(
+            key_t, (batch_size_per_device, 1), minval=t_lo, maxval=t_hi
+        )
+
+        return new_key, (batch_u, batch_t)
 
     # ── Build model ────────────────────────────────────────────────────────
     model     = models.KSUDON(config, t_star)
@@ -100,10 +108,10 @@ def train_and_evaluate(config, workdir: str):
     for step in range(config.training.max_steps):
 
         # ── Forward + gradient step ────────────────────────────────────────
-        batch       = next(res_sampler)          # (batch_u, batch_t), each (devices, B, ·)
-        model.state = model.step(model.state, batch)
+        device_keys, batch  = get_batch_on_device(device_keys, u_pool_repl)
+        model.state         = model.step(model.state, batch)
 
-        # ── Adaptive loss weighting (optional) ────────────────────────────
+        # ── Adaptive loss weighting ───────────────────────────────────────
         if config.weighting.scheme in ("grad_norm", "ntk"):
             if step % config.weighting.update_every_steps == 0:
                 model.state = model.update_weights(model.state, batch)
@@ -189,7 +197,7 @@ def train_and_evaluate_dd(config, workdir: str):
     num_trajs  = train_data.shape[0]
     
     init_key = jax.random.PRNGKey(config.training.get("seed", 42))
-    device_keys = jax.pmap(lambda i: jax.random.PRNGKey(i))(jnp.arange(num_devices))
+    device_keys = jax.pmap(lambda i: jax.random.fold_in(init_key, i))(jnp.arange(num_devices))
 
     # copy the dataset onto every GPU
     train_data_repl = jax.device_put_replicated(train_data, jax.devices())
