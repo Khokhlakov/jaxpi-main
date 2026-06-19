@@ -101,7 +101,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "test_1/ckpt/udon_model"
-    saving.total_plots = 3
+    saving.total_plots = 1
 
     # Input shape (t is the only input)
     config.input_dim = 42

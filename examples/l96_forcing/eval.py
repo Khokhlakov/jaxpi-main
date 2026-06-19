@@ -455,7 +455,7 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
     R  = jnp.eye(m_vars) * sigma_obs ** 2
     P0 = jnp.eye(N) * P0_sigma ** 2
 
-    num_windows = L_windows
+    num_windows = 100#L_windows
     total_time  = num_windows * DT_WINDOW
 
     obs_times, obs_step_indices, total_fine_steps = build_obs_schedule(
@@ -667,7 +667,7 @@ def _evaluate_batch_l2_enkf(
     def _propagator_kernel(u, F_jax, t_star, t):
         u_aug = jnp.concatenate([u, F_jax], axis=-1)
         preds = model.x_pred_fn(params, u_aug, t_star)
-        return preds[round(t / dt)]
+        return preds[round(t / dt_fine)]
 
     # Build predict_fn/update_fn ONCE with a placeholder F (any concrete array works
     # to set the shape; JAX will compile a general version)
