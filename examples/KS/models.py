@@ -45,31 +45,24 @@ class KSUDON(ForwardIVP):
         # Wavenumbers for domain [0, 2*pi]
         k = jnp.fft.fftfreq(self.N) * self.N * jnp.pi
 
-        # Transform state and time derivative to Fourier space
+        # Compute Fourier transform of the spatial state
         x_hat = jnp.fft.fft(x)
-        x_t_hat = jnp.fft.fft(x_t)
 
-        # 1. Time derivative
-        term_t_hat = x_t_hat / self.c_t
-
-        # 2. Non-linear term: compute u^2 in physical space, then differentiate spectrally
-        # u * u_x = 0.5 * (u^2)_x  -->  0.5 * 1j * k * fft(u^2)
-        u_squared_hat = jnp.fft.fft(x ** 2)
-        term_nonlin_hat = 0.5 * (self.c_u / self.c_x) * 1j * k * u_squared_hat
-
-        # 3. Linear spatial derivatives
-        term_2nd_hat = (-k**2 / self.c_x**2) * x_hat
-        term_4th_hat = (k**4 / self.c_x**4) * x_hat
-
-        # Combine the entire residual in Fourier space
-        r_hat = term_t_hat + term_nonlin_hat + term_2nd_hat + term_4th_hat
-
-        # Apply the exact dealiasing mask (Galerkin projection)
         mask = (jnp.abs(jnp.fft.fftfreq(self.N) * self.N) < self.dealiasing_cutoff)
-        r_hat_masked = r_hat * mask
+        x_hat = x_hat * mask
 
-        # Return to physical space for the final MSE loss computation
-        r_x = jnp.fft.ifft(r_hat_masked).real
+        # Spectral derivatives via IFFT (dropping negligible imaginary artifacts)
+        x_xi = jnp.fft.ifft(1j * k * x_hat).real
+        x_xixi = jnp.fft.ifft(-k**2 * x_hat).real
+        x_4xi = jnp.fft.ifft(k**4 * x_hat).real
+
+        # Normalized Kuramoto-Sivashinsky Residual
+        term_t = x_t / self.c_t
+        term_nonlin = (self.c_u / self.c_x) * x * x_xi
+        term_2nd = x_xixi / self.c_x**2
+        term_4th = x_4xi / self.c_x**4
+
+        r_x = term_t + term_nonlin + term_2nd + term_4th
         return r_x
 
     @partial(jit, static_argnums=(0,))
