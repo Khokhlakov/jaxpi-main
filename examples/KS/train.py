@@ -124,7 +124,6 @@ def train_and_evaluate(config, workdir: str):
 
                 # Evaluator expects state, train batch, branch eval input, and ground truth trajectory
                 log_dict = evaluator(state, batch_dev, u_ref_eval, x_ref_eval)
-                log_dict["pool/active_ics"] = pool_size
 
                 wandb.log(log_dict, step)
 
