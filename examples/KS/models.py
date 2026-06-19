@@ -40,7 +40,7 @@ class KSUDON(ForwardIVP):
         x_t = jacfwd(self.x_net, argnums=2)(params, u, t).reshape(self.N)
 
         # Wavenumbers for domain [0, 2*pi]
-        k = jnp.fft.fftfreq(self.N) * self.N
+        k = jnp.fft.fftfreq(self.N) * self.N * jnp.pi
 
         # Compute Fourier transform of the spatial state
         x_hat = jnp.fft.fft(x)
