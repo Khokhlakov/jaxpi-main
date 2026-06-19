@@ -404,7 +404,7 @@ Python
 
         # Return to physical space for the final MSE loss computation
         r_x = jnp.fft.ifft(r_hat_masked).real
-        return r_x
+        return r_x 
 
     @partial(jit, static_argnums=(0,))
     def res_and_w(self, params, batch):
