@@ -311,7 +311,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
 
     # ── 2. Setup Model & Load Checkpoint ────────────────────────────────────
     model = models.L96UDON(config, t_star_window)
-    ckpt_path = os.path.join(os.getcwd(), config.wandb.name, "ckpt", "udon_model")
+    ckpt_path = os.path.join(os.getcwd(), config.wandb.ckpt_name, "ckpt", "udon_model")
     
     logging.info(f"Restoring DeepONet model from: {ckpt_path}")
     model.state = restore_checkpoint(model.state, ckpt_path)
@@ -342,7 +342,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     x_pred_full = jnp.concatenate(x_pred_list, axis=1)  
 
     # ── 4. Generate Individual Trajectory Plots ─────────────────────────────
-    total_plots = config.saving.get("total_plots", 5)
+    total_plots = config.saving.get("total_plots", 2)
     for ic_idx in range(min(total_plots, num_ics)):
         logging.info(f"--- Generating detailed summary for IC {ic_idx} (F={F_test[ic_idx]:.2f}) ---")
         
@@ -437,7 +437,7 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
 
     # ── Setup Model ─────────────────────────────────────────────────────────
     model = models.L96UDON(config, t_star_window)
-    ckpt_path = os.path.join(os.getcwd(), config.wandb.name, "ckpt", "udon_model")
+    ckpt_path = os.path.join(os.getcwd(), config.wandb.ckpt_name, "ckpt", "udon_model")
     model.state = restore_checkpoint(model.state, ckpt_path)
     params = model.state.params
 
@@ -461,7 +461,7 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         total_time = total_time, dt_fine = DT_FINE, dt_obs = DT_OBS,
     )
 
-    total_plots = config.saving.get("total_plots", 5)
+    total_plots = config.saving.get("total_plots", 2)
 
     for ic_idx in range(min(total_plots, num_ics)):
         logging.info(f"--- EnKF Evaluation for IC {ic_idx} (N_ens={N_ens}, F={F_test[ic_idx]:.2f}) ---")
