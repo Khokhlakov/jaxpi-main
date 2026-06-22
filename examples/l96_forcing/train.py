@@ -66,7 +66,6 @@ def train_and_evaluate(config, workdir: str):
     logging.info(f"x_ref_eval: {x_ref_eval.shape}")
     logging.info(f"u_ref_eval (Branch Input): {u_ref_eval.shape}")
     logging.info(f"t_star: {t_star.shape}")
-    logging.info(f"Static Training Pool Ready: {pool_size} samples.")
 
     # ── Samplers ───────────────────────────────────────────────────────────
     # 1. Define bounds and device counts
