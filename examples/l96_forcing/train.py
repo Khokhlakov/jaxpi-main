@@ -37,7 +37,7 @@ def train_and_evaluate(config, workdir: str):
     with h5py.File(train_file, 'r') as f_train:
         # u_pool contains states pooled across all trajectories and windows. 
         # Shape: (num_ics * M, 41) -> [40 state variables + 1 F value]
-        u_pool = jnp.array(f_train['u'][:])
+        u_pool_np = np.array(f_train['u'][:])
         
     with h5py.File(test_file, 'r') as f_test:
         # Dense test trajectories. Shape: (num_ics, num_test_pts, 40)
@@ -66,51 +66,42 @@ def train_and_evaluate(config, workdir: str):
     logging.info(f"x_ref_eval: {x_ref_eval.shape}")
     logging.info(f"u_ref_eval (Branch Input): {u_ref_eval.shape}")
     logging.info(f"t_star: {t_star.shape}")
-
-    # ── Hyper-parameters ───────────────────────────────────────────────────
-    num_vars   = 40
-    batch_size = config.training.batch_size_per_device
-    seed       = config.training.get("seed", 42)
-    pool_size  = u_pool.shape[0]
-
     logging.info(f"Static Training Pool Ready: {pool_size} samples.")
 
     # ── Samplers ───────────────────────────────────────────────────────────
-    # t is sampled uniformly over the training window [t0, t1].
-    dom_t     = jnp.array([[t_star[0], t_star[-1]]])
-    sampler_t = UniformSampler(dom_t, batch_size)
-
-    # IC sampler: samples rows uniformly at random from the full pre-computed pool.
-    sampler_u   = SpaceSampler(u_pool, batch_size)
-    res_sampler = zip(sampler_u, sampler_t)
-
-
-    # ── 1. Replicate Data Across All Devices ───────────────────────────────
-
-    # 1. Get available accelerators
-    devices = jax.devices()
-    mesh = Mesh(devices, axis_names=('devices',))
-
-    # 2. Define a replicated sharding strategy (None means fully replicated)
-    replicated_sharding = NamedSharding(mesh, P(None))
-
-    # 3. Securely put data on devices (replicated)
-    data = jnp.array([1.0, 2.0, 3.0])
-    replicated_data = jax.device_put(data, replicated_sharding)
-
-    # Keep the initial load as a numpy array to avoid eager VRAM fragmentation
-    train_data_np = np.array(dd_get_train_data(data_dir))
-    
-    # Push an exact copy of the dataset to every local device
-    train_data_repl = device_put_replicated(train_data_np, jax.local_devices())
-    
-    # We also need to replicate t_star so the device can access it locally
-    t_star_repl = device_put_replicated(jnp.array(t_star), jax.local_devices())
-    
-    num_trajs = train_data_np.shape[0]
-    num_t     = train_data_np.shape[1]
-    batch_size_per_device = config.training.batch_size_per_device
+    # 1. Define bounds and device counts
     num_devices = jax.local_device_count()
+    batch_size_per_device = config.training.batch_size_per_device
+    pool_size = u_pool_np.shape[0]
+    
+    # t is sampled uniformly over the training window [t0, t1].
+    dom_t_np = np.array([[t_star[0], t_star[-1]]])
+
+    # 2. Securely push exact copies of the dataset to every local device
+    u_pool_repl = jax.device_put_replicated(u_pool_np, jax.local_devices())
+    dom_t_repl  = jax.device_put_replicated(dom_t_np, jax.local_devices())
+
+    # 3. Define the PMAP On-Device Sampler
+    @jax.pmap
+    def sample_on_device(key, local_u_pool, local_dom_t):
+        """Samples initial conditions and time points locally on the accelerator."""
+        key_u, key_t = jax.random.split(key)
+        
+        # Sample u (SpaceSampler equivalent)
+        idx_u   = jax.random.randint(key_u, (batch_size_per_device,), 0, pool_size)
+        batch_u = local_u_pool[idx_u, :]
+        
+        # Sample t (UniformSampler equivalent)
+        t_min   = local_dom_t[0, 0]
+        t_max   = local_dom_t[0, 1]
+        batch_t = jax.random.uniform(key_t, (batch_size_per_device, 1), minval=t_min, maxval=t_max)
+        
+        return batch_u, batch_t
+
+    # 4. Initialize reproducible PRNG Keys for all devices
+    seed = config.training.get("seed", 42)
+    base_key = jax.random.PRNGKey(seed)
+    keys = jax.random.split(base_key, num_devices)
 
     # ── Build model ────────────────────────────────────────────────────────
     model     = models.L96UDON(config, t_star)
@@ -129,11 +120,17 @@ def train_and_evaluate(config, workdir: str):
 
     for step in range(config.training.max_steps):
 
+        # ── Roll keys and Sample on-device ─────────────────────────────────
+        keys, subkeys = jax.vmap(jax.random.split)(keys)
+        step_keys = subkeys[:, 1]
+        
+        # Generates a batch of shape (devices, batch_size_per_device, ...)
+        batch = sample_on_device(step_keys, u_pool_repl, dom_t_repl)
+
         # ── Forward + gradient step ────────────────────────────────────────
-        batch       = next(res_sampler)          # (batch_u, batch_t), each (devices, B, ·)
         model.state = model.step(model.state, batch)
 
-        # ── Adaptive loss weighting (optional) ────────────────────────────
+        # ── Adaptive loss weighting ────────────────────────────────────────
         if config.weighting.scheme in ("grad_norm", "ntk"):
             if step % config.weighting.update_every_steps == 0:
                 model.state = model.update_weights(model.state, batch)
