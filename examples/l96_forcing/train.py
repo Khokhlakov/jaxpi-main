@@ -120,20 +120,24 @@ def train_and_evaluate(config, workdir: str):
     for step in range(config.training.max_steps):
 
         # ── Roll keys and Sample on-device ─────────────────────────────────
-        keys, subkeys = jax.vmap(jax.random.split)(keys)
-        step_keys = subkeys[:, 1]
+        # vmap returns a single array of shape (num_devices, 2, 2)
+        split_keys = jax.vmap(jax.random.split)(keys)
         
-        # Generates a batch of shape (devices, batch_size_per_device, ...)
+        # Slice along axis 1 to separate the new keys and the current step's keys
+        keys      = split_keys[:, 0]  # Shape: (num_devices, 2) - save for next step
+        step_keys = split_keys[:, 1]  # Shape: (num_devices, 2) - use for this step
+        
+        # Generates a batch of shape (num_devices, batch_size_per_device, ...)
         batch = sample_on_device(step_keys, u_pool_repl, dom_t_repl)
 
         # ── Forward + gradient step ────────────────────────────────────────
         model.state = model.step(model.state, batch)
 
-        # ── Adaptive loss weighting ────────────────────────────────────────
+        # ── Adaptive loss weighting (optional) ────────────────────────────
         if config.weighting.scheme in ("grad_norm", "ntk"):
             if step % config.weighting.update_every_steps == 0:
                 model.state = model.update_weights(model.state, batch)
-
+                
         # ── Logging ────────────────────────────────────────────────────────
         if jax.process_index() == 0:
             if step % config.logging.log_every_steps == 0:
