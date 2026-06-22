@@ -45,20 +45,19 @@ import h5py
 
 # ── Configurable Parameters ────────────────────────────────────────────────────
 
-N           = 40       # Lorenz-96 spatial dimension
-num_ics     = 500      # Number of independent trajectories
-F_low       = 5.0      # Minimum forcing value
-F_high      = 9.0      # Maximum forcing value
+N           = 40       
+num_ics     = 500      
+F_low       = 5.0      
+F_high      = 9.0      
 
 M           = 20       # Training windows per trajectory
 window_size = 0.25     # Window duration [time units]
 L           = 20       # Test trajectory length [in windows]
 
-burn_time   = 30.0      # Initial transient to discard [time units]
-dt          = 0.005    # Dense-output time step for test trajectories
+burn_time   = 20.0     # 80 windows of 0.25
+dt          = 0.005    
 
-SEED        = 42       # RNG seed for reproducibility
-
+SEED        = 42       
 
 # ── Derived Quantities ─────────────────────────────────────────────────────────
 
@@ -86,8 +85,9 @@ def lorenz96(t, u, N, F):
 data_dir   = os.path.join(os.getcwd(), 'examples', 'l96_forcing', 'data')
 os.makedirs(data_dir, exist_ok=True)
 
-train_file = os.path.join(data_dir, 'l96_forcing_train.h5')
-test_file  = os.path.join(data_dir, 'l96_forcing_test.h5')
+train_file_pi = os.path.join(data_dir, 'l96_forcing_train.h5')
+train_file_dd = os.path.join(data_dir, 'l96_forcing_train_dd.h5')
+test_file     = os.path.join(data_dir, 'l96_forcing_test.h5')
 
 
 # ── Sample Forcing Values ──────────────────────────────────────────────────────
@@ -98,27 +98,29 @@ F_values = rng.uniform(F_low, F_high, size=num_ics).astype(np.float64)
 
 # ── Build Combined t_eval (single solver call per trajectory) ─────────────────
 #
-# Absolute times:
-#   t_bounds_abs[k] = burn_time + k·ws          (k = 0 … M-1) — M points
-#   t_test_abs[j]   = burn_time + M·ws + j·dt   (j = 0 … 50·L) — 50·L+1 points
-#
-# The two ranges are disjoint: training ends at (M-1)·ws, test starts at M·ws.
-#
-t_bounds_abs = burn_time + np.arange(M, dtype=np.float64) * window_size
-t_test_abs   = (burn_time + M * window_size
-                + np.arange(0, pts_pw * L + 1, dtype=np.float64) * dt)
-t_combined   = np.concatenate([t_bounds_abs, t_test_abs])   # (M + 50·L+1,)
+# Training: Dense integration for M windows (M * 50 + 1 points)
+t_train_abs = burn_time + np.arange(M * pts_pw + 1, dtype=np.float64) * dt
 
-# Relative test times for storage (t=0 ↔ physical time M·window_size)
+# Gap Phase: We skip exactly 1 window (0.25 units) to avoid train/test intersection.
+# The solver will integrate through this period without saving the states.
+
+# Test Phase: Starts at (M + 1) * ws
+t_test_abs = burn_time + (M + 1) * window_size + np.arange(L * pts_pw + 1, dtype=np.float64) * dt
+
+t_combined = np.concatenate([t_train_abs, t_test_abs])   
+
+# Relative test times for storage (t=0 ↔ physical time (M+1)·window_size)
 t_test_rel = np.linspace(0.0, L * window_size, num_test_pts, dtype=np.float32)
-
 
 # ── Pre-allocate Output Arrays ─────────────────────────────────────────────────
 
-# M boundary states per trajectory (t = 0, ws, …, (M-1)·ws  relative to burn end)
-u_boundaries = np.zeros((num_ics, M, N), dtype=np.float32)
+# PI: 21 boundary states per trajectory (0, ws, 2ws, ..., M*ws)
+u_pi_bounds = np.zeros((num_ics, M + 1, N), dtype=np.float32)
 
-# Dense test trajectories: num_test_pts = 50·L + 1 states per trajectory
+# DD: 20 windows per trajectory, 51 states per window
+u_dd_windows = np.zeros((num_ics, M, pts_pw + 1, N), dtype=np.float32)
+
+# Test: Dense test trajectories
 u_test = np.zeros((num_ics, num_test_pts, N), dtype=np.float32)
 
 
@@ -162,8 +164,24 @@ for i in range(num_ics):
     # sol.y shape: (N,  M + 50·L+1)
     #   cols 0   … M-1     → M training boundary states (t = k·ws, k=0..M-1)
     #   cols M   … M+50·L  → test states (t = M·ws to (M+L)·ws)
-    u_boundaries[i] = sol.y[:, :M].T.astype(np.float32)       # (M, N)
-    u_test[i]       = sol.y[:, M:].T.astype(np.float32)        # (50·L+1, N)
+
+    # sol.y shape: (N, len(t_combined))
+    len_train = len(t_train_abs)
+    
+    # 1. Split the continuous output back into Train and Test segments
+    u_train_dense = sol.y[:, :len_train].T.astype(np.float32) # Shape: (1001, N)
+    u_test_dense  = sol.y[:, len_train:].T.astype(np.float32) # Shape: (1001, N)
+
+    # 2. Extract Sparse PI states (every pts_pw index)
+    idx_bounds = np.arange(0, len_train, pts_pw)
+    u_pi_bounds[i] = u_train_dense[idx_bounds]
+
+    # 3. Extract Dense DD windows (overlapping slices of size 51)
+    for k in range(M):
+        u_dd_windows[i, k] = u_train_dense[k * pts_pw : k * pts_pw + pts_pw + 1]
+
+    # 4. Store test states
+    u_test[i] = u_test_dense
 
     if (i + 1) % 50 == 0:
         elapsed = time.time() - t_gen_start
@@ -179,73 +197,51 @@ print(f"\nGeneration complete: {time.time() - t_gen_start:.2f} s total\n")
 # the network receives (state, F) in a single 41-D vector.
 #
 #   u_pooled : (num_ics·M, N+1)   — last column is F
-#
-F_col    = np.tile(
-    F_values[:, None, None].astype(np.float32),
-    (1, M, 1)
-)                                                               # (ics, M, 1)
-u_aug    = np.concatenate([u_boundaries, F_col], axis=2)       # (ics, M, N+1)
-u_pooled = u_aug.reshape(num_ics * M, N + 1)                   # (ics·M, N+1)
+# --- 1. Flatten PI Dataset ---
+# F_col shape: (ics, M+1, 1)
+F_col_pi = np.tile(F_values[:, None, None].astype(np.float32), (1, M + 1, 1))
+u_pi_aug = np.concatenate([u_pi_bounds, F_col_pi], axis=2)       # (ics, M+1, N+1)
+u_pooled_pi = u_pi_aug.reshape(num_ics * (M + 1), N + 1)         # Pool of individual states
 
+# --- 2. Flatten DD Dataset ---
+# F_col shape: (ics, M, 51, 1)
+F_col_dd = np.tile(F_values[:, None, None, None].astype(np.float32), (1, M, pts_pw + 1, 1))
+u_dd_aug = np.concatenate([u_dd_windows, F_col_dd], axis=3)      # (ics, M, 51, N+1)
+u_pooled_dd = u_dd_aug.reshape(num_ics * M, pts_pw + 1, N + 1)   # Pool of individual windows
 
-# ── Save Training Archive ──────────────────────────────────────────────────────
-
-print(f"Saving training data  →  {train_file}")
-with h5py.File(train_file, 'w') as f:
-    f.create_dataset('u',
-                     data=u_pooled,
-                     dtype='float32',
-                     compression='gzip')
-    f.create_dataset('F',
-                     data=F_values.astype('float32'))
-    f.create_dataset('t_boundaries',
-                     data=(np.arange(M) * window_size).astype('float32'))
+# ── Save Training Archive (Physics-Informed) ──────────────────────────────────
+print(f"Saving PI training data → {train_file_pi}")
+with h5py.File(train_file_pi, 'w') as f:
+    f.create_dataset('u', data=u_pooled_pi, dtype='float32', compression='gzip')
+    f.create_dataset('F', data=F_values.astype('float32'))
+    f.create_dataset('t_boundaries', data=(np.arange(M + 1) * window_size).astype('float32'))
     f.attrs.update({
-        'description': (
-            'Pooled Lorenz-96 boundary states for DeepONet training. '
-            'Each row is a 41-D initial condition: u[:N] = L96 state, '
-            'u[N] = F (forcing). '
-            'Row i → trajectory (i // M), window start (i % M).'
-        ),
-        'num_samples': num_ics * M,
-        'num_ics':     num_ics,
-        'M':           M,
-        'N':           N,
+        'description': 'Flattened pool of individual L96 states for PI training. (N+1 dims)',
+        'num_samples': num_ics * (M + 1),
         'window_size': window_size,
-        'F_low':       F_low,
-        'F_high':      F_high,
-        'burn_time':   burn_time,
     })
+print(f"  u_pi : {u_pooled_pi.shape}")
 
-print(f"  u : {u_pooled.shape}  "
-      f"(columns 0–{N-1}: L96 state,  column {N}: F)")
-
+# ── Save Training Archive (Data-Driven) ───────────────────────────────────────
+print(f"Saving DD training data → {train_file_dd}")
+with h5py.File(train_file_dd, 'w') as f:
+    f.create_dataset('u', data=u_pooled_dd, dtype='float32', compression='gzip')
+    f.create_dataset('F', data=F_values.astype('float32'))
+    f.attrs.update({
+        'description': 'Flattened pool of dense L96 windows for DD training. Each contains 51 states. (N+1 dims)',
+        'num_samples': num_ics * M,
+        'window_size': window_size,
+    })
+print(f"  u_dd : {u_pooled_dd.shape}")
 
 # ── Save Test Archive ──────────────────────────────────────────────────────────
-
 print(f"\nSaving test data      →  {test_file}")
 with h5py.File(test_file, 'w') as f:
-    f.create_dataset('u',
-                     data=u_test,
-                     dtype='float32',
-                     compression='gzip')
-    f.create_dataset('F',
-                     data=F_values.astype('float32'))
-    f.create_dataset('t',
-                     data=t_test_rel)
+    f.create_dataset('u', data=u_test, dtype='float32', compression='gzip')
+    f.create_dataset('F', data=F_values.astype('float32'))
+    f.create_dataset('t', data=t_test_rel)
     f.attrs.update({
-        'description': (
-            f'Dense Lorenz-96 test trajectories (dt={dt}) starting at '
-            f't = M * window_size = {M * window_size} '
-            f'(one window beyond the training horizon).'
-        ),
-        'num_ics':      num_ics,
-        'L':            L,
-        'N':            N,
-        'window_size':  window_size,
-        'num_test_pts': num_test_pts,
-        'start_time':   float(M * window_size),
+        'description': 'Dense Lorenz-96 test trajectories.',
+        'start_time':  float((M + 1) * window_size), # Updated to reflect 1-window gap
     })
-
-print(f"  u : {u_test.shape}  "
-      f"(time range: [{M * window_size:.4f}, {(M + L) * window_size:.4f}])")
+print(f"  u_test : {u_test.shape}")
