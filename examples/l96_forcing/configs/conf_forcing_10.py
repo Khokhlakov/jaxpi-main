@@ -60,7 +60,7 @@ def get_config():
     # Causal Weighting
     weighting.use_causal = True
     weighting.causal_tol = 0.05
-    weighting.num_chunks = 15
+    weighting.num_chunks = 10
 
     # KF settings
     config.kf = kf = ml_collections.ConfigDict()
