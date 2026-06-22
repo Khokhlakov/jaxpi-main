@@ -54,7 +54,7 @@ M           = 20       # Training windows per trajectory
 window_size = 0.25     # Window duration [time units]
 L           = 20       # Test trajectory length [in windows]
 
-burn_time   = 5.0      # Initial transient to discard [time units]
+burn_time   = 30.0      # Initial transient to discard [time units]
 dt          = 0.005    # Dense-output time step for test trajectories
 
 SEED        = 42       # RNG seed for reproducibility

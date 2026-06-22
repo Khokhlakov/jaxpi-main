@@ -13,6 +13,7 @@ import wandb
 from jaxpi.samplers import UniformSampler, SpaceSampler
 from jaxpi.logging import Logger
 from jaxpi.utils import save_checkpoint, restore_checkpoint
+from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 
 from flax.jax_utils import replicate
 
@@ -82,6 +83,34 @@ def train_and_evaluate(config, workdir: str):
     # IC sampler: samples rows uniformly at random from the full pre-computed pool.
     sampler_u   = SpaceSampler(u_pool, batch_size)
     res_sampler = zip(sampler_u, sampler_t)
+
+
+    # ── 1. Replicate Data Across All Devices ───────────────────────────────
+
+    # 1. Get available accelerators
+    devices = jax.devices()
+    mesh = Mesh(devices, axis_names=('devices',))
+
+    # 2. Define a replicated sharding strategy (None means fully replicated)
+    replicated_sharding = NamedSharding(mesh, P(None))
+
+    # 3. Securely put data on devices (replicated)
+    data = jnp.array([1.0, 2.0, 3.0])
+    replicated_data = jax.device_put(data, replicated_sharding)
+
+    # Keep the initial load as a numpy array to avoid eager VRAM fragmentation
+    train_data_np = np.array(dd_get_train_data(data_dir))
+    
+    # Push an exact copy of the dataset to every local device
+    train_data_repl = device_put_replicated(train_data_np, jax.local_devices())
+    
+    # We also need to replicate t_star so the device can access it locally
+    t_star_repl = device_put_replicated(jnp.array(t_star), jax.local_devices())
+    
+    num_trajs = train_data_np.shape[0]
+    num_t     = train_data_np.shape[1]
+    batch_size_per_device = config.training.batch_size_per_device
+    num_devices = jax.local_device_count()
 
     # ── Build model ────────────────────────────────────────────────────────
     model     = models.L96UDON(config, t_star)
