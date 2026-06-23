@@ -18,7 +18,6 @@ class L96UDON(ForwardIVP):
 
         # System parameters
         self.N = 40
-        self.F = 6.0
         
         self.t0 = t_star[0]
         self.t1 = t_star[-1]
@@ -36,26 +35,28 @@ class L96UDON(ForwardIVP):
         x = self.x_net(params, u, t).reshape(self.N)
         x_t = jacfwd(self.x_net, argnums=2)(params, u, t).reshape(self.N)
 
-        # Lorenz 96 ODE: dx_i/dt = (x_{i+1} - x_{i-2}) * x_{i-1} - x_i + F
-        # Using jnp.roll for periodic boundary conditions
+        F = u[-1]   # per-sample forcing, last component of the branch input
+
         x_plus_1 = jnp.roll(x, -1)
         x_minus_1 = jnp.roll(x, 1)
         x_minus_2 = jnp.roll(x, 2)
 
-        r_x = x_t - ((x_plus_1 - x_minus_2) * x_minus_1 - x + self.F)
+        r_x = x_t - ((x_plus_1 - x_minus_2) * x_minus_1 - x + F)
         return r_x
 
     @partial(jit, static_argnums=(0,))
     def res_and_w(self, params, batch):
         batch_u, batch_t = batch
+        
+        # Flatten to a 1D array of shape (batch_size,) before sorting
+        batch_t_flat = batch_t.flatten()
 
-        # Sort time points only — ICs are not reordered
-        idx = jnp.argsort(batch_t)
-        t_sorted = batch_t[idx]
+        # Now argsort correctly sorts the time values across the batch
+        idx = jnp.argsort(batch_t_flat)
+        t_sorted = batch_t_flat[idx]
 
         # Evaluate residual on the full Cartesian grid
         # r_grid_fn: vmap over u (outer), vmap over t (inner)
-        # Output shape: (num_u, num_t, N)
         r_pred = self.r_grid_fn(params, batch_u, t_sorted)
 
         # Transpose to (num_t, num_u, N) so chunking splits along time
@@ -65,7 +66,7 @@ class L96UDON(ForwardIVP):
         r_chunks = r_pred.reshape(self.num_chunks, -1, batch_u.shape[0], self.N)
 
         # Chunk loss: average over time-within-chunk, ICs, and variables
-        l = jnp.mean(r_chunks ** 2, axis=(1, 2, 3))  # shape: (num_chunks,)
+        l = jnp.mean(r_chunks ** 2, axis=(1, 2, 3)) 
 
         # Causal weights: w_i = exp(-tol * sum_{j<i} L_j)
         w = lax.stop_gradient(jnp.exp(-self.tol * (self.M @ l)))
