@@ -2,7 +2,7 @@ import ml_collections
 import jax.numpy as jnp
 
 def get_config():
-    # Config 1 but init weights 10:1 and using causal training
+    # Config 10 with no causal training
     config = ml_collections.ConfigDict()
     config.mode = "train"
 
