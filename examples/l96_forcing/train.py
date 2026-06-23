@@ -135,7 +135,7 @@ def train_and_evaluate(config, workdir: str):
 
         # ── Adaptive loss weighting (optional) ────────────────────────────
         if config.weighting.scheme in ("grad_norm", "ntk"):
-            if step % config.weighting.update_every_steps == 0 and step >= 8_000:#config.weighting.warmup_steps::
+            if step % config.weighting.update_every_steps == 0 and step >= 4_000:#config.weighting.warmup_steps::
                 model.state = model.update_weights(model.state, batch)
 
         # ── Logging ────────────────────────────────────────────────────────
