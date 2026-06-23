@@ -82,7 +82,7 @@ def lorenz96(t, u, N, F):
 
 # ── Output Paths ───────────────────────────────────────────────────────────────
 
-data_dir   = os.path.join(os.getcwd(), 'examples', 'l96_forcing', 'data')
+data_dir   = os.getcwd()
 os.makedirs(data_dir, exist_ok=True)
 
 train_file_pi = os.path.join(data_dir, 'l96_forcing_train.h5')
