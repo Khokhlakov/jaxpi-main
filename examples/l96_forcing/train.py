@@ -135,7 +135,7 @@ def train_and_evaluate(config, workdir: str):
 
         # ── Adaptive loss weighting (optional) ────────────────────────────
         if config.weighting.scheme in ("grad_norm", "ntk"):
-            if step % config.weighting.update_every_steps == 0 and step >= 2_000:#config.weighting.warmup_steps::
+            if step % config.weighting.update_every_steps == 0 and step >= 8_000:#config.weighting.warmup_steps::
                 model.state = model.update_weights(model.state, batch)
 
         # ── Logging ────────────────────────────────────────────────────────
@@ -173,65 +173,85 @@ def train_and_evaluate(config, workdir: str):
 def train_and_evaluate_dd(config, workdir: str):
     # ── W&B ────────────────────────────────────────────────────────────────
     wandb.init(project=config.wandb.project, name=config.wandb.name)
- 
-    # ── Reference data & Time Grid ─────────────────────────────────────────
-    # The dataset provides 51 steps of 0.005 from 0 to 0.25 units of time
-    t_star = jnp.linspace(0.0, 0.25, 51)
-    
-    # Import full explicit dataset
-    data_dir = config.training.get("data_dir", "data/")
-    train_data_np = dd_get_train_data(data_dir) # Shape (62000, 51, 40)
+
+    # ── Load Dataset from HDF5 ───────────────────────────────────────────────
+    # Pooled dense windows produced by gen_data.py:
+    #   u : (num_ics * M, pts_pw + 1, N + 1)
+    #       - last column of the trailing axis is F, broadcast across every
+    #         timestep of a window
+    #       - remaining N columns are the dense Lorenz-96 trajectory for
+    #         that window (state at t = 0, ws, 2·dt, ... up to window_size)
+    train_file = "data/l96_forcing_train_dd.h5"
+
+    with h5py.File(train_file, 'r') as f_train:
+        train_data_np = np.array(f_train['u'][:])              # (num_windows, num_t, N+1)
+        window_size   = float(f_train.attrs.get('window_size', 0.25))
+
     train_data = jnp.array(train_data_np)
-    
+
+    num_windows, num_t, state_dim = train_data.shape
+    N = state_dim - 1   # number of physical state variables (F occupies the last column)
+
+    # ── Reference data & Time Grid ──────────────────────────────────────────
+    # Window-local time grid: 0 -> window_size over num_t points
+    dt     = window_size / (num_t - 1)
+    t_star = jnp.arange(num_t, dtype=jnp.float32) * dt
+
     logging.info(f"Loaded Supervised Data: {train_data.shape}")
-    
+
     # Parameters for validation
-    trajs_per_window = 100
-    
-    # U_ref represents the initial condition (t=0) for each trajectory 
-    u_ref_eval = train_data[0:trajs_per_window, 0, :]               
-    x_ref_eval = train_data[0:trajs_per_window, :, :] 
-  
+    trajs_per_window = min(100, num_windows)
+
+    # Branch input: [u(t0), F] for each evaluation window
+    u_ref_eval = train_data[0:trajs_per_window, 0, :]                # (100, N+1)
+    # Trunk target: dense state-only trajectory across the window (F dropped)
+    x_ref_eval = train_data[0:trajs_per_window, :, :N]               # (100, num_t, N)
+
+    logging.info(f"u_ref_eval (Branch Input): {u_ref_eval.shape}")
+    logging.info(f"x_ref_eval: {x_ref_eval.shape}")
+    logging.info(f"t_star: {t_star.shape}")
+
     # ── Model & Evaluator ──────────────────────────────────────────────────
     model     = models.L96UDON_DD(config, t_star)
     evaluator = models.L96UDONEvaluator_DD(config, model)
- 
+
     if config.saving.get("restore_checkpoint", False):
         ckpt_path   = os.path.join(os.getcwd(), config.saving.restore_checkpoint_path)
         model.state = restore_checkpoint(model.state, ckpt_path)
         model.state = replicate(model.state)
         logging.info(f"Restored and re-replicated checkpoint from: {ckpt_path}")
 
-    # ── Data Sampler ───────────────────────────────────────────────────────
+    # ── On-device Sampler (fully parallel, no host round-trips per step) ───
     num_devices           = jax.local_device_count()
     batch_size_per_device = config.training.batch_size_per_device
-    global_batch_size     = num_devices * batch_size_per_device
+    seed                  = config.training.get("seed", 42)
 
-    num_trajs  = train_data.shape[0]
-    num_t      = train_data.shape[1]
-    
-    key = jax.random.PRNGKey(config.training.get("seed", 42))
+    init_key    = jax.random.PRNGKey(seed)
+    device_keys = jax.pmap(lambda i: jax.random.fold_in(init_key, i))(jnp.arange(num_devices))
 
-    @jax.jit
-    def get_batch(key):
-        """Samples random pairs and reshapes for pmap (num_devices, batch_size, ...)."""
-        key_traj, key_t = jax.random.split(key)
-        
-        # 1. Sample globally (for all devices at once)
-        idx_traj = jax.random.randint(key_traj, (global_batch_size,), 0, num_trajs)
-        idx_t    = jax.random.randint(key_t, (global_batch_size,), 0, num_t)
-        
-        batch_u = train_data[idx_traj, 0, :]      
-        batch_t = t_star[idx_t]                   
-        batch_x = train_data[idx_traj, idx_t, :]  
-        
-        # 2. Reshape to explicitly add the device dimension
-        # Resulting shapes: (3, 100, 40), (3, 100, 1), (3, 100, 40)
-        batch_u = batch_u.reshape(num_devices, batch_size_per_device, -1)
-        batch_t = batch_t.reshape(num_devices, batch_size_per_device, 1)
-        batch_x = batch_x.reshape(num_devices, batch_size_per_device, -1)
-        
-        return (batch_u, batch_t, batch_x)
+    # Push exact copies of the window pool + time grid onto every local device
+    train_data_repl = jax.device_put_replicated(train_data, jax.devices())
+    t_star_repl     = jax.device_put_replicated(t_star, jax.devices())
+
+    @jax.pmap
+    def get_batch_on_device(device_key, data, t_array):
+        """Splits keys and samples (window, timestep) pairs entirely on-device."""
+        new_key, sample_key = jax.random.split(device_key)
+        key_win, key_t       = jax.random.split(sample_key)
+
+        idx_win = jax.random.randint(key_win, (batch_size_per_device,), 0, num_windows)
+        idx_t   = jax.random.randint(key_t,   (batch_size_per_device,), 0, num_t)
+
+        # Branch input: [u(t0), F] for the sampled window
+        batch_u = data[idx_win, 0, :]
+
+        # Trunk query time
+        batch_t = t_array[idx_t].reshape(batch_size_per_device, 1)
+
+        # Trunk target: state only at the sampled time (drop trailing F column)
+        batch_x = data[idx_win, idx_t, :N]
+
+        return new_key, (batch_u, batch_t, batch_x)
 
     # ── Training loop ──────────────────────────────────────────────────────
     logger     = Logger()
@@ -241,9 +261,8 @@ def train_and_evaluate_dd(config, workdir: str):
     for step in range(config.training.max_steps):
  
         # ── Data Sampling + Gradient Step ──────────────────────────────────
-        key, subkey = jax.random.split(key)
-        batch       = get_batch(subkey)
-        model.state = model.step(model.state, batch)
+        device_keys, batch = get_batch_on_device(device_keys, train_data_repl, t_star_repl)
+        model.state         = model.step(model.state, batch)
  
         # ── Logging ────────────────────────────────────────────────────────
         if jax.process_index() == 0:
@@ -252,6 +271,7 @@ def train_and_evaluate_dd(config, workdir: str):
                 batch_dev = jax.device_get(tree_map(lambda x: x[0], batch))
  
                 log_dict = evaluator(state, batch_dev, u_ref_eval, x_ref_eval)
+                log_dict["pool/active_windows"] = num_windows
                 wandb.log(log_dict, step)
  
                 end_time = time.time()
@@ -270,4 +290,3 @@ def train_and_evaluate_dd(config, workdir: str):
                 )
  
     return model
-
