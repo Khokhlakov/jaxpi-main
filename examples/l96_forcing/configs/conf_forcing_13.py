@@ -58,8 +58,8 @@ def get_config():
     weighting.update_every_steps = 500
 
     # Causal Weighting
-    weighting.use_causal = False
-    weighting.causal_tol = 0.1
+    weighting.use_causal = True
+    weighting.causal_tol = 0.2
     weighting.num_chunks = 10
 
     # KF settings
