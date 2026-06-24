@@ -10,8 +10,8 @@ def get_config():
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "PI-UDON-L96-F"
-    wandb.name          = "test_forcing_13" 
-    wandb.ckpt_name     = "test_forcing_13" 
+    wandb.name          = "test_forcing_14" 
+    wandb.ckpt_name     = "test_forcing_14" 
     wandb.tag = None
 
     # Arch 
@@ -44,7 +44,7 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 150_000
-    training.batch_size_per_device = 4_900
+    training.batch_size_per_device = 70#16384
     training.use_cartesian_prod = False
     training.update_interval = 1000
     training.num_initial_ics = 8000
@@ -58,7 +58,7 @@ def get_config():
     weighting.update_every_steps = 500
 
     # Causal Weighting
-    weighting.use_causal = False
+    weighting.use_causal = True
     weighting.causal_tol = 0.1
     weighting.num_chunks = 10
 

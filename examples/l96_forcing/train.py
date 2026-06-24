@@ -87,13 +87,31 @@ def train_and_evaluate(config, workdir: str):
         key_u, key_t = jax.random.split(key)
         
         # Sample u (SpaceSampler equivalent)
-        idx_u   = jax.random.randint(key_u, (batch_size_per_device,), 0, pool_size)
+        idx_u = jax.random.randint(key_u, (batch_size_per_device,), 0, pool_size)
         batch_u = local_u_pool[idx_u, :]
         
-        # Sample t (UniformSampler equivalent)
-        t_min   = local_dom_t[0, 0]
-        t_max   = local_dom_t[0, 1]
-        batch_t = jax.random.uniform(key_t, (batch_size_per_device, 1), minval=t_min, maxval=t_max)
+        # --- STRATIFIED SAMPLING FOR t ---
+        t_min = local_dom_t[0, 0]
+        t_max = local_dom_t[0, 1]
+        
+        # Pull num_chunks from config
+        num_chunks = config.weighting.num_chunks
+        
+        # Ensure batch_size_per_device is cleanly divisible by num_chunks
+        pts_per_chunk = batch_size_per_device // num_chunks
+        
+        # Create chunk boundaries
+        edges = jnp.linspace(t_min, t_max, num_chunks + 1)
+        lower_bounds = edges[:-1]
+        upper_bounds = edges[1:]
+        
+        # Sample uniformly within each chunk boundary
+        random_offsets = jax.random.uniform(key_t, (num_chunks, pts_per_chunk))
+        bin_widths = (upper_bounds - lower_bounds)[:, None]
+        t_samples = lower_bounds[:, None] + random_offsets * bin_widths
+        
+        # Flatten back into standard batch_t shape
+        batch_t = t_samples.flatten().reshape(-1, 1)
         
         return batch_u, batch_t
 
