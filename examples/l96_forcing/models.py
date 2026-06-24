@@ -82,12 +82,6 @@ class L96UDON(ForwardIVP):
         x_pred_ic = vmap(self.x_net, (None, 0, None))(params, batch_u, self.t0)
         ics_loss = jnp.mean((batch_u[:, :-1] - x_pred_ic) ** 2)
 
-        # --- CARTESIAN IMBALANCE CORRECTION ---
-        # If evaluating on a grid, scale the IC loss by the number of time points
-        if getattr(self.config.weighting, 'use_causal', False) or getattr(self.config.training, 'use_cartesian_prod', False):
-            num_t_pts = batch_t.shape[0]
-            ics_loss = ics_loss * num_t_pts
-
         # Residual loss
         if self.config.weighting.use_causal == True: 
             l, w = self.res_and_w(params, batch)

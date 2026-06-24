@@ -462,6 +462,21 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         total_time = total_time, dt_fine = DT_FINE, dt_obs = DT_OBS,
     )
 
+    # ── Augmented EnKF Setup ─────────────────────────────────────────────────
+    def base_propagator(u_aug, t):
+        # u_aug is (41,): the first 40 are the state, the 41st is F.
+        preds = model.x_pred_fn(params, u_aug, t_star_window)  # (pts_pw+1, 40)
+        idx = round(t / DT_FINE)
+        # Re-append the constant F so the filter maintains the N=41 dimension
+        return jnp.concatenate([preds[idx], u_aug[-1:]], axis=-1)
+        
+    predict_fn, update_fn = make_enkf(base_propagator, N + 1, N_ens)
+    
+    # Pad covariance matrices for N=41 (0 variance for F)
+    Q_fine_aug = jnp.pad(Q_fine, ((0, 1), (0, 1)), mode='constant')
+    P0_aug     = jnp.pad(P0, ((0, 1), (0, 1)), mode='constant')
+    # ────────────────────────────────────────────────────────────────────────
+
     # ── Binned Trajectory Selection ─────────────────────────────────────────
     try:
         # Attempt to parse m from ckpt_name as requested
@@ -532,25 +547,27 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         H_seq     = jnp.stack(H_list)
         y_obs_seq = jnp.stack(y_obs_list)
 
+        # ── Augment states and observations ───────────────────────
+        H_seq_aug = jnp.pad(H_seq, ((0, 0), (0, 0), (0, 1)), mode='constant')
+        
         key, key_ic, key_ens = jax.random.split(key, 3)
-        x0_hat    = u_current_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
-        ensemble0 = init_ensemble(x0_hat, P0, N_ens, key_ens)
+        x0_hat = u_current_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
+        x0_hat_aug = jnp.concatenate([x0_hat, jnp.array([F_val])])
+        
+        ensemble0_aug = init_ensemble(x0_hat_aug, P0_aug, N_ens, key_ens)
 
-        # Build custom DeepONet propagator matching current trajectory's F
-        def propagator(u, t):
-            u_aug = jnp.concatenate([u, jnp.array([F_val])], axis=-1)
-            preds = model.x_pred_fn(params, u_aug, t_star_window)  # (pts_pw+1, N)
-            idx   = round(t / DT_FINE)
-            return preds[idx]
-            
-        predict_fn, update_fn = make_enkf(propagator, N, N_ens)
-
-        x_means, x_spreads, _ = run_enkf_smoother(
+        # Execute EnKF (Using pre-compiled predict_fn and update_fn)
+        x_means_aug, x_spreads_aug, _ = run_enkf_smoother(
             predict_fn, update_fn,
-            ensemble0, y_obs_seq, obs_step_indices,
-            H_seq, Q_fine, R, key,
+            ensemble0_aug, y_obs_seq, obs_step_indices,
+            H_seq_aug, Q_fine_aug, R, key,
             total_fine_steps, dt_fine=DT_FINE, dt_window=DT_WINDOW,
         )
+
+        # Strip the forcing parameter F from the trajectories for evaluation
+        x_means   = x_means_aug[:, :N]
+        x_spreads = x_spreads_aug[:, :N]
+        # ─────────────────────────────────────────────────────────────────────
 
         t_fine_axis = t_eval_fine[1:]
         
@@ -663,19 +680,17 @@ def _evaluate_batch_l2_enkf(
     post_rmse_sum_unobs     = np.zeros(T_obs)
     post_rmse_sq_sum_unobs  = np.zeros(T_obs)
 
-    @partial(jax.jit, static_argnums=(3,))   # t is still static; F is dynamic
-    def _propagator_kernel(u, F_jax, t_star, t):
-        u_aug = jnp.concatenate([u, F_jax], axis=-1)
-        preds = model.x_pred_fn(params, u_aug, t_star)
-        return preds[round(t / dt_fine)]
-
-    # Build predict_fn/update_fn ONCE with a placeholder F (any concrete array works
-    # to set the shape; JAX will compile a general version)
-    _F_placeholder = jnp.array([0.0])
-    def _base_propagator(u, t):
-        return _propagator_kernel(u, _F_placeholder, t_star_window, t)
+    # ── Augmented EnKF Setup (Outside Loop) ────────────────────────────────
+    def base_propagator(u_aug, t):
+        preds = model.x_pred_fn(params, u_aug, t_star_window)
+        idx = round(t / dt_fine)
+        return jnp.concatenate([preds[idx], u_aug[-1:]], axis=-1)
+        
+    predict_fn, update_fn = make_enkf(base_propagator, N + 1, N_ens)
     
-    predict_fn, update_fn = make_enkf(_base_propagator, N, N_ens)
+    Q_fine_aug = jnp.pad(Q_fine, ((0, 1), (0, 1)), mode='constant')
+    P0_aug     = jnp.pad(P0, ((0, 1), (0, 1)), mode='constant')
+    # ────────────────────────────────────────────────────────────────────────
 
     for ic in range(B):
         key = jax.random.PRNGKey(ic + 77777)
@@ -723,22 +738,28 @@ def _evaluate_batch_l2_enkf(
         H_seq     = jnp.stack(H_list)      
         y_obs_seq = jnp.stack(y_obs_list)  
 
+        # ── [MODIFIED] Augment states and run EnKF ──────────────────────────
+        H_seq_aug = jnp.pad(H_seq, ((0, 0), (0, 0), (0, 1)), mode='constant')
+        
         key, key_ic, key_ens = jax.random.split(key, 3)
-        x0_hat    = u_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
-        ensemble0 = init_ensemble(x0_hat, P0, N_ens, key_ens)
+        x0_hat = u_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
+        x0_hat_aug = jnp.concatenate([x0_hat, jnp.array([F_val])])
+        
+        ensemble0_aug = init_ensemble(x0_hat_aug, P0_aug, N_ens, key_ens)
 
-        def propagator(u, t, _F=F_val_jax):       # default-arg trick captures current value
-            return _propagator_kernel(u, _F, t_star_window, t)
-            
-        predict_fn_ic, update_fn_ic = make_enkf(propagator, N, N_ens)
-        x_means, x_spreads, prior_means_at_obs = run_enkf_smoother(
-            predict_fn_ic, update_fn_ic,
-            ensemble0, y_obs_seq, obs_step_indices_batch,
-            H_seq, Q_fine, R_fixed, key, total_fine_steps_batch,
+        x_means_aug, x_spreads_aug, prior_means_at_obs_aug = run_enkf_smoother(
+            predict_fn, update_fn,
+            ensemble0_aug, y_obs_seq, obs_step_indices_batch,
+            H_seq_aug, Q_fine_aug, R_fixed, key, total_fine_steps_batch,
             dt_fine=dt_fine, dt_window=dt_window,
         )
 
-        post_means_at_obs = x_means[obs_step_indices_batch]   
+        # Strip F
+        x_means            = x_means_aug[:, :N]
+        x_spreads          = x_spreads_aug[:, :N]
+        prior_means_at_obs = prior_means_at_obs_aug[:, :N]
+        post_means_at_obs  = x_means[obs_step_indices_batch]   
+        # ───────────────────────────────────────────────────────────────────── 
         
         # Tracking RMSE and ERF
         err_prior = np.array(prior_means_at_obs) - x_true_at_obs
