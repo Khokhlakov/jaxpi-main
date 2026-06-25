@@ -35,72 +35,42 @@ def train_and_evaluate(config, workdir: str):
     test_file  = "data/l96_forcing_test.h5"
 
     with h5py.File(train_file, 'r') as f_train:
-        # u_pool contains states pooled across all trajectories and windows. 
-        # Shape: (num_ics * M, 41) -> [40 state variables + 1 F value]
         u_pool_np = np.array(f_train['u'][:])
         
     with h5py.File(test_file, 'r') as f_test:
-        # Dense test trajectories. Shape: (num_ics, num_test_pts, 40)
         x_ref_eval_all = jnp.array(f_test['u'][:])
-        # Per-trajectory F values. Shape: (num_ics,)
         F_test_all = jnp.array(f_test['F'][:])
-        # Times relative to M·window_size. Shape: (num_test_pts,)
         t_star_all = jnp.array(f_test['t'][:])
 
-    # ── Reference data (used only for eval logging during training) ────────
+    # ── Reference data ─────────────────────────────────────────────────────
     trajs_per_window = 100
     time_steps = 50
 
-    # L2 evaluation dataset setup (First window only)
     t_star = t_star_all[0:time_steps]
-    
-    # Extract the first 100 trajectories for the first time_steps (40 variables)
-    x_ref_eval = x_ref_eval_all[0:trajs_per_window, 0:time_steps, :]  # Shape: (100, 50, 40)
-    
-    # Construct the branch network input [u(t0), F] for evaluation
-    u_init_eval = x_ref_eval_all[0:trajs_per_window, 0, :]            # Shape: (100, 40)
-    F_eval = F_test_all[0:trajs_per_window].reshape(-1, 1)            # Shape: (100, 1)
-    u_ref_eval = jnp.concatenate([u_init_eval, F_eval], axis=1)       # Shape: (100, 41)
+    x_ref_eval = x_ref_eval_all[0:trajs_per_window, 0:time_steps, :] 
+    u_init_eval = x_ref_eval_all[0:trajs_per_window, 0, :]           
+    F_eval = F_test_all[0:trajs_per_window].reshape(-1, 1)           
+    u_ref_eval = jnp.concatenate([u_init_eval, F_eval], axis=1)      
 
     logging.info("L2 dataset imported:")
     logging.info(f"x_ref_eval: {x_ref_eval.shape}")
     logging.info(f"u_ref_eval (Branch Input): {u_ref_eval.shape}")
     logging.info(f"t_star: {t_star.shape}")
 
-    # ── Samplers ───────────────────────────────────────────────────────────
-    # 1. Define bounds and device counts
+    # ── Samplers & Device Setup ────────────────────────────────────────────
     num_devices = jax.local_device_count()
     batch_size_per_device = config.training.batch_size_per_device
     pool_size = u_pool_np.shape[0]
     
-    # t is sampled uniformly over the training window [t0, t1].
     dom_t_np = np.array([[t_star[0], t_star[-1]]])
 
-    # 2. Securely push exact copies of the dataset to every local device
     u_pool_repl = jax.device_put_replicated(u_pool_np, jax.local_devices())
     dom_t_repl  = jax.device_put_replicated(dom_t_np, jax.local_devices())
 
-    # 3. Define the PMAP On-Device Sampler
-    @jax.pmap
-    def sample_on_device(key, local_u_pool, local_dom_t):
-        """Samples initial conditions and time points locally on the accelerator."""
-        key_u, key_t = jax.random.split(key)
-        
-        # Sample u (SpaceSampler equivalent)
-        idx_u   = jax.random.randint(key_u, (batch_size_per_device,), 0, pool_size)
-        batch_u = local_u_pool[idx_u, :]
-        
-        # Sample t (UniformSampler equivalent)
-        t_min   = local_dom_t[0, 0]
-        t_max   = local_dom_t[0, 1]
-        batch_t = jax.random.uniform(key_t, (batch_size_per_device, 1), minval=t_min, maxval=t_max)
-        
-        return batch_u, batch_t
-
-    # 4. Initialize reproducible PRNG Keys for all devices
+    # Ported DD Key Splitting Logic
     seed = config.training.get("seed", 42)
-    base_key = jax.random.PRNGKey(seed)
-    keys = jax.random.split(base_key, num_devices)
+    init_key = jax.random.PRNGKey(seed)
+    device_keys = jax.pmap(lambda i: jax.random.fold_in(init_key, i))(jnp.arange(num_devices))
 
     # ── Build model ────────────────────────────────────────────────────────
     model     = models.L96UDON(config, t_star)
@@ -112,60 +82,75 @@ def train_and_evaluate(config, workdir: str):
         model.state = replicate(model.state)
         logging.info(f"Restored and re-replicated checkpoint from: {ckpt_path}")
 
+    # ── Fused Multi-Step JIT Loop ──────────────────────────────────────────
+    steps_per_loop = config.logging.log_every_steps
+
+    @partial(jax.pmap, static_broadcasted_argnums=(3,))
+    def train_multiple_steps(device_key, local_u_pool, local_dom_t, num_steps, state):
+        def body_fn(carry, _):
+            s, k = carry
+            
+            # --- Inline Sampling Logic ---
+            new_key, sample_key = jax.random.split(k)
+            key_u, key_t = jax.random.split(sample_key)
+            
+            idx_u   = jax.random.randint(key_u, (batch_size_per_device,), 0, pool_size)
+            batch_u = local_u_pool[idx_u, :]
+            
+            t_min   = local_dom_t[0, 0]
+            t_max   = local_dom_t[0, 1]
+            batch_t = jax.random.uniform(key_t, (batch_size_per_device, 1), minval=t_min, maxval=t_max)
+            
+            batch = (batch_u, batch_t)
+            
+            # --- Model Update ---
+            s = model.step(s, batch)
+            return (s, new_key), batch
+
+        # Scan drastically improves compilation speed and runtime throughput
+        (state, device_key), batches = jax.lax.scan(body_fn, (state, device_key), None, length=num_steps)
+        last_batch = jax.tree_map(lambda x: x[-1], batches)
+        
+        return state, device_key, last_batch
+
     # ── Training loop ──────────────────────────────────────────────────────
     logger     = Logger()
     start_time = time.time()
     logging.info("Waiting for JIT compilation…")
 
-    for step in range(config.training.max_steps):
+    for step in range(0, config.training.max_steps, steps_per_loop):
 
-        # ── Roll keys and Sample on-device ─────────────────────────────────
-        # vmap returns a single array of shape (num_devices, 2, 2)
-        split_keys = jax.vmap(jax.random.split)(keys)
-        
-        # Slice along axis 1 to separate the new keys and the current step's keys
-        keys      = split_keys[:, 0]  # Shape: (num_devices, 2) - save for next step
-        step_keys = split_keys[:, 1]  # Shape: (num_devices, 2) - use for this step
-        
-        # Generates a batch of shape (num_devices, batch_size_per_device, ...)
-        batch = sample_on_device(step_keys, u_pool_repl, dom_t_repl)
+        # ── Forward + gradient step (Scanned) ──────────────────────────────
+        model.state, device_keys, batch = train_multiple_steps(
+            device_keys, u_pool_repl, dom_t_repl, steps_per_loop, model.state
+        )
 
-        # ── Forward + gradient step ────────────────────────────────────────
-        model.state = model.step(model.state, batch)
+        current_step = step + steps_per_loop
 
-        # ── Adaptive loss weighting (optional) ────────────────────────────
+        # ── Adaptive loss weighting ────────────────────────────────────────
+        # Applied dynamically outside the hot loop
         if config.weighting.scheme in ("grad_norm", "ntk"):
-            if step % config.weighting.update_every_steps == 0 and step >= 500:#config.weighting.warmup_steps::
+            if current_step >= 500:
                 model.state = model.update_weights(model.state, batch)
 
         # ── Logging ────────────────────────────────────────────────────────
         if jax.process_index() == 0:
-            if step % config.logging.log_every_steps == 0:
-                state     = jax.device_get(tree_map(lambda x: x[0], model.state))
-                batch_dev = jax.device_get(tree_map(lambda x: x[0], batch))
+            state     = jax.device_get(tree_map(lambda x: x[0], model.state))
+            batch_dev = jax.device_get(tree_map(lambda x: x[0], batch))
 
-                # Evaluator expects state, train batch, branch eval input, and ground truth trajectory
-                log_dict = evaluator(state, batch_dev, u_ref_eval, x_ref_eval)
+            log_dict = evaluator(state, batch_dev, u_ref_eval, x_ref_eval)
+            log_dict["pool/active_ics"] = pool_size
+            wandb.log(log_dict, current_step)
 
-                # Track pool parameters (Fixed values now, since augmentation is dropped)
-                log_dict["pool/active_ics"] = pool_size
-
-                wandb.log(log_dict, step)
-
-                end_time = time.time()
-                logger.log_iter(step, start_time, end_time, log_dict)
-                start_time = end_time
+            end_time = time.time()
+            logger.log_iter(current_step, start_time, end_time, log_dict)
+            start_time = end_time
         
         # ── Checkpointing ──────────────────────────────────────────────────
         if config.saving.save_every_steps is not None:
-            if ((step + 1) % config.saving.save_every_steps == 0
-                    or (step + 1) == config.training.max_steps):
-                ckpt_path = os.path.join(
-                    os.getcwd(), config.wandb.name, "ckpt", "udon_model"
-                )
-                save_checkpoint(
-                    model.state, ckpt_path, keep=config.saving.num_keep_ckpts
-                )
+            if (current_step % config.saving.save_every_steps == 0 or current_step >= config.training.max_steps):
+                ckpt_path = os.path.join(os.getcwd(), config.wandb.name, "ckpt", "udon_model")
+                save_checkpoint(model.state, ckpt_path, keep=config.saving.num_keep_ckpts)
 
     return model
 
