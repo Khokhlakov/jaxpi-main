@@ -8,7 +8,7 @@ def get_config():
 
     # Weights & Biases
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project       = "PI-UDON-KS"
+    wandb.project       = "PI-UDON-KS-1S"
     wandb.name          = "test_pi_1" 
     wandb.ckpt_name     = "test_pi_1" 
     wandb.tag = None
@@ -24,7 +24,7 @@ def get_config():
     arch.out_dim = 256
     arch.activation = "tanh"
     arch.periodicity = None
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 2, "embed_dim": 1024})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 12, "embed_dim": 1024})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
@@ -102,7 +102,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "test_1/ckpt/udon_model"
-    saving.total_plots = 4
+    saving.total_plots = 1
 
     # Input shape (t is the only input)
     config.input_dim = 256 + 1

@@ -24,7 +24,7 @@ def get_config():
     arch.out_dim = 256
     arch.activation = "tanh"
     arch.periodicity = None
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 2, "embed_dim": 1024})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 12, "embed_dim": 1024})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
