@@ -45,7 +45,7 @@ def train_and_evaluate(config, workdir: str):
     # ── Reference data (used only for eval logging during training) ────────
     # Evaluate against the first 50 fine-grained integration steps of the test set
     trajs_per_window = min(100, x_ref_eval_all.shape[0])
-    time_steps = 50 
+    time_steps = 51
 
     # t_star represents the physical time for these 50 evaluation steps
     t_star = jnp.arange(time_steps) * dt
