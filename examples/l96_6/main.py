@@ -13,9 +13,9 @@ from ml_collections import config_flags
 import jax
 jax.config.update("jax_default_matmul_precision", "highest")
 
-import examples.l96_forcing.train as train
-import examples.l96_forcing.eval as eval
-import examples.l96_forcing.eval_pi_vs_dd as eval_pi_vs_dd
+import examples.l96_6.train as train
+import examples.l96_6.eval as eval
+import examples.l96_6.eval_pi_vs_dd as eval_pi_vs_dd
 
 
 FLAGS = flags.FLAGS

@@ -10,8 +10,8 @@ from flax.jax_utils import replicate
 from typing import Callable, Dict, Optional
 
 from jaxpi.utils import restore_checkpoint
-import examples.l96_forcing.models as models
-from examples.l96_forcing.utils import get_dataset, build_obs_schedule, scale_Q_for_fine_steps
+import examples.l96_6.models as models
+from examples.l96_6.utils import get_dataset, build_obs_schedule, scale_Q_for_fine_steps
 
 import numpy as np
 from scipy.integrate import solve_ivp
@@ -293,7 +293,7 @@ def _plot_rmse_comparison_split(
 def evaluate(config: ml_collections.ConfigDict, workdir: str):
     # ── 1. Load Dense Test Dataset ──────────────────────────────────────────
     data_dir = config.training.get("data_dir", "data")
-    test_file = os.path.join(data_dir, "l96_forcing_test.h5")
+    test_file = os.path.join(data_dir, "l96_6_test.h5")
 
     logging.info(f"Loading test dataset from {test_file}...")
     with h5py.File(test_file, 'r') as f:
@@ -403,7 +403,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
 
 
 def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
-    from examples.l96_forcing.kf import run_enkf_smoother, init_ensemble, make_enkf
+    from examples.l96_6.kf import run_enkf_smoother, init_ensemble, make_enkf
 
     obs_every_n  = config.ekf.get("obs_every_n",   4)
     sigma_obs    = config.ekf.get("sigma_obs",     0.5)
@@ -417,7 +417,7 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
 
     # ── Load Dataset ────────────────────────────────────────────────────────
     data_dir = config.training.get("data_dir", "data")
-    test_file = os.path.join(data_dir, "l96_forcing_test.h5")
+    test_file = os.path.join(data_dir, "l96_6_test.h5")
     
     logging.info(f"Loading test dataset from {test_file} for EnKF...")
     with h5py.File(test_file, 'r') as f:
@@ -613,7 +613,7 @@ def _evaluate_batch_l2_enkf(
     dynamic_vars, dt_fine: float, dt_obs: float,
     config, workdir, u_test, F_test, max_additions, dt_window
 ):
-    from examples.l96_forcing.kf import run_enkf_smoother, init_ensemble, make_enkf
+    from examples.l96_6.kf import run_enkf_smoother, init_ensemble, make_enkf
 
     specify_obs_idx   = config.kf.get("specify_obs_idx", False)
     obs_idx_list      = config.kf.get("obs_idx_list", None)
@@ -1091,7 +1091,7 @@ def _plot_grouped_metrics(
 
 def evaluate_pi_vs_dd(config: ml_collections.ConfigDict, workdir: str):
     data_dir = config.training.get("data_dir", "data")
-    test_file = os.path.join(data_dir, "l96_forcing_test.h5")
+    test_file = os.path.join(data_dir, "l96_6_test.h5")
 
     logging.info(f"Loading dense test dataset from {test_file}...")
     with h5py.File(test_file, 'r') as f:
@@ -1157,14 +1157,14 @@ def evaluate_pi_vs_dd(config: ml_collections.ConfigDict, workdir: str):
     )
 
 def evaluate_with_enkf_pi_vs_dd(config: ml_collections.ConfigDict, workdir: str):
-    from examples.l96_forcing.kf import run_enkf_smoother, init_ensemble, make_enkf
+    from examples.l96_6.kf import run_enkf_smoother, init_ensemble, make_enkf
     obs_every_n = config.ekf.get("obs_every_n", 4)
     sigma_obs = config.ekf.get("sigma_obs", 0.5)
     N_ens = config.enkf.get("N_ens", 50)
     dynamic_vars = config.ekf.get("dynamic_vars", False)
     
     data_dir = config.training.get("data_dir", "data")
-    with h5py.File(os.path.join(data_dir, "l96_forcing_test.h5"), 'r') as f:
+    with h5py.File(os.path.join(data_dir, "l96_6_test.h5"), 'r') as f:
         u_test = jnp.array(f['u'][:])     
         F_test = jnp.array(f['F'][:])     
         t_test = jnp.array(f['t'][:])     

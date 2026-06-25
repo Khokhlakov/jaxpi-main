@@ -31,8 +31,8 @@ def train_and_evaluate(config, workdir: str):
     wandb.init(project=config.wandb.project, name=config.wandb.name)
 
     # ── Load Dataset from HDF5 ─────────────────────────────────────────────
-    train_file = "data/l96_forcing_train.h5"
-    test_file  = "data/l96_forcing_test.h5"
+    train_file = "data/l96_6_train.h5"
+    test_file  = "data/l96_6_test.h5"
 
     with h5py.File(train_file, 'r') as f_train:
         # u_pool contains states pooled across all trajectories and windows. 
@@ -179,7 +179,7 @@ def train_and_evaluate_dd(config, workdir: str):
     #         timestep of a window
     #       - remaining N columns are the dense Lorenz-96 trajectory for
     #         that window (state at t = 0, ws, 2·dt, ... up to window_size)
-    train_file = "data/l96_forcing_train_dd.h5"
+    train_file = "data/l96_6_train_dd.h5"
 
     with h5py.File(train_file, 'r') as f_train:
         train_data_np = np.array(f_train['u'][:])              # (num_windows, num_t, N+1)
