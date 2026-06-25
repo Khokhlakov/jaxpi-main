@@ -20,7 +20,7 @@ def get_config():
     arch.num_branch_layers = 5
     arch.num_trunk_layers = 5
     arch.hidden_dim = 1024
-    arch.branch_input_dim = 41
+    arch.branch_input_dim = 40
     arch.out_dim = 40
     arch.activation = "tanh"
     arch.periodicity = None
@@ -44,7 +44,7 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 150_000
-    training.batch_size_per_device = 70#16384
+    training.batch_size_per_device = 50#16384
     training.use_cartesian_prod = True
     training.update_interval = 1000
     training.num_initial_ics = 8000
@@ -101,10 +101,10 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "test_1/ckpt/udon_model"
-    saving.total_plots = 2
+    saving.total_plots = 3
 
     # Input shape (t is the only input)
-    config.input_dim = 42
+    config.input_dim = 41
 
     # Training window size
     config.dt_window = 0.25

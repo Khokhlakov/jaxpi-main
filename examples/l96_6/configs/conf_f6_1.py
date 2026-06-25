@@ -9,9 +9,9 @@ def get_config():
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project       = "PI-UDON-L96-F8"
-    wandb.name          = "test_F8_1" 
-    wandb.ckpt_name     = "test_F8_1" 
+    wandb.project       = "PI-UDON-L96-F6"
+    wandb.name          = "test_F6_1" 
+    wandb.ckpt_name     = "test_F6_1" 
     wandb.tag = None
 
     # Arch 
@@ -20,7 +20,7 @@ def get_config():
     arch.num_branch_layers = 5
     arch.num_trunk_layers = 5
     arch.hidden_dim = 1024
-    arch.branch_input_dim = 41
+    arch.branch_input_dim = 40
     arch.out_dim = 40
     arch.activation = "tanh"
     arch.periodicity = None
@@ -101,10 +101,10 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "test_1/ckpt/udon_model"
-    saving.total_plots = 2
+    saving.total_plots = 3
 
     # Input shape (t is the only input)
-    config.input_dim = 42
+    config.input_dim = 41
 
     # Training window size
     config.dt_window = 0.25
