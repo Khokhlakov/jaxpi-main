@@ -36,7 +36,7 @@ def train_and_evaluate(config, workdir: str):
 
     with h5py.File(train_file, 'r') as f_train:
         # u_pool contains states pooled across all trajectories and windows. 
-        # Shape: (num_ics * M, 41) -> [40 state variables + 1 F value]
+        # Shape: (num_ics * M, 40) -> [40 state variables]
         u_pool_np = np.array(f_train['u'][:])
         
     with h5py.File(test_file, 'r') as f_test:

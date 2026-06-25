@@ -49,7 +49,7 @@ def train_and_evaluate(config, workdir: str):
 
     # ── Reference data (used only for eval logging during training) ────────
     trajs_per_window = 100
-    time_steps = 50
+    time_steps = 51
 
     # L2 evaluation dataset setup (First window only)
     t_star = t_star_all[0:time_steps]
