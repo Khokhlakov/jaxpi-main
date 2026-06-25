@@ -53,10 +53,10 @@ def main(argv):
         train.train_and_evaluate_dd(FLAGS.config, FLAGS.workdir)
 
     elif FLAGS.config.mode == "eval_pi_vs_dd":
-        eval_pi_vs_dd.evaluate_and_compare_openloop(FLAGS.config, FLAGS.workdir)
+        eval.evaluate_pi_vs_dd(FLAGS.config, FLAGS.workdir)
 
     elif FLAGS.config.mode == "eval_pi_vs_dd_enkf":
-        eval_pi_vs_dd.evaluate_and_compare_with_enkf(FLAGS.config, FLAGS.workdir)
+        eval.evaluate_with_enkf_pi_vs_dd(FLAGS.config, FLAGS.workdir)
     
 
 if __name__ == "__main__":
