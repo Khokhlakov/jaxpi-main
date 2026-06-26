@@ -300,8 +300,11 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         u_test = jnp.array(f['u'][:])     # Shape: (num_ics, num_test_pts, 40)
         F_test = jnp.array(f['F'][:])     # Shape: (num_ics,)
         t_test = jnp.array(f['t'][:])     # Shape: (num_test_pts,)
-        L_windows = f.attrs['L']
-        window_size = f.attrs['window_size']
+
+    window_size = config.get("dt_window", 0.25)
+    dt = float(t_test[1] - t_test[0])
+    pts_pw = int(round(window_size / dt))
+    L_windows = (len(t_test) - 1) // pts_pw
         
     num_ics, num_test_pts, N = u_test.shape
     dt = float(t_test[1] - t_test[0])
@@ -424,8 +427,11 @@ def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
         u_test = jnp.array(f['u'][:])     
         F_test = jnp.array(f['F'][:])     
         t_test = jnp.array(f['t'][:])     
-        L_windows = f.attrs['L']
-        window_size = f.attrs['window_size']
+    
+    window_size = config.get("dt_window", 0.25)
+    dt = float(t_test[1] - t_test[0])
+    pts_pw = int(round(window_size / dt))
+    L_windows = (len(t_test) - 1) // pts_pw
 
     num_ics, num_test_pts, N = u_test.shape
     dt = float(t_test[1] - t_test[0])
@@ -1098,8 +1104,11 @@ def evaluate_pi_vs_dd(config: ml_collections.ConfigDict, workdir: str):
         u_test = jnp.array(f['u'][:])     
         F_test = jnp.array(f['F'][:])     
         t_test = jnp.array(f['t'][:])     
-        L_windows = f.attrs['L']
-        window_size = f.attrs['window_size']
+    
+    window_size = config.get("dt_window", 0.25)
+    dt = float(t_test[1] - t_test[0])
+    pts_pw = int(round(window_size / dt))
+    L_windows = (len(t_test) - 1) // pts_pw
         
     num_ics, num_test_pts, N = u_test.shape
     dt = float(t_test[1] - t_test[0])
@@ -1168,8 +1177,11 @@ def evaluate_with_enkf_pi_vs_dd(config: ml_collections.ConfigDict, workdir: str)
         u_test = jnp.array(f['u'][:])     
         F_test = jnp.array(f['F'][:])     
         t_test = jnp.array(f['t'][:])     
-        window_size = f.attrs['window_size']
-        L_windows = f.attrs['L']
+
+    window_size = config.get("dt_window", 0.25)
+    dt = float(t_test[1] - t_test[0])
+    pts_pw = int(round(window_size / dt))
+    L_windows = (len(t_test) - 1) // pts_pw
 
     N = u_test.shape[2]
     dt = float(t_test[1] - t_test[0])
