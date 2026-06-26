@@ -40,13 +40,13 @@ class ETDCoefficients:
 
 class KuramotoSivashinskyAdvanced:
     def __init__(self, L: float = 64.0, N: int = 256, 
-                 dt: float = 0.02, dealiasing: float = 2/3):
+                 dt: float = 0.0002, dealiasing: float = 2/3):
         self.L = L
         self.N = N
         self.dt = dt
         
         # Normalization constants
-        self.c_t = 1.0
+        self.c_t = 0.01
         self.c_x = L / 2.0
         self.c_u = 3.5
         # Normalized spatial domain (xi)
@@ -104,7 +104,7 @@ def generate_datasets(
     num_samples: int = 200, 
     L: float = 64.0, 
     N: int = 256, 
-    dt: float = 0.02, 
+    dt: float = 0.0002, 
     t_burn: float = 50.0,
     max_additions: int = 4,
     test_windows: int = 50
@@ -133,7 +133,7 @@ def generate_datasets(
     # Pre-compute steps as pure Python integers
     # ==========================================
     burn_steps = int(t_burn / dt)
-    interval_steps = int(1.0 / dt)
+    interval_steps = int(0.01 / dt)
 
     # 2. Define Scanning Functions 
     def advance_time(u_hat, steps):

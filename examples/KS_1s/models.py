@@ -20,7 +20,7 @@ class KSUDON(ForwardIVP):
         # System parameters for normalized KS equation
         self.N = 256
         self.c_u = 3.5
-        self.c_t = 1.0
+        self.c_t = 0.01
         self.c_x = 32.0
         
         # Dealiasing convention (2/3 rule)
