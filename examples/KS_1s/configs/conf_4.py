@@ -100,8 +100,8 @@ def get_config():
     config.saving = saving = ml_collections.ConfigDict()
     saving.save_every_steps = 10000
     saving.num_keep_ckpts = 3
-    saving.restore_checkpoint = True
-    saving.restore_checkpoint_path = "test_pi_1/ckpt/udon_model"
+    saving.restore_checkpoint = False
+    saving.restore_checkpoint_path = "test_1/ckpt/udon_model"
     saving.total_plots = 1
 
     # Input shape (t is the only input)
