@@ -66,6 +66,18 @@ def train_and_evaluate(config, workdir: str):
 
     logging.info(f"Static Training Pool Ready: {pool_size} samples.")
 
+    # Define caps relative to initial weights (add before training loop)
+    MAX_WEIGHT_FACTOR = 100.0
+    init_w = {k: v for k, v in config.weighting.init_weights.items()}
+
+    def clip_adaptive_weights(state, init_weights, max_factor):
+        """Prevent adaptive weights from running away."""
+        clipped = {
+            k: jnp.clip(state.weights[k], 1e-6, max_factor * init_weights[k])
+            for k in state.weights
+        }
+        return state.replace(weights=clipped)
+
     # ── On-device Sampler ──────────────────────────────────────────────────
     num_devices = jax.local_device_count()
     init_key    = jax.random.PRNGKey(seed)
@@ -110,6 +122,9 @@ def train_and_evaluate(config, workdir: str):
         # ── Forward + gradient step ────────────────────────────────────────
         device_keys, batch  = get_batch_on_device(device_keys, u_pool_repl)
         model.state         = model.step(model.state, batch)
+        model.state         = clip_adaptive_weights(
+            model.state, init_w, MAX_WEIGHT_FACTOR
+        )
 
         # ── Adaptive loss weighting ───────────────────────────────────────
         if config.weighting.scheme in ("grad_norm", "ntk") and step >= 500:#config.weighting.warmup_steps:
