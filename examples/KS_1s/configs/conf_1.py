@@ -46,7 +46,7 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 100_000
-    training.batch_size_per_device = 30
+    training.batch_size_per_device = 40
     training.use_cartesian_prod = True
     training.update_interval = 1_000
     training.num_initial_ics = 8_000
@@ -59,9 +59,9 @@ def get_config():
     weighting.update_every_steps = 500
 
     # Causal Weighting
-    weighting.use_causal = False
-    weighting.causal_tol = 0.02
-    weighting.num_chunks = 8
+    weighting.use_causal = True
+    weighting.causal_tol = 0.1
+    weighting.num_chunks = 10
 
     # KF settings
     config.kf = kf = ml_collections.ConfigDict()
