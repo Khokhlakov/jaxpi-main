@@ -40,7 +40,7 @@ def train_and_evaluate(config, workdir: str):
     with h5py.File(test_file, 'r') as f_test:
         # Dense test trajectories. Shape: (num_ics, num_test_pts, 256)
         x_ref_eval_all = jnp.array(f_test['u'][:])
-        dt = f_test.attrs.get("dt", 0.02)
+        dt = f_test.attrs.get("dt", 0.0002)
 
     # ── Reference data (used only for eval logging during training) ────────
     # Evaluate against the first 50 fine-grained integration steps of the test set
@@ -74,7 +74,7 @@ def train_and_evaluate(config, workdir: str):
     # Copy the IC pool onto every device once
     u_pool_repl = jax.device_put_replicated(u_pool, jax.devices())
     
-    t_lo, t_hi = 0.0, 1.0
+    t_lo, t_hi = 0.0, 0.01
 
     @jax.pmap
     def get_batch_on_device(device_key, pool):
@@ -161,7 +161,7 @@ def train_and_evaluate_dd(config, workdir: str):
         train_data = jnp.array(f_train['u'][:])
         
         # Extract the integration step to map physical time correctly
-        dt = f_train.attrs.get("dt", 0.02)
+        dt = f_train.attrs.get("dt", 0.0002)
         interval_steps = f_train.attrs.get("interval_steps", train_data.shape[1] - 1)
 
     logging.info(f"Loaded Windowed Data-Driven Dataset: {train_data.shape}")
