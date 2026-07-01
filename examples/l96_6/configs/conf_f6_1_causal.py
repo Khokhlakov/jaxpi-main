@@ -10,8 +10,8 @@ def get_config():
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "PI-UDON-L96-F6"
-    wandb.name          = "test_F6_1" 
-    wandb.ckpt_name     = "test_F6_1" 
+    wandb.name          = "test_F6_1_causal" 
+    wandb.ckpt_name     = "test_F6_1_causal" 
     wandb.tag = None 
 
     # Arch 

@@ -9,10 +9,10 @@ def get_config():
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project       = "PI-UDON-L96-F6"
-    wandb.name          = "test_F6_1" 
-    wandb.ckpt_name     = "test_F6_1" 
-    wandb.tag = None 
+    wandb.project       = "PI-UDON-L96-F8"
+    wandb.name          = "test_F8_1" 
+    wandb.ckpt_name     = "test_F8_1" 
+    wandb.tag = None
 
     # Arch 
     config.arch = arch = ml_collections.ConfigDict()
@@ -24,7 +24,7 @@ def get_config():
     arch.out_dim = 40
     arch.activation = "tanh"
     arch.periodicity = None
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 1024})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 12, "embed_dim": 1024})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
@@ -44,7 +44,7 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 150_000
-    training.batch_size_per_device = 100#16384
+    training.batch_size_per_device = 50#16384
     training.use_cartesian_prod = True
     training.update_interval = 1000
     training.num_initial_ics = 8000
@@ -58,7 +58,7 @@ def get_config():
     weighting.update_every_steps = 500
 
     # Causal Weighting
-    weighting.use_causal = False
+    weighting.use_causal = True
     weighting.causal_tol = 0.1
     weighting.num_chunks = 10
 
@@ -87,7 +87,7 @@ def get_config():
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
-    logging.log_every_steps = 1000
+    logging.log_every_steps = 500
     logging.log_errors = True
     logging.log_losses = True
     logging.log_weights = True

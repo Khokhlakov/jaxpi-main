@@ -44,7 +44,7 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 150_000
-    training.batch_size_per_device = 50#16384
+    training.batch_size_per_device = 100#16384
     training.use_cartesian_prod = True
     training.update_interval = 1000
     training.num_initial_ics = 8000
@@ -87,7 +87,7 @@ def get_config():
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
-    logging.log_every_steps = 500
+    logging.log_every_steps = 1000
     logging.log_errors = True
     logging.log_losses = True
     logging.log_weights = True
