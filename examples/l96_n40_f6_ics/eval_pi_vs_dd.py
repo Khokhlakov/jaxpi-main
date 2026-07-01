@@ -417,7 +417,7 @@ def evaluate_with_enkf_pi_vs_dd(config: ml_collections.ConfigDict, workdir: str)
     Evaluate and compare Physics-Informed (PI) and Data-Driven (DD) DeepONets
     with EKF data assimilation. Plots batch-level metrics side-by-side.
     """
-    from examples.KS.kf import EKFState, run_ekf_smoother
+    from examples.l96_n40_f6_ics.kf import EKFState, run_ekf_smoother
 
     obs_every_n = config.ekf.get("obs_every_n", 4)
     sigma_obs   = config.ekf.get("sigma_obs", 0.5)
@@ -514,7 +514,7 @@ def _evaluate_batch_l2_ekf_comparison(
     Compute and plot batch-averaged L2 error per window for both PI and DD models
     with EKF assimilation.
     """
-    from examples.KS.kf import run_ekf_smoother, EKFState
+    from examples.l96_n40_f6_ics.kf import run_ekf_smoother, EKFState
 
     specify_obs_idx = config.kf.get("specify_obs_idx", False)
     obs_idx_list = config.kf.get("obs_idx_list", None)

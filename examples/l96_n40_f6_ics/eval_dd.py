@@ -657,7 +657,7 @@ def _evaluate_batch_l2_openloop(model, params, t_star_window, config, workdir):
 
 
 def evaluate_with_ekf_dd(config: ml_collections.ConfigDict, workdir: str):
-    from examples.KS.kf import EKFState, run_ekf_smoother
+    from examples.l96_n40_f6_ics.kf import EKFState, run_ekf_smoother
     import numpy as np
 
     obs_every_n = config.ekf.get("obs_every_n",  4)
@@ -862,7 +862,7 @@ def _evaluate_batch_l2_ekf(
     to keep wall-clock time manageable; this can be overridden via
     config.ekf.get("batch_l2_size", 200).
     """
-    from examples.KS.kf import run_ekf_smoother, EKFState
+    from examples.l96_n40_f6_ics.kf import run_ekf_smoother, EKFState
 
     specify_obs_idx = config.kf.get("specify_obs_idx", False)
     obs_idx_list    = config.kf.get("obs_idx_list", None)
@@ -1100,7 +1100,7 @@ def _evaluate_batch_l2_ekf(
 
 
 def evaluate_with_enkf_dd(config: ml_collections.ConfigDict, workdir: str):
-    from examples.KS.kf import EnKFState, run_enkf_smoother, init_ensemble
+    from examples.l96_n40_f6_ics.kf import EnKFState, run_enkf_smoother, init_ensemble
 
     obs_every_n  = config.ekf.get("obs_every_n",   4)
     sigma_obs    = config.ekf.get("sigma_obs",      0.5)
@@ -1272,7 +1272,7 @@ def _evaluate_batch_l2_enkf(
     dt_obs:  float,
     config, workdir,
 ):
-    from examples.KS.kf import run_enkf_smoother, init_ensemble, EnKFState
+    from examples.l96_n40_f6_ics.kf import run_enkf_smoother, init_ensemble, EnKFState
 
     specify_obs_idx   = config.kf.get("specify_obs_idx", False)
     obs_idx_list      = config.kf.get("obs_idx_list", None)

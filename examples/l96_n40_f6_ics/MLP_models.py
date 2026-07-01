@@ -17,8 +17,8 @@ import matplotlib.pyplot as plt
 import wandb
  
 from jaxpi import archs
-from examples.KS.utils import build_obs_schedule, scale_Q_for_fine_steps, get_dataset
-from examples.KS.eval import (
+from examples.l96_n40_f6_ics.utils import build_obs_schedule, scale_Q_for_fine_steps, get_dataset
+from examples.l96_n40_f6_ics.eval import (
     _load_l2_eval_pool,
     _plot_l2_per_window,
     _plot_trajectory_summary,
@@ -217,7 +217,7 @@ class L96MLP:
         Returns:
             predict_fn, update_fn — as produced by kf.make_ekf.
         """
-        from examples.KS.kf import make_ekf
+        from examples.l96_n40_f6_ics.kf import make_ekf
         propagator = self.make_surrogate_propagator(params)
         return make_ekf(propagator, self.N)
  
@@ -233,7 +233,7 @@ class L96MLP:
         Returns:
             predict_fn, update_fn — as produced by kf.make_enkf.
         """
-        from examples.KS.kf import make_enkf
+        from examples.l96_n40_f6_ics.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)
         return make_enkf(propagator, self.N, N_ens)
  
@@ -661,7 +661,7 @@ def evaluate_mlp_with_ekf(config, workdir: str) -> None:
         config:  ml_collections.ConfigDict.
         workdir: root directory.
     """
-    from examples.KS.kf import run_ekf_smoother
+    from examples.l96_n40_f6_ics.kf import run_ekf_smoother
  
     obs_every_n  = config.ekf.get("obs_every_n",  4)
     sigma_obs    = config.ekf.get("sigma_obs",    0.5)
@@ -843,7 +843,7 @@ def _evaluate_batch_l2_ekf_mlp(
     Batch-averaged L2 per window: MLP open-loop vs MLP EKF.
     Mirrors _evaluate_batch_l2_ekf from eval.py.
     """
-    from examples.KS.kf import run_ekf_smoother
+    from examples.l96_n40_f6_ics.kf import run_ekf_smoother
  
     specify_obs_idx = config.kf.get("specify_obs_idx", False)
     obs_idx_list    = config.kf.get("obs_idx_list",    None)
@@ -1030,7 +1030,7 @@ def evaluate_mlp_with_enkf(config, workdir: str) -> None:
         config:  ml_collections.ConfigDict.
         workdir: root directory.
     """
-    from examples.KS.kf import run_enkf_smoother, init_ensemble
+    from examples.l96_n40_f6_ics.kf import run_enkf_smoother, init_ensemble
  
     obs_every_n  = config.ekf.get("obs_every_n",   4)
     sigma_obs    = config.ekf.get("sigma_obs",      0.5)
@@ -1210,7 +1210,7 @@ def _evaluate_batch_l2_enkf_mlp(
     Batch-averaged L2 per window + calibration plot + ERF plot for the
     MLP EnKF.  Mirrors _evaluate_batch_l2_enkf from eval.py.
     """
-    from examples.KS.kf import run_enkf_smoother, init_ensemble
+    from examples.l96_n40_f6_ics.kf import run_enkf_smoother, init_ensemble
  
     specify_obs_idx = config.kf.get("specify_obs_idx", False)
     obs_idx_list    = config.kf.get("obs_idx_list",    None)

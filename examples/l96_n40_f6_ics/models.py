@@ -139,7 +139,7 @@ class L96UDON(ForwardIVP):
             ekf_state = predict(ekf_state, Q)
             ekf_state, K = update(ekf_state, y_obs, H, R)
         """
-        from examples.KS.kf import make_ekf
+        from examples.l96_n40_f6_ics.kf import make_ekf
         propagator_vt = self.make_surrogate_propagator(params)  # (u, t) -> u
         # Fix t=dt so the EKF always linearises over exactly one fine step.
         propagator    = lambda u: propagator_vt(u, dt)          # (u,) -> (N,)
@@ -176,7 +176,7 @@ class L96UDON(ForwardIVP):
             predict, update = model.make_enkf_fns(params, N_ens=50)
             # Then call run_enkf_smoother with dt_fine and dt_window.
         """
-        from examples.KS.kf import make_enkf
+        from examples.l96_n40_f6_ics.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)  # (u, t) -> u
         return make_enkf(propagator, self.N, N_ens)
  
@@ -311,7 +311,7 @@ class L96UDON_DD(ForwardIVP):
             ekf_state = predict(ekf_state, Q)
             ekf_state, K = update(ekf_state, y_obs, H, R)
         """
-        from examples.KS.kf import make_ekf
+        from examples.l96_n40_f6_ics.kf import make_ekf
         propagator_vt = self.make_surrogate_propagator(params)  # (u, t) -> u
         # Fix t=dt so the EKF always linearises over exactly one fine step.
         propagator    = lambda u: propagator_vt(u, dt)          # (u,) -> (N,)
@@ -348,7 +348,7 @@ class L96UDON_DD(ForwardIVP):
             predict, update = model.make_enkf_fns(params, N_ens=50)
             # Then call run_enkf_smoother with dt_fine and dt_window.
         """
-        from examples.KS.kf import make_enkf
+        from examples.l96_n40_f6_ics.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)  # (u, t) -> u
         return make_enkf(propagator, self.N, N_ens)
 
