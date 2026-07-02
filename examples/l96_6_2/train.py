@@ -17,7 +17,7 @@ from jaxpi.utils import save_checkpoint, restore_checkpoint
 from flax.jax_utils import replicate
 
 import models
-from utils import get_dataset, dd_get_train_data
+from utils import get_pi_train_data, dd_get_train_data, get_test_dataset
 from scipy.io import loadmat
 
 

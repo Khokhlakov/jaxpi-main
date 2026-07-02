@@ -13,11 +13,8 @@ from ml_collections import config_flags
 import jax
 jax.config.update("jax_default_matmul_precision", "highest")
 
-import examples.l96_n40_f6_ics.train as train
-import examples.l96_n40_f6_ics.eval as eval
-import examples.l96_n40_f6_ics.MLP_models as MLP_models
-import examples.l96_n40_f6_ics.eval_dd as eval_dd
-import examples.l96_n40_f6_ics.eval_pi_vs_dd as eval_pi_vs_dd
+import examples.l96_6_2.train as train
+import examples.l96_6_2.eval as eval
 
 
 FLAGS = flags.FLAGS
@@ -54,24 +51,6 @@ def main(argv):
     elif FLAGS.config.mode == "train_dd":
         train.train_and_evaluate_dd(FLAGS.config, FLAGS.workdir)
     
-    elif FLAGS.config.mode == "eval_dd":
-        eval_dd.evaluate_dd(FLAGS.config, FLAGS.workdir)
-    
-    elif FLAGS.config.mode == "eval_dd_enkf":
-        eval_dd.evaluate_with_enkf_dd(FLAGS.config, FLAGS.workdir)
-
-    # MLP:
-    elif FLAGS.config.mode == "train_mlp":
-        MLP_models.train_mlp(FLAGS.config, FLAGS.workdir)
-    
-    elif FLAGS.config.mode == "eval_mlp":
-        MLP_models.evaluate_mlp(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_mlp_ekf":
-        MLP_models.evaluate_mlp_with_ekf(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_mlp_enkf":
-        MLP_models.evaluate_mlp_with_enkf(FLAGS.config, FLAGS.workdir)
 
     elif FLAGS.config.mode == "eval_ekf_numerical":
         eval.evaluate_with_ekf_numerical(FLAGS.config, FLAGS.workdir)
@@ -81,25 +60,6 @@ def main(argv):
 
     elif FLAGS.config.mode == "train_dd":
         train.train_and_evaluate_dd(FLAGS.config, FLAGS.workdir)
-    
-    elif FLAGS.config.mode == "eval_dd":
-        eval_dd.evaluate_dd(FLAGS.config, FLAGS.workdir)
-    
-    elif FLAGS.config.mode == "eval_dd_enkf":
-        eval_dd.evaluate_with_enkf_dd(FLAGS.config, FLAGS.workdir)
-
-    # MLP:
-    elif FLAGS.config.mode == "train_mlp":
-        MLP_models.train_mlp(FLAGS.config, FLAGS.workdir)
-    
-    elif FLAGS.config.mode == "eval_mlp":
-        MLP_models.evaluate_mlp(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_mlp_ekf":
-        MLP_models.evaluate_mlp_with_ekf(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_mlp_enkf":
-        MLP_models.evaluate_mlp_with_enkf(FLAGS.config, FLAGS.workdir)
 
 if __name__ == "__main__":
     flags.mark_flags_as_required(["config", "workdir"])
