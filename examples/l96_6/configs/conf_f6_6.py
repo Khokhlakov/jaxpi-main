@@ -37,7 +37,7 @@ def get_config():
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 6_700 
+    optim.decay_steps = 5000 
     optim.decay_schedule = "Exponential"
 
     # Training (Windowed Logic)
@@ -45,7 +45,7 @@ def get_config():
     training.max_steps = 300000
     training.batch_size_per_device = 16384
     training.num_time_windows = 160
-    training.use_cartesian_prod = True
+    training.use_cartesian_prod = False
     training.update_interval = 1000
     training.num_initial_ics = 8000
     training.max_additions = 30
