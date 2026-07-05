@@ -9,7 +9,7 @@ def get_config():
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics-2"
-    wandb.name = "test2_16" 
+    wandb.name = "test2_17" 
     wandb.tag = None
 
     # Arch 
@@ -45,7 +45,7 @@ def get_config():
     training.batch_size_per_device = 100#16384
     training.num_time_windows = 160
     training.use_cartesian_prod = True
-    training.update_interval = 500
+    training.update_interval = 1500
     training.num_initial_ics = 8000
     training.max_additions = 30
     training.augmentation_scheme = "file" #"model" 
