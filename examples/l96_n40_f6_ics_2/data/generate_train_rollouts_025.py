@@ -23,8 +23,8 @@ N               = 40
 F               = 6.0
 mean_ic         = 6.0
 std_ic          = 2.0
-num_initial_ics = 4000
-max_additions   = 77
+num_initial_ics = 2000
+max_additions   = 137
 seed            = 42
  
 # Window length 
