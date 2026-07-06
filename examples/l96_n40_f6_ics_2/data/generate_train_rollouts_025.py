@@ -21,10 +21,11 @@ from scipy.io import savemat
 # ---------------------------------------------------------------------------
 N               = 40
 F               = 6.0
-mean_ic         = 6.0
-std_ic          = 2.0
+mean_ic         = 2.2
+std_ic          = 2.84
 num_initial_ics = 2000
 max_additions   = 137
+burn_in_windows = 20
 seed            = 42
  
 # Window length 
@@ -75,7 +76,7 @@ def rollout_one_window(u0_batch: np.ndarray, dt: float) -> np.ndarray:
  
  
 rng = np.random.default_rng(seed)
-u0_original_np = mean_ic + std_ic * rng.standard_normal(
+u0_raw_np = mean_ic + std_ic * rng.standard_normal(
     size=(num_initial_ics, N)
 ).astype(np.float64)
  
@@ -84,6 +85,25 @@ dt = t_window_end - t_window_start
 print(f"Generating {max_additions} rollout slots for {num_initial_ics} ICs.")
 print(f"Window length: {dt}  |  F = {F}  |  N = {N}")
 print(f"Output: {output_path}\n")
+
+# ---------------------------------------------------------------------------
+# Burn-in phase: Ignore transient behavior
+# ---------------------------------------------------------------------------
+print(f"--- Starting burn-in phase for {burn_in_windows} windows ---")
+u_current = u0_raw_np.copy()
+
+for b in range(1, burn_in_windows + 1):
+    t0 = time.time()
+    print(f"Computing burn-in window {b}/{burn_in_windows}...", end=" ", flush=True)
+    
+    u_current = rollout_one_window(u_current, dt)
+    
+    elapsed = time.time() - t0
+    print(f"done in {elapsed:.1f}s")
+
+# The state after the burn-in phase becomes our actual starting point
+u0_original_np = u_current.copy()
+print("--- Burn-in complete ---\n")
  
 # ---------------------------------------------------------------------------
 # Roll out cumulatively: slot k = u0_original advanced k windows
@@ -94,8 +114,6 @@ save_dict = {
     "max_additions":   np.array([max_additions]),
     "num_initial_ics": np.array([num_initial_ics]),
 }
- 
-u_current = u0_original_np.copy()
  
 for addition in range(1, max_additions + 1):
     t0 = time.time()
