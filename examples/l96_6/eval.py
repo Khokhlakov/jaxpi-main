@@ -18,6 +18,68 @@ from scipy.integrate import solve_ivp
 import h5py
 from functools import partial
 
+def _plot_l2_per_window(
+    curves:    dict[str, np.ndarray],   # label → (num_windows,) mean L2 array
+    dt:        float,                   # window duration (for x-axis labels)
+    title:     str,
+    save_path: str,
+    colors:    dict[str, str] | None = None,
+) -> None:
+    """
+    Plot one or more average-L2-per-window curves on a log-scale y-axis and
+    save the figure as a PDF.
+ 
+    A secondary x-axis showing elapsed simulation time (window_index × dt)
+    is added above the primary axis so that the absolute temporal scale is
+    immediately apparent alongside the window-index ticks.
+ 
+    Args:
+        curves:    Mapping from method label to a 1-D array of length
+                   num_windows containing the mean L2 at each window boundary.
+        dt:        Assimilation window duration used to label the axes.
+        title:     Figure suptitle.
+        save_path: Full path (including .pdf extension) for the output file.
+        colors:    Optional mapping from label to matplotlib colour string.
+                   Defaults are applied for unlabelled entries.
+    """
+    default_colors = ["#2196F3", "#FF5722", "#4CAF50", "#9C27B0"]
+    fig, ax = plt.subplots(figsize=(8, 5))
+ 
+    for i, (label, l2_arr) in enumerate(curves.items()):
+        num_windows = len(l2_arr)
+        window_idx  = np.arange(1, num_windows + 1)
+        color       = (colors or {}).get(label, default_colors[i % len(default_colors)])
+        ax.plot(window_idx, l2_arr, marker="o", markersize=4,
+                linewidth=1.8, label=label, color=color)
+ 
+    num_windows = len(next(iter(curves.values())))
+    window_idx  = np.arange(1, num_windows + 1)
+ 
+    ax.set_yscale("log")
+    ax.set_xlabel("Window index", fontsize=12)
+    ax.set_ylabel("Mean relative L2 error  (log scale)", fontsize=12)
+    ax.set_title(title, fontsize=13)
+    ax.legend(fontsize=11)
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+ 
+    # ── secondary x-axis — simulation time ──────────────────────────────────
+    # Twin the x-axis so the top spine shows elapsed time (window_idx × dt).
+    ax_time = ax.twiny()
+    ax_time.set_xlim(ax.get_xlim())
+    ax_time.set_xticks(window_idx)
+    ax_time.set_xticklabels(
+        [f"{k * dt:.3g}" for k in window_idx],
+        fontsize=8, rotation=45, ha="left",
+    )
+    ax_time.set_xlabel("Simulation time  (window × dt)", fontsize=10)
+    # ────────────────────────────────────────────────────────────────────────
+ 
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    logging.info(f"Batch L2-per-window plot saved to: {save_path}")
+
 
 def _plot_trajectory_summary(
     t_ax:       np.ndarray,        # (T,)   time axis
