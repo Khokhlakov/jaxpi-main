@@ -20,46 +20,95 @@ from functools import partial
 
 
 def _plot_trajectory_summary(
-    t_ax:       np.ndarray,
-    x_true:     np.ndarray,
-    x_est:      np.ndarray,
+    t_ax:       np.ndarray,        # (T,)   time axis
+    x_true:     np.ndarray,        # (T, N) ground-truth state
+    x_est:      np.ndarray,        # (T, N) estimate (prediction / filter mean)
+    x_std:      np.ndarray | None, # (T, N) per-variable std, or None
     ic_idx:     int,
-    F_val:      float,
+    est_label:  str,               # e.g. "DeepONet", "EKF estimate", "EnKF mean"
     save_path:  str,
-    x_std:      Optional[np.ndarray] = None,
-    est_label:  str = "Prediction",
     N:          int = 40,
-    dt_window:  Optional[float] = None,
-    obs_coords: Optional[list[tuple[int, float, float]]] = None,
+    dt_window:  float | None = None,
+    # List of (variable_index, observation_time) pairs built during the filter
+    # loop.  Used to mark assimilated observations with an × on each variable
+    # panel.  Pass None (or omit) for open-loop evaluations without observations.
+    obs_coords: list[tuple[int, float, float]] | None = None,
 ) -> None:
     """
     Generate and save the trajectory-summary PDF for a single IC.
-    Includes uncertainty bands and observation markers.
+ 
+    Layout
+    ------
+    Row 0 (2-column span):
+        Line plot of mean |error| across all N variables vs time.
+        Gives a scalar summary of how the error evolves.
+        Vertical dashed lines mark every training-window boundary (if
+        dt_window is supplied).
+ 
+    Rows 1–20, columns 0–1  (40 panels total):
+        Panel for variable i shows:
+          • ground-truth trajectory  (solid, dark)
+          • estimate trajectory      (dashed, coloured)
+          • ±1σ shaded band          (if x_std is not None)
+          • × markers at every assimilated observation for that variable
+            (if obs_coords is not None)
+          • vertical dashed lines at training-window boundaries
+            (if dt_window is not None)
+ 
+    Args:
+        t_ax:       1-D time array shared by all panels.
+        x_true:     Ground-truth states; shape (T, N).
+        x_est:      Estimated states; shape (T, N).
+        x_std:      Per-variable standard deviation; shape (T, N), or None.
+        ic_idx:     Trajectory index, used only for the figure title.
+        est_label:  Short name for the estimator shown in legends.
+        save_path:  Full output path including filename and .pdf extension.
+        N:          State dimension (default 40 for L96).
+        dt_window:  Training window length in the same time units as t_ax.
+                    When supplied, a vertical dashed line is drawn at each
+                    multiple of dt_window in every panel.
+        obs_coords: List of (variable_index, time) pairs for all
+                    observations that were assimilated.  For each variable i
+                    a scatter marker '×' is drawn at the corresponding
+                    observation times, interpolated onto the estimate curve.
     """
-    x_true = np.asarray(x_true)
-    x_est  = np.asarray(x_est)
+    x_true = np.asarray(x_true)   # (T, N)
+    x_est  = np.asarray(x_est)    # (T, N)
     x_std  = np.asarray(x_std) if x_std is not None else None
  
-    abs_error    = np.abs(x_true - x_est)
-    mean_abs_err = abs_error.mean(axis=1)
+    abs_error    = np.abs(x_true - x_est)            # (T, N)
+    mean_abs_err = abs_error.mean(axis=1)             # (T,)  ← the top-panel curve
  
-    n_var_rows = N // 2
+    n_var_rows = N // 2                               # 20 rows for 40 variables
  
+    # ── Pre-compute window-boundary times ────────────────────────────────────
+    # Build a sorted array of boundary times within the plotted range so that
+    # axvline calls are O(num_windows) rather than O(T).
     t_min, t_max = float(t_ax[0]), float(t_ax[-1])
     if dt_window is not None and dt_window > 0:
+        # Start from the first boundary strictly after t_min
         first_k = int(np.floor(t_min / dt_window)) + 1
-        window_boundaries = np.arange(first_k * dt_window, t_max + 1e-12 * dt_window, dt_window)
+        window_boundaries = np.arange(first_k * dt_window,
+                                      t_max + 1e-12 * dt_window,
+                                      dt_window)
     else:
         window_boundaries = np.array([])
-        
+ 
+    # ── Pre-compute per-variable observation times ────────────────────────────
+    # Build a dict  {var_idx: sorted array of obs times}
     if obs_coords is not None:
+        # dict maps var_idx -> sorted list of (time, observed_value) pairs
         obs_by_var: dict[int, list[tuple[float, float]]] = {}
         for var_idx, obs_t, obs_val in obs_coords:
             obs_by_var.setdefault(var_idx, []).append((obs_t, obs_val))
-        obs_by_var = {k: sorted(v, key=lambda x: x[0]) for k, v in obs_by_var.items()}
+        # sort by time so the scatter x-coords are in order
+        obs_by_var = {k: sorted(v, key=lambda x: x[0])
+                      for k, v in obs_by_var.items()}
     else:
         obs_by_var = {}
  
+    # ── Figure & GridSpec ────────────────────────────────────────────────────
+    # Top row is taller (summary plot); variable rows are compact.
     top_height   = 3.2
     var_row_h    = 1.9
     total_height = top_height + n_var_rows * var_row_h
@@ -74,63 +123,90 @@ def _plot_trajectory_summary(
         wspace       = 0.32,
     )
  
-    ax_top = fig.add_subplot(gs[0, :])
-    ax_top.plot(t_ax, mean_abs_err, color="#E53935", linewidth=1.6, label="Mean |error| over variables")
+    # ── Top panel: mean absolute error vs time ───────────────────────────────
+    ax_top = fig.add_subplot(gs[0, :])   # span both columns
+    ax_top.plot(t_ax, mean_abs_err, color="#E53935", linewidth=1.6,
+                label="Mean |error| over variables")
  
+    # window boundaries on the summary panel
     for wb in window_boundaries:
-        ax_top.axvline(x=wb, color="#78909C", linestyle="--", linewidth=0.8, alpha=0.55, label="Window boundary" if wb == window_boundaries[0] else None)
+        ax_top.axvline(x=wb, color="#78909C", linestyle="--",
+                       linewidth=0.8, alpha=0.55,
+                       label="Window boundary" if wb == window_boundaries[0] else None)
  
-    ax_top.set_xlabel("Time (t)", fontsize=11)
+    ax_top.set_xlabel("Time  t", fontsize=11)
     ax_top.set_ylabel("Mean absolute error", fontsize=11)
     ax_top.set_yscale("log")
     ax_top.set_title(
-        f"IC {ic_idx} (F = {F_val:.2f}) — Mean absolute error across all {N} variables ({est_label})",
+        f"IC {ic_idx} — Mean absolute error across all {N} variables  ({est_label})",
         fontsize=12, fontweight="bold",
     )
     ax_top.legend(fontsize=10)
     ax_top.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
  
-    TRUTH_COLOR = "#37474F"
-    EST_COLOR   = "#1E88E5"
-    BAND_COLOR  = "#90CAF9"
-    OBS_COLOR   = "#E53935"
+    # ── Colour palette ───────────────────────────────────────────────────────
+    TRUTH_COLOR = "#37474F"   # dark blue-grey — ground truth
+    EST_COLOR   = "#1E88E5"   # blue           — estimate
+    BAND_COLOR  = "#90CAF9"   # light blue     — ±1σ band
+    OBS_COLOR   = "#E53935"   # red            — observation markers
  
+    # ── Per-variable panels ──────────────────────────────────────────────────
+    # Variable i occupies row (1 + i//2), column (i % 2).
     for i in range(N):
         row = 1 + i // 2
         col = i % 2
         ax  = fig.add_subplot(gs[row, col])
  
+        # window boundaries — draw first so they sit behind data lines
         for wb in window_boundaries:
-            ax.axvline(x=wb, color="#78909C", linestyle="--", linewidth=0.6, alpha=0.45)
+            ax.axvline(x=wb, color="#78909C", linestyle="--",
+                       linewidth=0.6, alpha=0.45)
  
-        ax.plot(t_ax, x_true[:, i], color=TRUTH_COLOR, linewidth=1.0, label="Truth")
-        ax.plot(t_ax, x_est[:, i], color=EST_COLOR, linewidth=1.0, linestyle="--", label=est_label)
-        
+        # Ground truth
+        ax.plot(t_ax, x_true[:, i],
+                color=TRUTH_COLOR, linewidth=1.0, label="Truth")
+ 
+        # Estimate
+        ax.plot(t_ax, x_est[:, i],
+                color=EST_COLOR, linewidth=1.0, linestyle="--",
+                label=est_label)
+ 
+        # ±1σ uncertainty band (EKF or EnKF only)
         if x_std is not None:
             ax.fill_between(
-                t_ax, x_est[:, i] - x_std[:, i], x_est[:, i] + x_std[:, i],
-                color=BAND_COLOR, alpha=0.40, linewidth=0, label="±1σ",
+                t_ax,
+                x_est[:, i] - x_std[:, i],
+                x_est[:, i] + x_std[:, i],
+                color=BAND_COLOR, alpha=0.40, linewidth=0,
+                label="±1σ",
             )
-            
+ 
+        # Observation markers — interpolate estimate value at each obs time
+        # so the × sits on the estimate curve rather than floating arbitrarily.
         if i in obs_by_var:
-            obs_times_i, obs_vals_i = zip(*obs_by_var[i])
-            ax.scatter(obs_times_i, obs_vals_i, marker="x", s=20, linewidths=0.7,
-                       color=OBS_COLOR, zorder=5, label="Observation" if i == min(obs_by_var) else None)
+            obs_times_i, obs_vals_i = zip(*obs_by_var[i])   # unzip the pairs
+            ax.scatter(obs_times_i, obs_vals_i,              # plot true noisy obs
+                       marker="x", s=25, linewidths=0.9,
+                       color=OBS_COLOR, zorder=5,
+                       label="Observation" if i == min(obs_by_var) else None)
  
         ax.set_title(f"$x_{{{i}}}$", fontsize=9, pad=2)
         ax.tick_params(labelsize=7)
         ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5)
  
-        if row == 1 + n_var_rows - 1:
-            ax.set_xlabel("Time (t)", fontsize=8)
-        if col == 0:
-            ax.set_ylabel("State", fontsize=8)
+        # Only label axes on the border panels to reduce clutter
+        if row == 1 + n_var_rows - 1:          # bottom row
+            ax.set_xlabel("t", fontsize=8)
+        if col == 0:                            # left column
+            ax.set_ylabel("state", fontsize=8)
  
+        # Legend only on the first panel (top-left variable)
         if i == 0:
-            ax.legend(fontsize=7, loc="upper right", handlelength=1.2, framealpha=0.7)
+            ax.legend(fontsize=7, loc="upper right",
+                      handlelength=1.2, framealpha=0.7)
  
     fig.suptitle(
-        f"Trajectory summary — IC {ic_idx}  |  Forcing F = {F_val:.3f} | Estimator: {est_label}",
+        f"Trajectory summary — IC {ic_idx}  |  estimator: {est_label}",
         fontsize=13, fontweight="bold", y=1.002,
     )
  
@@ -138,7 +214,6 @@ def _plot_trajectory_summary(
     fig.savefig(save_path, bbox_inches="tight", dpi=150)
     plt.close(fig)
     logging.info(f"Trajectory summary for IC {ic_idx} saved to: {save_path}")
-
 
 def _plot_batch_l2_over_time(
     t_ax: np.ndarray,
