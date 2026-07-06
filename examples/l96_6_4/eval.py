@@ -690,9 +690,7 @@ def evaluate_long(
                        explicitly if it differs.
     """
     if test_h5_path is None:
-        test_h5_path = os.path.join(
-            "examples", "l96_6_4", "data", "l96_forcing_test.h5"
-        )
+        test_h5_path = "data/l96_forcing_test.h5"
  
     # ── 1. Load the long test trajectories ───────────────────────────────────
     with h5py.File(test_h5_path, "r") as f:
