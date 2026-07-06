@@ -692,7 +692,7 @@ def evaluate_long(
     """
     if test_h5_path is None:
         test_h5_path = os.path.join(
-            "examples", "l96_forcing", "data", "l96_forcing_test.h5"
+            "examples", "l96_n40_f6_ics", "data", "l96_forcing_test.h5"
         )
  
     # ── 1. Load the long test trajectories ───────────────────────────────────
