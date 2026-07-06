@@ -21,11 +21,11 @@ from scipy.io import savemat
 # ---------------------------------------------------------------------------
 N               = 40
 F               = 6.0
-mean_ic         = 6.0
-std_ic          = 2.0
+mean_ic         = 2.2
+std_ic          = 2.84
 num_initial_ics = 8000
 max_additions   = 37
-burn_in_windows = 20  # Number of initial windows to discard for transient behavior
+burn_in_windows = 15  # Number of initial windows to discard for transient behavior
 seed            = 42
  
 # Window length 
@@ -33,7 +33,7 @@ t_window_start = 0.0
 t_window_end   = 0.25
  
 output_path = os.path.join(
-    os.getcwd(), "examples", "l96_n40_f6_ics", "data", "train_rollouts_025.mat"
+    os.getcwd(), "examples", "l96_6_3", "data", "train_rollouts_025.mat"
 )
  
 # ---------------------------------------------------------------------------
