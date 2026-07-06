@@ -46,14 +46,14 @@ import h5py
 # ── Configurable Parameters ────────────────────────────────────────────────────
 
 N           = 40       
-num_ics     = 500  
+num_ics     = 300  
 F_val       = 6.0    
 
-M           = 20       # Training windows per trajectory
+M           = 60       # Training windows per trajectory
 window_size = 0.25     # Window duration [time units]
-L           = 20       # Test trajectory length [in windows]
+L           = 30       # Test trajectory length [in windows]
 
-burn_time   = 20.0     # 80 windows of 0.25
+burn_time   = 0.0     # 80 windows of 0.25
 dt          = 0.005    
 
 SEED        = 42       
@@ -126,7 +126,7 @@ u_test = np.zeros((num_ics, num_test_pts, N), dtype=np.float32)
 # ── Generation Loop ────────────────────────────────────────────────────────────
 
 print("=" * 64)
-print("Lorenz-96 data generation  (variable forcing F as parameter)")
+print("Lorenz-96 data generation")
 print("=" * 64)
 print(f"  N = {N}  |  trajectories = {num_ics}  |  F = {F_val}")
 print(f"  Burn-in  : {burn_time} t.u.")
