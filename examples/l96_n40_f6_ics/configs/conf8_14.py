@@ -9,7 +9,7 @@ def get_config():
     # copy of 2 12
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project = "PI-UDON-L96-n40-f6-ics-2"
-    wandb.name = "test2_14" 
+    wandb.name = "test8_14" 
     wandb.tag = None
 
     # Arch 
