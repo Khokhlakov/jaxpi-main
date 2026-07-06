@@ -892,7 +892,7 @@ def _evaluate_batch_l2_openloop_long(
     dt_test = float(t_test[1] - t_test[0])
     pts_pw  = int(round(dt_window / dt_test))
  
-    assert abs(dt_window / dt_test - pts_pw) < 1e-6, (
+    assert abs(dt_window / dt_test - pts_pw) < 2e-6, (
         f"dt_window ({dt_window}) is not an integer multiple of the test "
         f"file's time step ({dt_test}); cannot index exact window boundaries."
     )

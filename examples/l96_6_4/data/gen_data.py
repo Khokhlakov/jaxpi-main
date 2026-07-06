@@ -46,14 +46,14 @@ import h5py
 # ── Configurable Parameters ────────────────────────────────────────────────────
 
 N           = 40       
-num_ics     = 500  
+num_ics     = 300 
 F_val       = 6.0    
 
 M           = 20       # Training windows per trajectory
 window_size = 0.25     # Window duration [time units]
-L           = 20       # Test trajectory length [in windows]
+L           = 30       # Test trajectory length [in windows]
 
-burn_time   = 20.0     # 80 windows of 0.25
+burn_time   = 15.0     # 80 windows of 0.25
 dt          = 0.005    
 
 SEED        = 42       
