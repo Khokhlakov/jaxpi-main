@@ -24,8 +24,8 @@ F               = 6.0
 mean_ic         = 2.2
 std_ic          = 2.84
 num_initial_ics = 4000
-max_additions   = 67
-burn_in_windows = 15  # Number of initial windows to discard for transient behavior
+max_additions   = 77
+burn_in_windows = 0  # Number of initial windows to discard for transient behavior
 seed            = 42
  
 # Window length 

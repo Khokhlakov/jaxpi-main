@@ -36,18 +36,18 @@ def get_config():
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 5000 
+    optim.decay_steps = 2_700 
     optim.decay_schedule = "Exponential"
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 300000
+    training.max_steps = 150_000
     training.batch_size_per_device = 100#16384
     training.num_time_windows = 160
     training.use_cartesian_prod = True
     training.update_interval = 1000
     training.num_initial_ics = 4000
-    training.max_additions = 60
+    training.max_additions = 70
     training.augmentation_scheme = "file" #"model" 
     training.augmentation_file_name = "train_rollouts_025.mat"
 
