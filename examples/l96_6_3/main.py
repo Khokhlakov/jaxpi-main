@@ -39,6 +39,9 @@ def main(argv):
     elif FLAGS.config.mode == "eval":
         eval.evaluate(FLAGS.config, FLAGS.workdir)
 
+    elif FLAGS.config.mode == "eval_long":
+        eval.evaluate_long(FLAGS.config, FLAGS.workdir)
+
     elif FLAGS.config.mode == "eval_ekf":
         eval.evaluate_with_ekf(FLAGS.config, FLAGS.workdir)
 
