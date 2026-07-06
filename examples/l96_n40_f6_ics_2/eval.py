@@ -16,6 +16,7 @@ from examples.l96_n40_f6_ics_2.utils import get_dataset, build_obs_schedule, sca
 import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.io import loadmat
+import h5py
 
 
 def _load_l2_eval_pool(
@@ -655,6 +656,264 @@ def _evaluate_batch_l2_openloop(model, params, t_star_window, config, workdir):
         colors    = {"Open-loop (DeepONet)": "#2196F3"},
     )
 
+def evaluate_long(
+    config: ml_collections.ConfigDict,
+    workdir: str,
+    test_h5_path: str = None,
+) -> None:
+    """
+    Long-horizon counterpart to `evaluate`.
+ 
+    Produces the same two per-IC plots as `evaluate` (trajectory summary +
+    exact/prediction/error heatmap triptych) plus the same batch-averaged
+    L2-per-window plot, but rolls the DeepONet out over the *full* L=20
+    window (20 * 0.25 = 5.0 time-unit) test trajectories stored in
+    `l96_forcing_test.h5` (produced by gen_data.py), instead of the
+    `config.training.num_time_windows`-window trajectories used by
+    `evaluate`.
+ 
+    Key difference vs. `evaluate`: the ground truth is *not* regenerated on
+    the fly with `solve_ivp`. `l96_forcing_test.h5` already stores a dense,
+    high-accuracy (rtol=1e-13) reference trajectory for every IC, so that is
+    used directly (interpolated onto the model's query times as a safety
+    net against any floating-point grid mismatch).
+ 
+    Args:
+        config:        Same ml_collections config used by `evaluate`.
+        workdir:       Output directory; figures are saved under
+                       workdir/figures/config.wandb.name/ with a "_long"
+                       suffix so they don't overwrite `evaluate`'s output.
+        test_h5_path:  Path to l96_forcing_test.h5. Defaults to
+                       "examples/l96_forcing/data/l96_forcing_test.h5" (the
+                       path documented in gen_data.py's docstring). Note
+                       that gen_data.py's code currently writes to
+                       os.getcwd() instead, so pass the actual path
+                       explicitly if it differs.
+    """
+    if test_h5_path is None:
+        test_h5_path = os.path.join(
+            "examples", "l96_forcing", "data", "l96_forcing_test.h5"
+        )
+ 
+    # ── 1. Load the long test trajectories ───────────────────────────────────
+    with h5py.File(test_h5_path, "r") as f:
+        u_test = f["u"][:]     # (num_ics, num_test_pts, N)
+        F_test = f["F"][:]     # (num_ics,)
+        t_test = f["t"][:]     # (num_test_pts,) relative time, t_test[0] == 0
+ 
+    num_ics_file, num_test_pts, N_file = u_test.shape
+    dt_window        = float(config.get("dt_window", 0.25))
+    num_windows_long = int(round(float(t_test[-1]) / dt_window))
+ 
+    if not np.allclose(F_test, F_test[0]):
+        logging.info(
+            "[evaluate_long] F is not constant across trajectories in "
+            f"{test_h5_path} (min={F_test.min():.3f}, max={F_test.max():.3f}). "
+            "This model was trained for a single fixed F, so results for "
+            "trajectories far from that F may not be meaningful."
+        )
+ 
+    logging.info(
+        f"[evaluate_long] Loaded {num_ics_file} test trajectories from "
+        f"{test_h5_path}  |  N={N_file}  |  horizon={num_windows_long} "
+        f"windows ({float(t_test[-1]):.3g} time units)"
+    )
+ 
+    # ── 2. Model & per-window query grid (same convention as evaluate()) ────
+    time_steps = 50
+    _, _, t_star_window = get_dataset()
+    t_star_window = t_star_window[0:time_steps]
+    T_last = float(t_star_window[-1])
+ 
+    model = models.L96UDON(config, t_star_window)
+    ckpt_path = os.path.join(os.getcwd(), config.wandb.name, "ckpt", "udon_model")
+    logging.info("Restored trained DeepONet model for long autoregressive rollout.")
+    model.state = restore_checkpoint(model.state, ckpt_path)
+    params = model.state.params
+ 
+    num_plots = min(config.saving.total_plots, num_ics_file)
+ 
+    for ic_idx in range(num_plots):
+        logging.info(f"--- [long] Evaluating Trajectory for IC index {ic_idx} ---")
+ 
+        u_current = jnp.array(u_test[ic_idx, 0, :])   # true IC at t = 0 (relative)
+ 
+        # ── Autoregressive rollout — identical mechanics to evaluate() ──────
+        x_pred_list, t_full_list = [], []
+        for idx in range(num_windows_long):
+            preds = model.x_pred_fn(params, u_current, t_star_window)
+            x_pred_window = jnp.squeeze(preds)
+ 
+            if idx == 0:
+                x_pred_list.append(x_pred_window)
+                t_full_list.append(t_star_window)
+            else:
+                x_pred_list.append(x_pred_window[1:])
+                t_full_list.append(t_star_window[1:] + idx * T_last)
+ 
+            u_current = x_pred_window[-1, :]
+ 
+        x_pred_full = jnp.concatenate(x_pred_list, axis=0)
+        t_star_full = jnp.concatenate(t_full_list, axis=0)
+ 
+        # ── Ground truth, read from the file and interpolated onto the ─────
+        # model's query times. Both grids use dt = 0.005 by construction in
+        # gen_data.py, so this is normally an exact lookup; interpolating is
+        # just a safety net against floating-point drift in t_star_window.
+        t_np = np.asarray(t_star_full)
+        x_ref_matched = np.stack(
+            [np.interp(t_np, t_test, u_test[ic_idx, :, v]) for v in range(N_file)],
+            axis=1,
+        )
+        x_ref_matched = jnp.array(x_ref_matched)
+ 
+        # ── Trajectory summary plot ──────────────────────────────────────────
+        _plot_trajectory_summary(
+            t_ax       = np.array(t_star_full),
+            x_true     = np.array(x_ref_matched),
+            x_est      = np.array(x_pred_full),
+            x_std      = None,                     # no uncertainty, open-loop
+            ic_idx     = ic_idx,
+            est_label  = "DeepONet (long rollout)",
+            save_path  = os.path.join(
+                workdir, "figures", config.wandb.name,
+                f"trajectory_summary_long_ic_{ic_idx}.pdf",
+            ),
+            N          = model.N,
+            dt_window  = dt_window,
+            obs_coords = None,
+        )
+ 
+        # ── Full-rollout relative L2 error (same definition as evaluate()) ──
+        total_l2_error = jnp.linalg.norm(x_pred_full - x_ref_matched) / jnp.linalg.norm(x_ref_matched)
+        print(
+            f"IC {ic_idx} | Long Rollout ({num_windows_long} windows, "
+            f"{num_windows_long * dt_window:.3g} t.u.) L2 error: {total_l2_error:.3e}"
+        )
+ 
+        # ── Heatmaps: exact reference / prediction / absolute error ─────────
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6), sharey=True)
+ 
+        im0 = axes[0].pcolormesh(np.arange(model.N), t_star_full, x_ref_matched, cmap='viridis', shading='auto')
+        axes[0].set_title(f"Exact L96 Reference (IC {ic_idx}, long)", fontsize=14)
+        axes[0].set_ylabel("Time (t)", fontsize=14)
+        axes[0].set_xlabel("Variables (0 to 39)", fontsize=14)
+        fig.colorbar(im0, ax=axes[0])
+ 
+        im1 = axes[1].pcolormesh(np.arange(model.N), t_star_full, x_pred_full, cmap='viridis', shading='auto')
+        axes[1].set_title(f"UDON Rollout (IC {ic_idx}, long)", fontsize=14)
+        axes[1].set_xlabel("Variables (0 to 39)", fontsize=14)
+        fig.colorbar(im1, ax=axes[1])
+ 
+        abs_error = jnp.abs(x_ref_matched - x_pred_full)
+        im2 = axes[2].pcolormesh(np.arange(model.N), t_star_full, abs_error, cmap='magma', shading='auto')
+        axes[2].set_title(f"Absolute Error (IC {ic_idx}, long)", fontsize=14)
+        axes[2].set_xlabel("Variables (0 to 39)", fontsize=14)
+        fig.colorbar(im2, ax=axes[2])
+ 
+        for ax in axes:
+            for w in range(1, num_windows_long):
+                ax.axhline(y=w * dt_window, color='white', linestyle=':', alpha=0.5)
+ 
+        fig.tight_layout()
+ 
+        save_dir = os.path.join(workdir, "figures", config.wandb.name)
+        os.makedirs(save_dir, exist_ok=True)
+        fig_path = os.path.join(save_dir, f"udon_rollout_analysis_long_ic_{ic_idx}.pdf")
+        fig.savefig(fig_path, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+ 
+        logging.info(f"[long] Evaluation plot for IC {ic_idx} saved to: {fig_path}")
+ 
+    # ── Batch-averaged L2-per-window, using every trajectory in the file ────
+    _evaluate_batch_l2_openloop_long(
+        model, params, t_star_window,
+        u_test, t_test, dt_window, num_windows_long,
+        config, workdir,
+    )
+
+def _evaluate_batch_l2_openloop_long(
+    model, params, t_star_window,
+    u_test:           np.ndarray,   # (B, num_test_pts, N) dense test trajectories
+    t_test:           np.ndarray,   # (num_test_pts,) relative times, t_test[0] == 0
+    dt_window:        float,
+    num_windows_long: int,
+    config, workdir,
+    curve_label: str = "Open-loop (DeepONet), long rollout",
+) -> np.ndarray:
+    """
+    Batch-averaged open-loop L2 error per window for the long (L-window)
+    horizon, computed directly from l96_forcing_test.h5.
+ 
+    This is the long-horizon analogue of `_evaluate_batch_l2_openloop`. The
+    two differ only in where the ground truth comes from:
+ 
+      * `_evaluate_batch_l2_openloop` reads a separate augmentation pool
+        (a .mat file with keys `u0_original` / `u0_rollout_k`) that was
+        purpose-built for a *short* number of windows (`max_additions`).
+      * here, every trajectory already stored in `l96_forcing_test.h5` is
+        used as its own batch element, and the window-boundary ground truth
+        is simply indexed out of the dense trajectory — no separate pool
+        file is needed.
+ 
+    For each window k (1-indexed):
+        1. Start every trajectory from its true state at t = 0.
+        2. Run k autoregressive steps through model.x_pred_fn.
+        3. Compare the resulting state to the file's true state at
+           t = k * dt_window.
+        4. Average the per-trajectory relative L2 norm over the batch.
+ 
+    Returns the (num_windows_long,) array of batch-mean relative L2 errors.
+    """
+    B = u_test.shape[0]
+    dt_test = float(t_test[1] - t_test[0])
+    pts_pw  = int(round(dt_window / dt_test))
+ 
+    assert abs(dt_window / dt_test - pts_pw) < 1e-6, (
+        f"dt_window ({dt_window}) is not an integer multiple of the test "
+        f"file's time step ({dt_test}); cannot index exact window boundaries."
+    )
+    assert num_windows_long * pts_pw < len(t_test), (
+        "num_windows_long exceeds the number of windows available in the "
+        "test file."
+    )
+ 
+    u0_batch = jnp.array(u_test[:, 0, :])   # (B, N) — true IC at t = 0
+ 
+    # JIT-compiled, vmapped single-window predictor:  (B, N) → (B, N)
+    predict_one_window = jax.jit(
+        jax.vmap(
+            lambda u: model.x_pred_fn(params, u, t_star_window)[-1],
+            in_axes=0,
+        )
+    )
+ 
+    l2_per_window: list[float] = []
+    u_current = u0_batch
+ 
+    for k in range(num_windows_long):
+        u_current = predict_one_window(u_current)                 # (B, N)
+ 
+        # Ground truth at window boundary k+1, read straight from the file.
+        x_ref_k = jnp.array(u_test[:, (k + 1) * pts_pw, :])        # (B, N)
+ 
+        numer   = jnp.linalg.norm(u_current - x_ref_k, axis=1)     # (B,)
+        denom   = jnp.linalg.norm(x_ref_k,              axis=1)   # (B,)
+        l2_mean = float(jnp.mean(numer / (denom + 1e-12)))
+        l2_per_window.append(l2_mean)
+ 
+        logging.info(f"  [long] Window {k+1:>3d} | mean L2: {l2_mean:.3e}")
+ 
+    save_dir  = os.path.join(workdir, "figures", config.wandb.name)
+    save_path = os.path.join(save_dir, "batch_l2_per_window_openloop_long.pdf")
+    _plot_l2_per_window(
+        curves    = {curve_label: np.array(l2_per_window)},
+        dt        = dt_window,
+        title     = f"Open-loop (long rollout): batch-average L2 per window  (B={B})",
+        save_path = save_path,
+        colors    = {curve_label: "#2196F3"},
+    )
+    return np.array(l2_per_window)
 
 def evaluate_with_ekf(config: ml_collections.ConfigDict, workdir: str):
     from examples.l96_n40_f6_ics_2.kf import EKFState, run_ekf_smoother
