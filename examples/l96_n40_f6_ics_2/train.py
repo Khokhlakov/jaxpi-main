@@ -341,7 +341,13 @@ def train_and_evaluate(config, workdir: str):
             u_ref_list = []
             x_ref_list = []
 
-            for k in range(additions_done + 1):
+            # Check how many windows your dataset can actually support
+            max_eval_windows = x_ref_eval_all.shape[1] // time_steps 
+
+            # Only evaluate up to the available data limit
+            eval_limit = min(additions_done + 1, max_eval_windows)
+
+            for k in range(eval_limit):
                 # Calculate the start and end time indices for this specific block
                 t_start = k * time_steps
                 t_end = (k + 1) * time_steps
