@@ -18,7 +18,7 @@ from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 from flax.jax_utils import replicate
 
 import models
-from utils import get_dataset, dd_get_train_data
+from utils import dd_get_train_data
 import h5py
 
 
