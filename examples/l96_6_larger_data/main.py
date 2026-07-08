@@ -33,29 +33,17 @@ def main(argv):
     if FLAGS.config.mode == "train":
         train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
 
-    elif FLAGS.config.mode == "eval":
-        eval.evaluate(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_ekf":
-        eval.evaluate_with_ekf(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_enkf":
-        eval.evaluate_with_enkf(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_ekf_numerical":
-        eval.evaluate_with_ekf_numerical(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_enkf_numerical":
-        eval.evaluate_with_enkf_numerical(FLAGS.config, FLAGS.workdir)
-
     elif FLAGS.config.mode == "train_dd":
         train.train_and_evaluate_dd(FLAGS.config, FLAGS.workdir)
 
-    elif FLAGS.config.mode == "eval_pi_vs_dd":
-        eval.evaluate_pi_vs_dd(FLAGS.config, FLAGS.workdir)
+    elif FLAGS.config.mode == "eval":
+        eval.evaluate(FLAGS.config, FLAGS.workdir)
 
-    elif FLAGS.config.mode == "eval_pi_vs_dd_enkf":
-        eval.evaluate_with_enkf_pi_vs_dd(FLAGS.config, FLAGS.workdir)
+    elif FLAGS.config.mode == "eval_dd_vs_pi":
+        eval.evaluate_pi_vs_dd(FLAGS.config, FLAGS.workdir)
+        
+    elif FLAGS.config.mode == "eval_enkf_dd_vs_pi":
+        eval.evaluate_enkf_pi_vs_dd(FLAGS.config, FLAGS.workdir)
     
 
 if __name__ == "__main__":

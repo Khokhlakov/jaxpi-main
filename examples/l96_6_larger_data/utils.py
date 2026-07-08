@@ -4,24 +4,6 @@ import numpy as np
 import h5py
 import os
 
-def get_dataset(filepath="data/l96_udon.mat"):
-    """
-    Loads and truncates the L96 dataset to a specific time horizon.
-    """
-    data = scipy.io.loadmat(filepath)
-    
-    # 1. Extract raw data
-    x_ref = jnp.array(data["usol_all"])  # (num_ics, num_points, 40)
-    u0_ref = jnp.array(data["u0_all"])   # (num_ics, 40)
-    t_star = jnp.array(data["t"]).flatten() # (num_points,)
-
-    # Mask desired horizon
-    #mask = t_star <= 0.25
-    #t_star = t_star[mask]
-    #x_ref = x_ref[:, mask, :] # Slicing the 'num_points' dimension
-
-    return x_ref, u0_ref, t_star
-
 
 def build_obs_schedule(
     total_time: float,
@@ -102,66 +84,3 @@ def scale_Q_for_fine_steps(
     """
     return Q_coarse / steps_per_window
 
-# Data driven helper functions
-def dd_get_train_data(data_dir="data/", num_files=10, windows_per_traj=31):
-    """
-    Reads the 10 training files and compiles them into a single tensor.
-    Returns: numpy array of shape (62000, 51, 40)
-    """
-    all_windows = []
-    
-    for set_idx in range(1, num_files + 1):
-        file_path = os.path.join(data_dir, f'l96_train_{set_idx}.h5')
-        
-        with h5py.File(file_path, 'r') as f:
-            # Shape: (200, 1551, 40)
-            data = f['usol_all'][:] 
-            
-            # Slice out the overlapping windows
-            for w in range(windows_per_traj):
-                start_idx = w * 50
-                end_idx = start_idx + 51
-                # window_slice shape: (200, 51, 40)
-                window_slice = data[:, start_idx:end_idx, :]
-                all_windows.append(window_slice)
-                
-    # Concatenate all 310 blocks (10 files * 31 windows) along the batch axis
-    train_data = np.concatenate(all_windows, axis=0)
-    return train_data
-
-def dd_get_test_data_rollout(data_dir="data/", windows_per_traj=31, num_ics=200, N=40):
-    """
-    Reads the test file and maintains the trajectory and window hierarchy.
-    Returns: numpy array of shape (200, 31, 51, 40)
-    """
-    file_path = os.path.join(data_dir, 'l96_test.h5')
-    
-    # Preallocate the target array
-    rollout_data = np.zeros((num_ics, windows_per_traj, 51, N), dtype=np.float32)
-    
-    with h5py.File(file_path, 'r') as f:
-        # Shape: (200, 1551, 40)
-        data = f['usol_all'][:]
-        
-        for w in range(windows_per_traj):
-            start_idx = w * 50
-            end_idx = start_idx + 51
-            
-            # Assign directly into the preallocated structure
-            rollout_data[:, w, :, :] = data[:, start_idx:end_idx, :]
-            
-    return rollout_data
-
-def dd_get_test_data(data_dir="data/l96_test.h5", windows_per_traj=31):
-    """
-    Reads the test file and compiles it into a flat tensor of individual windows.
-    Returns: numpy array of shape (6200, 51, 40)
-    """
-    # Leverage the rollout function to get the hierarchical data
-    rollout_data = dd_get_test_data_rollout(data_dir, windows_per_traj)
-    
-    # Reshape from (200, 31, 51, 40) to (6200, 51, 40)
-    # This collapses the first two dimensions (trajectories and windows) into a single batch dimension
-    test_data = rollout_data.reshape(-1, 51, rollout_data.shape[-1])
-    
-    return test_data

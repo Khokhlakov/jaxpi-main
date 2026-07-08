@@ -11,7 +11,7 @@ from typing import Callable
 
 from jaxpi.utils import restore_checkpoint
 import examples.l96_6_larger_data.models as models
-from examples.l96_6_larger_data.utils import get_dataset, build_obs_schedule, scale_Q_for_fine_steps
+from examples.l96_6_larger_data.utils import build_obs_schedule, scale_Q_for_fine_steps
 
 import numpy as np
 from scipy.integrate import solve_ivp
@@ -47,105 +47,6 @@ def _plot_l2_per_timestep(
     plt.close(fig)
     logging.info(f"Dense batch L2 plot saved to: {save_path}")
 
-def _load_l2_eval_pool(
-    mat_path:      str,
-    max_additions: int,
-    num_vars:      int,
-) -> tuple[jnp.ndarray, list[jnp.ndarray]]:
-    """
-    Load the pre-computed rollout pool from a .mat file, mirroring the logic
-    of _load_rollout_pool used during training.
- 
-    Args:
-        mat_path:      Path to the .mat file (e.g. "data/train_rollouts_025.mat").
-        max_additions: Number of rollout slots to read (= config.training.max_additions).
-        num_vars:      State dimension N (40 for L96).
- 
-    Returns:
-        u0_original  : (B, N) initial conditions — one row per trajectory.
-        rollout_states: list of max_additions arrays, each (B, N).
-                        rollout_states[k] is the ground-truth state after
-                        k+1 windows (i.e. the key "u0_rollout_{k+1}").
-    """
-    data = loadmat(mat_path)
- 
-    u0_original = jnp.array(data["u0_original"].astype(np.float32))  # (B, N)
- 
-    rollout_states: list[jnp.ndarray] = []
-    for k in range(1, max_additions + 1):
-        key_name = f"u0_rollout_{k}"
-        if key_name not in data:
-            raise KeyError(
-                f"Key '{key_name}' not found in {mat_path}. "
-                f"Regenerate the file with max_additions >= {k}."
-            )
-        rollout_states.append(jnp.array(data[key_name].astype(np.float32)))
- 
-    return u0_original, rollout_states
- 
-def _plot_l2_per_window(
-    curves:    dict[str, np.ndarray],   # label → (num_windows,) mean L2 array
-    dt:        float,                   # window duration (for x-axis labels)
-    title:     str,
-    save_path: str,
-    colors:    dict[str, str] | None = None,
-) -> None:
-    """
-    Plot one or more average-L2-per-window curves on a log-scale y-axis and
-    save the figure as a PDF.
- 
-    A secondary x-axis showing elapsed simulation time (window_index × dt)
-    is added above the primary axis so that the absolute temporal scale is
-    immediately apparent alongside the window-index ticks.
- 
-    Args:
-        curves:    Mapping from method label to a 1-D array of length
-                   num_windows containing the mean L2 at each window boundary.
-        dt:        Assimilation window duration used to label the axes.
-        title:     Figure suptitle.
-        save_path: Full path (including .pdf extension) for the output file.
-        colors:    Optional mapping from label to matplotlib colour string.
-                   Defaults are applied for unlabelled entries.
-    """
-    default_colors = ["#2196F3", "#FF5722", "#4CAF50", "#9C27B0"]
-    fig, ax = plt.subplots(figsize=(8, 5))
- 
-    for i, (label, l2_arr) in enumerate(curves.items()):
-        num_windows = len(l2_arr)
-        window_idx  = np.arange(1, num_windows + 1)
-        color       = (colors or {}).get(label, default_colors[i % len(default_colors)])
-        ax.plot(window_idx, l2_arr, marker="o", markersize=4,
-                linewidth=1.8, label=label, color=color)
- 
-    num_windows = len(next(iter(curves.values())))
-    window_idx  = np.arange(1, num_windows + 1)
- 
-    ax.set_yscale("log")
-    ax.set_xlabel("Window index", fontsize=12)
-    ax.set_ylabel("Mean relative L2 error  (log scale)", fontsize=12)
-    ax.set_title(title, fontsize=13)
-    ax.legend(fontsize=11)
-    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
- 
-    # ── secondary x-axis — simulation time ──────────────────────────────────
-    # Twin the x-axis so the top spine shows elapsed time (window_idx × dt).
-    ax_time = ax.twiny()
-    ax_time.set_xlim(ax.get_xlim())
-    ax_time.set_xticks(window_idx)
-    ax_time.set_xticklabels(
-        [f"{k * dt:.3g}" for k in window_idx],
-        fontsize=8, rotation=45, ha="left",
-    )
-    ax_time.set_xlabel("Simulation time  (window × dt)", fontsize=10)
-    # ────────────────────────────────────────────────────────────────────────
- 
-    fig.tight_layout()
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    fig.savefig(save_path, bbox_inches="tight", dpi=300)
-    plt.close(fig)
-    logging.info(f"Batch L2-per-window plot saved to: {save_path}")
-
-# evaluate, evaluate_nekf, evaluate_enkf_numerical
 def _plot_trajectory_summary(
     t_ax:       np.ndarray,        # (T,)   time axis
     x_true:     np.ndarray,        # (T, N) ground-truth state
@@ -342,138 +243,6 @@ def _plot_trajectory_summary(
     plt.close(fig)
     logging.info(f"Trajectory summary for IC {ic_idx} saved to: {save_path}")
 
-def _plot_erf(
-    obs_times:  np.ndarray,   # (T_obs,)  absolute observation times
-    erf_mean:   np.ndarray,   # (T_obs,)  mean ERF across trajectories
-    erf_std:    np.ndarray,   # (T_obs,)  std  ERF across trajectories
-    n_traj:     int,          # number of trajectories averaged
-    title:      str,
-    save_path:  str,
-) -> None:
-    """
-    Plot the Error Reduction Factor (ERF = prior RMSE / posterior RMSE)
-    averaged across ``n_traj`` trajectories and over observation times.
-
-    A horizontal reference line at ERF = 1 marks the boundary between
-    beneficial assimilation (ERF > 1) and detrimental assimilation (ERF < 1).
-    The shaded band shows ±1 std across trajectories.
-
-    Args:
-        obs_times:  observation times at which ERF is defined.
-        erf_mean:   mean ERF at each observation time.
-        erf_std:    standard deviation of ERF across trajectories.
-        n_traj:     number of trajectories used for averaging (shown in title).
-        title:      figure suptitle.
-        save_path:  full path including .pdf extension.
-    """
-    fig, ax = plt.subplots(figsize=(9, 5))
-
-    ax.plot(obs_times, erf_mean,
-            color="#FF5722", linewidth=2.0, marker="o", markersize=4,
-            label=f"Mean ERF  (n = {n_traj} trajectories)")
-    ax.fill_between(
-        obs_times,
-        erf_mean - erf_std,
-        erf_mean + erf_std,
-        color="#FF5722", alpha=0.20, linewidth=0,
-        label="±1 std across trajectories",
-    )
-
-    ax.set_yscale("log")
-
-    # Reference line — ERF = 1 means no error reduction
-    ax.axhline(y=1.0, color="#37474F", linestyle="--", linewidth=1.4,
-               label="ERF = 1  (no reduction)")
-
-    ax.set_xlabel("Observation time  t", fontsize=12)
-    ax.set_ylabel("Error Reduction Factor  (prior RMSE / posterior RMSE)", fontsize=11)
-    ax.set_title(title, fontsize=13)
-    ax.legend(fontsize=11)
-    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
-
-    fig.tight_layout()
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    fig.savefig(save_path, bbox_inches="tight", dpi=300)
-    plt.close(fig)
-    logging.info(f"ERF plot saved to: {save_path}")
-
-def _plot_rmse_comparison(
-    obs_times:       np.ndarray,   # (T_obs,)  absolute observation times
-    prior_rmse_mean: np.ndarray,   # (T_obs,)  mean prior  RMSE across trajectories
-    prior_rmse_std:  np.ndarray,   # (T_obs,)  std  prior  RMSE across trajectories
-    post_rmse_mean:  np.ndarray,   # (T_obs,)  mean posterior RMSE across trajectories
-    post_rmse_std:   np.ndarray,   # (T_obs,)  std  posterior RMSE across trajectories
-    sigma_obs:       float,        # measurement noise std — reference level
-    n_traj:          int,          # number of trajectories averaged
-    title:           str,
-    save_path:       str,
-) -> None:
-    """
-    Plot mean prior RMSE, mean posterior RMSE, and the measurement noise
-    level (sigma_obs) on a shared log-scale y-axis.
-
-    A well-functioning filter must satisfy two conditions simultaneously:
-        (1) posterior RMSE < prior RMSE   — assimilation reduces error
-        (2) posterior RMSE < sigma_obs    — filter extracts signal from noise
-
-    Both are immediately visible from this plot.  Shaded ±1-std bands
-    across trajectories indicate robustness of the RMSE estimates.
-
-    Args:
-        obs_times:       observation times at which RMSE is defined.
-        prior_rmse_mean: mean prior  RMSE at each observation time.
-        prior_rmse_std:  std  prior  RMSE across trajectories.
-        post_rmse_mean:  mean posterior RMSE at each observation time.
-        post_rmse_std:   std  posterior RMSE across trajectories.
-        sigma_obs:       observation noise standard deviation.
-        n_traj:          number of trajectories (shown in legend).
-        title:           figure title.
-        save_path:       full path including .pdf extension.
-    """
-    fig, ax = plt.subplots(figsize=(9, 5))
-
-    # ── Prior RMSE ────────────────────────────────────────────────────────────
-    ax.plot(obs_times, prior_rmse_mean,
-            color="#2196F3", linewidth=2.0, marker="o", markersize=4,
-            label=f"Prior RMSE  (n = {n_traj})")
-    ax.fill_between(
-        obs_times,
-        prior_rmse_mean - prior_rmse_std,
-        prior_rmse_mean + prior_rmse_std,
-        color="#2196F3", alpha=0.18, linewidth=0,
-        label="Prior ±1 std",
-    )
-
-    # ── Posterior RMSE ────────────────────────────────────────────────────────
-    ax.plot(obs_times, post_rmse_mean,
-            color="#FF5722", linewidth=2.0, marker="s", markersize=4,
-            label=f"Posterior RMSE  (n = {n_traj})")
-    ax.fill_between(
-        obs_times,
-        post_rmse_mean - post_rmse_std,
-        post_rmse_mean + post_rmse_std,
-        color="#FF5722", alpha=0.18, linewidth=0,
-        label="Posterior ±1 std",
-    )
-
-    # ── Measurement noise reference ───────────────────────────────────────────
-    ax.axhline(y=sigma_obs, color="#4CAF50", linestyle="--", linewidth=1.6,
-               label=f"Measurement noise  σ_obs = {sigma_obs}")
-
-    ax.set_yscale("log")
-    ax.set_xlabel("Observation time  t", fontsize=12)
-    ax.set_ylabel("RMSE  (log scale)", fontsize=12)
-    ax.set_title(title, fontsize=13)
-    ax.legend(fontsize=10)
-    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
-
-    fig.tight_layout()
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    fig.savefig(save_path, bbox_inches="tight", dpi=300)
-    plt.close(fig)
-    logging.info(f"RMSE comparison plot saved to: {save_path}")
-
-
 def evaluate(
     config: ml_collections.ConfigDict,
     workdir: str,
@@ -494,11 +263,12 @@ def evaluate(
     trajectory_windows = config.eval.get("trajectory_windows", 160)
     batch_windows      = config.eval.get("windows", 30)
     num_ics_eval       = config.eval.get("num_ics", u_test.shape[0])
+    dt_integration     = config.eval.get("dt_integration", 0.005)
  
-    # ── 2. Model & per-window query grid ────────────────────────────────────
-    time_steps = 50
-    _, _, t_star_window = get_dataset()
-    t_star_window = t_star_window[0:time_steps]
+    # ── 2. Models & per-window query grid ───────────────────────────────────
+    time_steps = int(round(dt_window / dt_integration)) + 1 
+    t_star_window = jnp.linspace(0.0, dt_window, time_steps)
+    # T_last is window duration (e.g., 0.25)
     T_last = float(t_star_window[-1])
  
     model = models.L96UDON(config, t_star_window)
@@ -721,6 +491,7 @@ def _evaluate_batch_l2_openloop(
     
     return np.array(l2_dense)
 
+
 # ── DD vs PI ──────────────────────────────────────────────────────────────────
 
 def _plot_trajectory_summary_compare(
@@ -926,11 +697,12 @@ def evaluate_dd_vs_pi(
     trajectory_windows = config.eval.get("trajectory_windows", 160)
     batch_windows      = config.eval.get("windows", 30)
     num_ics_eval       = config.eval.get("num_ics", u_test.shape[0])
+    dt_integration     = config.eval.get("dt_integration", 0.005)
  
     # ── 2. Models & per-window query grid ───────────────────────────────────
-    time_steps = 50
-    _, _, t_star_window = get_dataset()
-    t_star_window = t_star_window[0:time_steps]
+    time_steps = int(round(dt_window / dt_integration)) + 1 
+    t_star_window = jnp.linspace(0.0, dt_window, time_steps)
+    # T_last is window duration (e.g., 0.25)
     T_last = float(t_star_window[-1])
  
     logging.info("Loading PI model...")
@@ -1043,398 +815,324 @@ def evaluate_dd_vs_pi(
         config, workdir,
     )
 
-# ── PI + EnKF ─────────────────────────────────────────────────────────────────
 
-def evaluate_with_enkf(config: ml_collections.ConfigDict, workdir: str):
-    from examples.l96_6_larger_data.kf import EnKFState, run_enkf_smoother, init_ensemble
+# ── PI vs DD + EnKF ──────────────────────────────────────────────────────────
 
-    obs_every_n  = config.ekf.get("obs_every_n",   4)
-    sigma_obs    = config.ekf.get("sigma_obs",      0.5)
-    P0_sigma     = config.ekf.get("P0_sigma",       1.0)
-    dynamic_vars = config.ekf.get("dynamic_vars",   False)
-    N_ens        = config.enkf.get("N_ens",         50)
-    sigma_model  = config.enkf.get("sigma_model",   0.1)
+def _plot_trajectory_summary_compare_enkf(
+    t_ax:       np.ndarray,        # (T,)   time axis
+    x_true:     np.ndarray,        # (T, N) ground-truth state
+    x_est_pi:   np.ndarray,        # (T, N) PI + EnKF mean
+    x_std_pi:   np.ndarray | None, # (T, N) PI ensemble std, or None
+    x_est_dd:   np.ndarray,        # (T, N) DD + EnKF mean
+    x_std_dd:   np.ndarray | None, # (T, N) DD ensemble std, or None
+    ic_idx:     int,
+    save_path:  str,
+    N:          int = 40,
+    dt_window:  float | None = None,
+    obs_coords: list[tuple[int, float, float]] | None = None,
+) -> None:
+    """
+    Trajectory-summary PDF comparing PI+EnKF vs DD+EnKF against the ground
+    truth for a single IC.
 
-    specify_obs_idx   = config.kf.get("specify_obs_idx", False)
-    obs_idx_list      = config.kf.get("obs_idx_list", None)
+    This combines the PI-vs-DD side-by-side comparison layout of
+    `_plot_trajectory_summary_compare` with the ±1σ ensemble-spread bands
+    and assimilated-observation markers of `_plot_trajectory_summary`, so
+    the same figure that used to show one filtered estimator now shows two,
+    sharing the same observation schedule.
+    """
+    x_true   = np.asarray(x_true)
+    x_est_pi = np.asarray(x_est_pi)
+    x_est_dd = np.asarray(x_est_dd)
+    x_std_pi = np.asarray(x_std_pi) if x_std_pi is not None else None
+    x_std_dd = np.asarray(x_std_dd) if x_std_dd is not None else None
 
-    DT_WINDOW = float(config.get("dt_window", 0.25))
-    DT_FINE   = float(config.ekf.get("dt_fine",   DT_WINDOW))
-    DT_OBS    = float(config.ekf.get("dt_obs",    DT_WINDOW))
-    
-    time_steps = 50
+    abs_error_pi    = np.abs(x_true - x_est_pi)
+    abs_error_dd    = np.abs(x_true - x_est_dd)
+    mean_abs_err_pi = abs_error_pi.mean(axis=1)
+    mean_abs_err_dd = abs_error_dd.mean(axis=1)
 
-    x_ref_all, u0_ref_all, t_star_window = get_dataset()
-    t_star_window = t_star_window[0:time_steps]
+    n_var_rows = N // 2
 
-    model     = models.L96UDON(config, t_star_window)
-    ckpt_path = os.path.join(os.getcwd(), config.wandb.ckpt_name, "ckpt", "udon_model")
-    model.state = restore_checkpoint(model.state, ckpt_path)
-    params = model.state.params
-    N      = model.N
-
-    # ── Build EnKF functions with variable-t surrogate propagator ─────────────
-    # make_enkf_fns no longer takes dt; the propagator is (u, t) -> u and t is
-    # supplied at each predict call by run_enkf_smoother.
-    predict_fn, update_fn = model.make_enkf_fns(params, N_ens=N_ens)
-
-    steps_per_window = round(DT_WINDOW / DT_FINE)
-    Q_coarse = jnp.eye(N) * sigma_model ** 2
-    Q_fine   = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
-
-    if (specify_obs_idx and obs_idx_list):
-        obs_indices = jnp.array(obs_idx_list)
+    # ── Pre-compute window-boundary times ────────────────────────────────
+    t_min, t_max = float(t_ax[0]), float(t_ax[-1])
+    if dt_window is not None and dt_window > 0:
+        first_k = int(np.floor(t_min / dt_window)) + 1
+        window_boundaries = np.arange(first_k * dt_window,
+                                      t_max + 1e-12 * dt_window,
+                                      dt_window)
     else:
-        obs_indices = jnp.arange(0, N, obs_every_n)
+        window_boundaries = np.array([])
 
-    m  = len(obs_indices)
-    R  = jnp.eye(m) * sigma_obs ** 2
-    P0 = jnp.eye(N) * P0_sigma ** 2
-
-    num_windows = config.training.num_time_windows
-    total_time  = num_windows * DT_WINDOW
-
-    obs_times, obs_step_indices, total_fine_steps = build_obs_schedule(
-        total_time = total_time,
-        dt_fine    = DT_FINE,
-        dt_obs     = DT_OBS,
-    )
-
-    def lorenz_96(t, state, F=6.0):
-        xp1 = np.roll(state, -1); xm1 = np.roll(state, 1); xm2 = np.roll(state, 2)
-        return (xp1 - xm2) * xm1 - state + F
-
-    for ic_idx in range(config.saving.total_plots):
-        logging.info(f"--- EnKF Evaluation for IC {ic_idx} (N_ens={N_ens}) ---")
-        u_current_true = u0_ref_all[ic_idx, :]
-
-        t_eval_fine = np.linspace(0.0, total_time, total_fine_steps + 1)
-        sol = solve_ivp(
-            lorenz_96,
-            t_span=[0.0, total_time],
-            y0=np.array(u_current_true),
-            t_eval=t_eval_fine,
-            rtol=1e-9, atol=1e-11,
-        )
-        x_true_fine  = jnp.array(sol.y.T)                      # (total_fine_steps+1, N)
-        x_true_at_obs = x_true_fine[obs_step_indices + 1]      # (T_obs, N)
-
-        key = jax.random.PRNGKey(ic_idx)
-        H_list, y_obs_list, obs_coords = [], [], []
-
-        for obs_idx in range(len(obs_times)):
-            x_true_t = x_true_at_obs[obs_idx]
-
-            if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
-                key, subkey = jax.random.split(key)
-                obs_idx_vars = jax.random.choice(subkey, N, shape=(m,), replace=False)
-            else:
-                obs_idx_vars = obs_indices
-
-            m_t = len(obs_idx_vars)
-            H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx_vars].set(1.0)
-            key, subkey = jax.random.split(key)
-            noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
-            y_t   = x_true_t[obs_idx_vars] + noise
-
-            H_list.append(H_t)
-            y_obs_list.append(y_t)
-            for j, vi in enumerate(obs_idx_vars):
-                obs_coords.append((int(vi), obs_times[obs_idx], float(y_t[j])))
-
-        H_seq     = jnp.stack(H_list)
-        y_obs_seq = jnp.stack(y_obs_list)
-
-        key, key_ic, key_ens = jax.random.split(key, 3)
-        x0_hat    = u_current_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
-        ensemble0 = init_ensemble(x0_hat, P0, N_ens, key_ens)
- 
-        # ── Window-aware EnKF smoother ────────────────────────────────────────
-        # dt_fine and dt_window are passed so run_enkf_smoother can track which
-        # fine step we are at within the current DeepONet window and call
-        # predict_fn with the correct in-window t_query.
-        x_means, x_spreads, _ = run_enkf_smoother(
-            predict_fn, update_fn,
-            ensemble0,
-            y_obs_seq,
-            obs_step_indices,
-            H_seq,
-            Q_fine,
-            R,
-            key,
-            total_fine_steps,
-            dt_fine=DT_FINE,
-            dt_window=DT_WINDOW,
-        )
- 
-        t_fine_axis = t_eval_fine[1:]
- 
-        _plot_trajectory_summary(
-            t_ax      = t_fine_axis,
-            x_true    = np.array(x_true_fine[1:]),
-            x_est     = np.array(x_means),
-            x_std     = np.array(x_spreads),
-            ic_idx    = ic_idx,
-            est_label = "EnKF mean",
-            save_path = os.path.join(
-                workdir, "figures", config.wandb.name,
-                f"trajectory_summary_enkf_ic_{ic_idx}.pdf",
-            ),
-            N = model.N,
-            dt_window  = DT_WINDOW,
-            obs_coords = obs_coords,
-        )
-
-        window_step_indices = np.array([
-            round((w + 1) * DT_WINDOW / DT_FINE) - 1
-            for w in range(num_windows)
-        ])
-        x_means_at_windows = x_means[window_step_indices]
-        x_true_at_windows  = x_true_fine[window_step_indices + 1]
-
-        l2_enkf     = jnp.linalg.norm(x_means_at_windows - x_true_at_windows) \
-                    / jnp.linalg.norm(x_true_at_windows)
-        mean_spread = float(jnp.mean(x_spreads))
-        print(f"IC {ic_idx} | EnKF L2: {l2_enkf:.3e} | Mean σ: {mean_spread:.3e}")
-
-    _evaluate_batch_l2_enkf(
-        model, params, t_star_window,
-        predict_fn, update_fn,
-        Q_fine, P0,
-        N_ens, obs_every_n, sigma_obs, P0_sigma,
-        dynamic_vars,
-        DT_FINE, DT_OBS,
-        config, workdir,
-    )
-
-def _evaluate_batch_l2_enkf(
-    model, params, t_star_window,
-    predict_fn, update_fn,
-    Q_fine, P0,
-    N_ens, obs_every_n, sigma_obs, P0_sigma,
-    dynamic_vars,
-    dt_fine: float,
-    dt_obs:  float,
-    config, workdir,
-):
-    from examples.l96_6_larger_data.kf import run_enkf_smoother, init_ensemble, EnKFState
-
-    specify_obs_idx   = config.kf.get("specify_obs_idx", False)
-    obs_idx_list      = config.kf.get("obs_idx_list", None)
-    
-    dt_window     = config.get("dt_window", 0.25)
-    max_additions = config.training.get("max_additions", 5)
-    N             = model.N
-    mat_path      = os.path.join(
-        "data",
-        config.training.get("augmentation_file_name_eval", "train_rollouts_025.mat"),
-    )
-    enkf_batch_size = config.ekf.get("batch_l2_size", 200)
-
-    logging.info("Computing batch L2 per window (open-loop vs EnKF) …")
-    u0_original, rollout_states = _load_l2_eval_pool(mat_path, max_additions, N)
-
-    # Cap batch size; l96_udon.mat has 100 reference trajectories
-    B = min(u0_original.shape[0], enkf_batch_size)
-    u0_original   = u0_original[:B]
-    rollout_states = [r[:B] for r in rollout_states]
-    logging.info(f" Using {B} ICs from pool for batch L2 / ERF evaluation (N_ens={N_ens}).")
-
-    if specify_obs_idx and obs_idx_list:
-        obs_indices = jnp.array(obs_idx_list)
+    # ── Pre-compute per-variable observation times ────────────────────────
+    if obs_coords is not None:
+        obs_by_var: dict[int, list[tuple[float, float]]] = {}
+        for var_idx, obs_t, obs_val in obs_coords:
+            obs_by_var.setdefault(var_idx, []).append((obs_t, obs_val))
+        obs_by_var = {k: sorted(v, key=lambda x: x[0])
+                      for k, v in obs_by_var.items()}
     else:
-        obs_indices = jnp.arange(0, N, obs_every_n)
+        obs_by_var = {}
 
-    m           = len(obs_indices)
-    R_fixed     = jnp.eye(m) * sigma_obs ** 2
+    # ── Figure & GridSpec ────────────────────────────────────────────────
+    top_height   = 3.2
+    var_row_h    = 1.9
+    total_height = top_height + n_var_rows * var_row_h
 
-    predict_one_window = jax.jit(
-        jax.vmap(lambda u: model.x_pred_fn(params, u, t_star_window)[-1], in_axes=0)
+    fig = plt.figure(figsize=(14, total_height))
+    gs  = gridspec.GridSpec(
+        nrows        = 1 + n_var_rows,
+        ncols        = 2,
+        figure       = fig,
+        height_ratios= [top_height] + [var_row_h] * n_var_rows,
+        hspace       = 0.55,
+        wspace       = 0.32,
     )
 
-    
-    # ── rebuild schedule for the batch duration ───────────────────────────────
-    total_time_batch = max_additions * dt_window
-    _, obs_step_indices_batch, total_fine_steps_batch = build_obs_schedule(
-        total_time = total_time_batch,
-        dt_fine    = dt_fine,
-        dt_obs     = dt_obs,
+    # ── Top panel: mean absolute error vs time (PI vs DD) ──────────────────
+    ax_top = fig.add_subplot(gs[0, :])
+    ax_top.plot(t_ax, mean_abs_err_pi, color="#2196F3", linewidth=1.6,
+                label="PI + EnKF: Mean |error|")
+    ax_top.plot(t_ax, mean_abs_err_dd, color="#FF8C00", linewidth=1.6,
+                label="DD + EnKF: Mean |error|")
+
+    for wb in window_boundaries:
+        ax_top.axvline(x=wb, color="#78909C", linestyle="--",
+                       linewidth=0.8, alpha=0.55,
+                       label="Window boundary" if wb == window_boundaries[0] else None)
+
+    ax_top.set_xlabel("Time  t", fontsize=11)
+    ax_top.set_ylabel("Mean absolute error", fontsize=11)
+    ax_top.set_yscale("log")
+    ax_top.set_title(
+        f"IC {ic_idx} — Mean absolute error across all {N} variables  (PI+EnKF vs DD+EnKF)",
+        fontsize=12, fontweight="bold",
     )
-    T_obs = len(obs_step_indices_batch)
+    ax_top.legend(fontsize=10)
+    ax_top.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
 
-    # Absolute observation times (needed for the ERF x-axis)
-    obs_times_batch = np.array([(k + 1) * dt_obs for k in range(T_obs)])
+    # ── Colour palette (kept consistent with the rest of the codebase) ────
+    TRUTH_COLOR = "#37474F"   # dark blue-grey — ground truth
+    PI_COLOR    = "#2196F3"   # blue           — PI + EnKF mean
+    DD_COLOR    = "#FF8C00"   # orange         — DD + EnKF mean
+    PI_BAND     = "#90CAF9"   # light blue     — PI ±1σ band
+    DD_BAND     = "#FFCC80"   # light orange   — DD ±1σ band
+    OBS_COLOR   = "#E53935"   # red            — observation markers
 
-    # ── window boundary indices derived directly from dt_fine ─────────────────
-    # Step s is 0-indexed; the state after step s corresponds to time
-    # (s + 1) * dt_fine.  Window k (1-indexed) ends at k * dt_window.
-    window_step_indices = np.array([
-        round((k + 1) * dt_window / dt_fine) - 1
-        for k in range(max_additions)
-    ])
+    # ── Per-variable panels ──────────────────────────────────────────────
+    for i in range(N):
+        row = 1 + i // 2
+        col = i % 2
+        ax  = fig.add_subplot(gs[row, col])
 
-    # Accumulators
-    enkf_l2_sum     = np.zeros(max_additions)
-    enkf_spread_sum = np.zeros(max_additions)
-    enkf_rmse_sum   = np.zeros(max_additions)
+        for wb in window_boundaries:
+            ax.axvline(x=wb, color="#78909C", linestyle="--",
+                       linewidth=0.6, alpha=0.45)
 
-    # ERF accumulators — shape (T_obs,); accumulated over B ICs
-    erf_sum    = np.zeros(T_obs)
-    erf_sq_sum = np.zeros(T_obs)   # for std computation
+        # Ground truth
+        ax.plot(t_ax, x_true[:, i],
+                color=TRUTH_COLOR, linewidth=1.0, label="Truth")
 
-    # ── RMSE accumulators ────────────────────────────────────────────────────
-    prior_rmse_sum    = np.zeros(T_obs)
-    prior_rmse_sq_sum = np.zeros(T_obs)
-    post_rmse_sum     = np.zeros(T_obs)
-    post_rmse_sq_sum  = np.zeros(T_obs)
-
-    for ic in range(B):
-        key    = jax.random.PRNGKey(ic + 77777)
-        u_true = u0_original[ic]   # (N,)
-
-        def lorenz_96(t, state, F=6.0):
-            xp1 = np.roll(state, -1)
-            xm1 = np.roll(state,  1)
-            xm2 = np.roll(state,  2)
-            return (xp1 - xm2) * xm1 - state + F
-
-        # ── Solve ODE for the batch duration (max_additions windows) ──────────
-        t_eval_fine = np.linspace(0.0, total_time_batch, total_fine_steps_batch + 1)
-        sol = solve_ivp(
-            lorenz_96,
-            t_span=[0.0, total_time_batch],
-            y0=np.array(u_true),
-            t_eval=t_eval_fine,
-            rtol=1e-9, atol=1e-11,
-        )
-        x_true_fine   = sol.y.T                                   # (total_fine_steps_batch+1, N)
-        x_true_at_obs = x_true_fine[obs_step_indices_batch + 1]  # (T_obs, N)
-
-        # ── Build observation sequence indexed over T_obs events ───────────────
-        H_list, y_obs_list = [], []
-
-        for obs_idx in range(T_obs):
-            x_true_t = x_true_at_obs[obs_idx]   # (N,)
-
-            if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
-                key, subkey = jax.random.split(key)
-                obs_idx_vars = jax.random.choice(subkey, N, shape=(m,), replace=False)
-            else:
-                obs_idx_vars = obs_indices
-
-            m_t = len(obs_idx_vars)
-            H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx_vars].set(1.0)
-            key, subkey = jax.random.split(key)
-            noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
-            y_t   = x_true_t[obs_idx_vars] + noise
-
-            H_list.append(H_t)
-            y_obs_list.append(y_t)
-
-        H_seq     = jnp.stack(H_list)      # (T_obs, m, N)
-        y_obs_seq = jnp.stack(y_obs_list)  # (T_obs, m)
-
-        # ── Initialise ensemble ───────────────────────────────────────────────
-        key, key_ic, key_ens = jax.random.split(key, 3)
-        x0_hat    = u_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
-        ensemble0 = init_ensemble(x0_hat, P0, N_ens, key_ens)
-
-        # ── Run EnKF smoother ─────────────────────────────────────────────────
-        x_means, x_spreads, prior_means_at_obs = run_enkf_smoother(
-            predict_fn, update_fn,
-            ensemble0,
-            y_obs_seq,
-            obs_step_indices_batch,
-            H_seq,
-            Q_fine,              # per-fine-step noise
-            R_fixed,
-            key,
-            total_fine_steps_batch,
-            dt_fine=dt_fine,
-            dt_window=dt_window,
-        )
-        # x_means, x_spreads: (total_fine_steps_batch, N)
-        # prior_means_at_obs : (T_obs, N)
-
-        # ── Posterior means at observation steps ─────────────────────────────
-        # x_means is indexed by fine step (0-based); obs_step_indices_batch[k]
-        # is the fine step at which observation k occurred, so x_means at that
-        # index is the *posterior* mean (update has already been applied).
-        post_means_at_obs = x_means[obs_step_indices_batch]   # (T_obs, N)
-
-        # ── ERF for this IC ───────────────────────────────────────────────────
-        x_true_at_obs_jnp = jnp.array(x_true_at_obs)          # (T_obs, N)
-
-        # RMSE over the N state variables for each observation time
-        prior_rmse = np.sqrt(np.mean(
-            (np.array(prior_means_at_obs) - x_true_at_obs) ** 2, axis=1
-        ))  # (T_obs,)
-        post_rmse  = np.sqrt(np.mean(
-            (np.array(post_means_at_obs)  - x_true_at_obs) ** 2, axis=1
-        ))  # (T_obs,)
-
-        erf_ic = prior_rmse / (post_rmse + 1e-12)              # (T_obs,)
-        erf_sum    += erf_ic
-        erf_sq_sum += erf_ic ** 2
-
-        prior_rmse_sum    += prior_rmse
-        prior_rmse_sq_sum += prior_rmse ** 2
-        post_rmse_sum     += post_rmse
-        post_rmse_sq_sum  += post_rmse ** 2
-
-        # ── Accumulate L2 at window boundaries ────────────────────────────────
-        for k in range(max_additions):
-            ref_k      = rollout_states[k][ic]             # (N,) ground truth at window k+1
-            step_k     = window_step_indices[k]            # fine step index for window k+1
-            x_hat_k    = x_means[step_k]                   # (N,) filter mean at that step
-
-            enkf_l2_sum[k] += float(
-                jnp.linalg.norm(x_hat_k - ref_k)
-                / (jnp.linalg.norm(ref_k) + 1e-12)
+        # PI + EnKF
+        ax.plot(t_ax, x_est_pi[:, i],
+                color=PI_COLOR, linewidth=1.0, linestyle="--", label="PI + EnKF")
+        if x_std_pi is not None:
+            ax.fill_between(
+                t_ax,
+                x_est_pi[:, i] - x_std_pi[:, i],
+                x_est_pi[:, i] + x_std_pi[:, i],
+                color=PI_BAND, alpha=0.35, linewidth=0, label="PI ±1σ",
             )
-            enkf_rmse_sum[k] += float(jnp.sqrt(jnp.mean((x_hat_k - ref_k) ** 2)))
-            enkf_spread_sum[k] += float(jnp.sqrt(jnp.mean(x_spreads[step_k] ** 2)))
 
-    # ── Open-loop — vectorised over B ─────────────────────────────────────────
-    ol_l2     = np.zeros(max_additions)
-    u_current = u0_original
-    for k in range(max_additions):
-        u_current = predict_one_window(u_current)
-        ref_k     = rollout_states[k]
-        numer     = jnp.linalg.norm(u_current - ref_k, axis=1)
-        denom     = jnp.linalg.norm(ref_k,              axis=1)
-        ol_l2[k]  = float(jnp.mean(numer / (denom + 1e-12)))
+        # DD + EnKF
+        ax.plot(t_ax, x_est_dd[:, i],
+                color=DD_COLOR, linewidth=1.0, linestyle=":", label="DD + EnKF")
+        if x_std_dd is not None:
+            ax.fill_between(
+                t_ax,
+                x_est_dd[:, i] - x_std_dd[:, i],
+                x_est_dd[:, i] + x_std_dd[:, i],
+                color=DD_BAND, alpha=0.35, linewidth=0, label="DD ±1σ",
+            )
 
-    l2_enkf     = enkf_l2_sum     / B
-    rmse_enkf   = enkf_rmse_sum   / B
-    spread_mean = enkf_spread_sum / B
-    
-    # ── ERF statistics ────────────────────────────────────────────────────────
-    erf_mean = erf_sum    / B
-    erf_std  = np.sqrt(np.maximum(erf_sq_sum / B - erf_mean ** 2, 0.0))
+        # Observation markers — same cross style/size as the single-model plot
+        if i in obs_by_var:
+            obs_times_i, obs_vals_i = zip(*obs_by_var[i])
+            ax.scatter(obs_times_i, obs_vals_i,
+                       marker="x", s=25, linewidths=0.9,
+                       color=OBS_COLOR, zorder=5,
+                       label="Observation" if i == min(obs_by_var) else None)
 
-    # ── Plotting ──────────────────────────────────────────────────────────────
-    save_dir = os.path.join(workdir, "figures", config.wandb.name)
+        ax.set_title(f"$x_{{{i}}}$", fontsize=9, pad=2)
+        ax.tick_params(labelsize=7)
+        ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5)
 
-    # ── Existing L2 + calibration plot ───────────────────────────────────────
-    save_path = os.path.join(save_dir, "batch_l2_per_window_enkf.pdf")
+        if row == 1 + n_var_rows - 1:
+            ax.set_xlabel("t", fontsize=8)
+        if col == 0:
+            ax.set_ylabel("state", fontsize=8)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    window_idx = np.arange(1, max_additions + 1)
+        if i == 0:
+            ax.legend(fontsize=6.5, loc="upper right",
+                      handlelength=1.3, framealpha=0.7)
 
-    ax = axes[0]
-    ax.plot(window_idx, ol_l2,   marker="o", markersize=4, linewidth=1.8,
-            label="Open-loop (DeepONet)", color="#2196F3")
-    ax.plot(window_idx, l2_enkf, marker="s", markersize=4, linewidth=1.8,
-            label=f"EnKF mean (N_ens={N_ens})", color="#FF5722")
+    fig.suptitle(
+        f"Trajectory summary — IC {ic_idx}  |  PI+EnKF vs DD+EnKF",
+        fontsize=13, fontweight="bold", y=1.002,
+    )
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    logging.info(f"Comparison EnKF trajectory summary for IC {ic_idx} saved to: {save_path}")
+
+def _plot_erf_compare(
+    obs_times:    np.ndarray,   # (T_obs,)
+    erf_mean_pi:  np.ndarray,   # (T_obs,)
+    erf_std_pi:   np.ndarray,   # (T_obs,)
+    erf_mean_dd:  np.ndarray,   # (T_obs,)
+    erf_std_dd:   np.ndarray,   # (T_obs,)
+    n_traj:       int,
+    title:        str,
+    save_path:    str,
+) -> None:
+    """
+    ERF comparison for PI+EnKF vs DD+EnKF, same visual conventions as
+    `_plot_erf` (log-scale, ±1 std band, ERF=1 reference line).
+    """
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    ax.plot(obs_times, erf_mean_pi,
+            color="#2196F3", linewidth=2.0, marker="o", markersize=4,
+            label=f"PI + EnKF  (n = {n_traj} trajectories)")
+    ax.fill_between(
+        obs_times, erf_mean_pi - erf_std_pi, erf_mean_pi + erf_std_pi,
+        color="#2196F3", alpha=0.18, linewidth=0, label="PI ±1 std",
+    )
+
+    ax.plot(obs_times, erf_mean_dd,
+            color="#FF8C00", linewidth=2.0, marker="s", markersize=4,
+            label=f"DD + EnKF  (n = {n_traj} trajectories)")
+    ax.fill_between(
+        obs_times, erf_mean_dd - erf_std_dd, erf_mean_dd + erf_std_dd,
+        color="#FF8C00", alpha=0.18, linewidth=0, label="DD ±1 std",
+    )
+
     ax.set_yscale("log")
-    ax.set_xlabel(f"Window index", fontsize=12)
-    ax.set_ylabel("Mean relative L2 error  (log scale)", fontsize=12)
-    ax.set_title("EnKF vs open-loop: L2 per window", fontsize=13)
-    ax.legend(fontsize=11)
+    ax.axhline(y=1.0, color="#37474F", linestyle="--", linewidth=1.4,
+               label="ERF = 1  (no reduction)")
+
+    ax.set_xlabel("Observation time  t", fontsize=12)
+    ax.set_ylabel("Error Reduction Factor  (prior RMSE / posterior RMSE)", fontsize=11)
+    ax.set_title(title, fontsize=13)
+    ax.legend(fontsize=10)
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    logging.info(f"ERF comparison plot (PI vs DD) saved to: {save_path}")
+
+def _plot_rmse_comparison_dd_pi(
+    obs_times:           np.ndarray,
+    prior_rmse_mean_pi:  np.ndarray, prior_rmse_std_pi: np.ndarray,
+    post_rmse_mean_pi:   np.ndarray, post_rmse_std_pi:  np.ndarray,
+    prior_rmse_mean_dd:  np.ndarray, prior_rmse_std_dd: np.ndarray,
+    post_rmse_mean_dd:   np.ndarray, post_rmse_std_dd:  np.ndarray,
+    sigma_obs:           float,
+    n_traj:              int,
+    title:               str,
+    save_path:           str,
+) -> None:
+    """
+    Prior/posterior RMSE comparison for PI+EnKF vs DD+EnKF, on the same
+    axes.  Same colour roles as `_plot_rmse_comparison` (blue = prior,
+    orange-red = posterior, green = measurement-noise reference); PI is
+    solid, DD is dashed so both regimes remain distinguishable at a glance.
+    """
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    # ── PI ──────────────────────────────────────────────────────────────
+    ax.plot(obs_times, prior_rmse_mean_pi,
+            color="#2196F3", linewidth=2.0, marker="o", markersize=4,
+            linestyle="-", label=f"PI prior RMSE  (n = {n_traj})")
+    ax.fill_between(
+        obs_times, prior_rmse_mean_pi - prior_rmse_std_pi, prior_rmse_mean_pi + prior_rmse_std_pi,
+        color="#2196F3", alpha=0.15, linewidth=0,
+    )
+    ax.plot(obs_times, post_rmse_mean_pi,
+            color="#FF5722", linewidth=2.0, marker="s", markersize=4,
+            linestyle="-", label=f"PI posterior RMSE  (n = {n_traj})")
+    ax.fill_between(
+        obs_times, post_rmse_mean_pi - post_rmse_std_pi, post_rmse_mean_pi + post_rmse_std_pi,
+        color="#FF5722", alpha=0.15, linewidth=0,
+    )
+
+    # ── DD ──────────────────────────────────────────────────────────────
+    ax.plot(obs_times, prior_rmse_mean_dd,
+            color="#2196F3", linewidth=2.0, marker="o", markersize=4,
+            linestyle="--", label=f"DD prior RMSE  (n = {n_traj})")
+    ax.fill_between(
+        obs_times, prior_rmse_mean_dd - prior_rmse_std_dd, prior_rmse_mean_dd + prior_rmse_std_dd,
+        color="#2196F3", alpha=0.08, linewidth=0,
+    )
+    ax.plot(obs_times, post_rmse_mean_dd,
+            color="#FF5722", linewidth=2.0, marker="s", markersize=4,
+            linestyle="--", label=f"DD posterior RMSE  (n = {n_traj})")
+    ax.fill_between(
+        obs_times, post_rmse_mean_dd - post_rmse_std_dd, post_rmse_mean_dd + post_rmse_std_dd,
+        color="#FF5722", alpha=0.08, linewidth=0,
+    )
+
+    # ── Measurement noise reference ─────────────────────────────────────
+    ax.axhline(y=sigma_obs, color="#4CAF50", linestyle=":", linewidth=1.6,
+               label=f"Measurement noise  σ_obs = {sigma_obs}")
+
+    ax.set_yscale("log")
+    ax.set_xlabel("Observation time  t", fontsize=12)
+    ax.set_ylabel("RMSE  (log scale)", fontsize=12)
+    ax.set_title(title, fontsize=13)
+    ax.legend(fontsize=9, ncol=2)
     ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
- 
-    # ─────── secondary time axis for the L2 panel ─────────────────────────────
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    logging.info(f"RMSE comparison plot (PI vs DD) saved to: {save_path}")
+
+def _plot_calibration_compare(
+    window_idx: np.ndarray,
+    dt_window:  float,
+    spread_pi:  np.ndarray, rmse_pi: np.ndarray,
+    spread_dd:  np.ndarray, rmse_dd: np.ndarray,
+    title:      str,
+    save_path:  str,
+) -> None:
+    """
+    Calibration comparison (RMS ensemble spread vs EnKF RMSE) for PI vs DD,
+    at window boundaries.  Same log-scale / secondary-time-axis format as
+    the calibration panel that used to live inside `_evaluate_batch_l2_enkf`.
+    """
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    ax.plot(window_idx, spread_pi, marker="^", markersize=4, linewidth=1.8,
+            linestyle="-", color="#4CAF50", label="PI RMS ensemble σ")
+    ax.plot(window_idx, rmse_pi, marker="s", markersize=4, linewidth=1.8,
+            linestyle="--", color="#FF5722", label="PI EnKF RMSE")
+    ax.plot(window_idx, spread_dd, marker="^", markersize=4, linewidth=1.8,
+            linestyle="-", color="#8BC34A", label="DD RMS ensemble σ")
+    ax.plot(window_idx, rmse_dd, marker="s", markersize=4, linewidth=1.8,
+            linestyle=":", color="#FF8A65", label="DD EnKF RMSE")
+
+    ax.set_yscale("log")
+    ax.set_xlabel("Window index", fontsize=12)
+    ax.set_ylabel("Log scale", fontsize=12)
+    ax.set_title(title, fontsize=13)
+    ax.legend(fontsize=9)
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+
     ax_time = ax.twiny()
     ax_time.set_xlim(ax.get_xlim())
     ax_time.set_xticks(window_idx)
@@ -1443,240 +1141,440 @@ def _evaluate_batch_l2_enkf(
         fontsize=8, rotation=45, ha="left",
     )
     ax_time.set_xlabel("Simulation time  (window × dt)", fontsize=10)
-    # ─────────────────────────────────────────────────────────────────────────
- 
-    ax2 = axes[1]
-    ax2.plot(window_idx, spread_mean, marker="^", markersize=4, linewidth=1.8,
-             label="RMS ensemble σ", color="#4CAF50")
-    ax2.plot(window_idx, rmse_enkf,     marker="s", markersize=4, linewidth=1.8,
-             linestyle="--", label="EnKF RMSE", color="#FF5722")
-    ax2.set_yscale("log")
-    ax2.set_xlabel(f"Window index", fontsize=12)
-    ax2.set_ylabel("Log scale", fontsize=12)
-    ax2.set_title("Calibration: ensemble spread vs RMSE", fontsize=13)
-    ax2.legend(fontsize=11)
-    ax2.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
- 
-    # ─────── secondary time axis for the calibration panel ───────────────────
-    ax2_time = ax2.twiny()
-    ax2_time.set_xlim(ax2.get_xlim())
-    ax2_time.set_xticks(window_idx)
-    ax2_time.set_xticklabels(
-        [f"{k * dt_window:.3g}" for k in window_idx],
-        fontsize=8, rotation=45, ha="left",
-    )
-    ax2_time.set_xlabel("Simulation time  (window × dt)", fontsize=10)
-    # ─────────────────────────────────────────────────────────────────────────
 
-    fig.suptitle(
-        f"EnKF batch evaluation  (B={B}, N_ens={N_ens}, "
-        f"obs every {obs_every_n}th var, σ_obs={sigma_obs})",
-        fontsize=13,
-    )
     fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     fig.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
-    logging.info(f"EnKF batch L2-per-window plot saved to: {save_path}")
+    logging.info(f"Calibration comparison plot (PI vs DD) saved to: {save_path}")
 
-    # ─────── Error Reduction Factor plot ──────────────────────────────────────
-    erf_save_path = os.path.join(save_dir, "batch_erf_enkf.pdf")
-    _plot_erf(
-        obs_times  = obs_times_batch,
-        erf_mean   = erf_mean,
-        erf_std    = erf_std,
-        n_traj     = B,
+def _evaluate_batch_enkf_dd_vs_pi(
+    model_pi, params_pi, predict_fn_pi, update_fn_pi,
+    model_dd, params_dd, predict_fn_dd, update_fn_dd,
+    t_star_window,
+    u_test:            np.ndarray,   # (num_ics, num_test_pts, N)
+    t_test:            np.ndarray,   # (num_test_pts,)
+    F_test:            np.ndarray,   # (num_ics,)
+    Q_fine, P0, R, obs_indices,
+    N_ens:             int,
+    obs_every_n:       int,
+    sigma_obs:         float,
+    P0_sigma:          float,
+    dynamic_vars:      bool,
+    specify_obs_idx:   bool,
+    obs_idx_list,
+    dt_window:         float,
+    dt_fine:           float,
+    dt_obs:            float,
+    num_ics_eval:      int,
+    enkf_batch_size:   int,
+    batch_windows:     int,
+    config, workdir: str,
+) -> None:
+    """
+    Batch-averaged EnKF evaluation comparing the PI and DD propagators,
+    sourced entirely from `l96_forcing_test.h5` (see `evaluate_dd_vs_pi`).
+
+    Ground truth at every fine timestep is sliced directly out of the
+    dense test trajectories (they are already the exact LSODA solution
+    produced by gen_data.py) rather than re-solved, since `batch_windows`
+    windows always fit inside the stored test horizon — this is the
+    batch analogue of the on-the-fly solve used for the (longer) single
+    trajectory plots.
+
+    Both propagators are evaluated against the *same* per-IC noisy
+    observation sequence and the *same* initial ensemble, so that the
+    resulting L2 / ERF / RMSE / calibration comparisons isolate the
+    effect of the surrogate model rather than differing noise draws.
+    """
+    from examples.l96_6_larger_data.kf import run_enkf_smoother, init_ensemble
+
+    N = model_pi.N
+    B = min(num_ics_eval, enkf_batch_size, u_test.shape[0])
+    logging.info(
+        f"Computing batch EnKF PI-vs-DD comparison over B={B} trajectories "
+        f"from l96_forcing_test.h5 (N_ens={N_ens}) …"
+    )
+
+    u0_batch = u_test[:B, 0, :]          # (B, N)
+    dt_test  = float(t_test[1] - t_test[0])
+
+    # ── Batch horizon & observation schedule ─────────────────────────────
+    total_time_batch = batch_windows * dt_window
+    _, obs_step_indices_batch, total_fine_steps_batch = build_obs_schedule(
+        total_time = total_time_batch,
+        dt_fine    = dt_fine,
+        dt_obs     = dt_obs,
+    )
+    T_obs = len(obs_step_indices_batch)
+    obs_times_batch = np.array([(k + 1) * dt_obs for k in range(T_obs)])
+
+    # ── Ground truth sliced directly from the test file (exact solver) ──
+    fine_stride = dt_fine / dt_test
+    assert abs(fine_stride - round(fine_stride)) < 1e-6, (
+        f"dt_fine ({dt_fine}) must be an integer multiple of the test "
+        f"file's time step ({dt_test}) to slice ground truth directly."
+    )
+    fine_stride = int(round(fine_stride))
+    n_fine_pts  = total_fine_steps_batch * fine_stride + 1
+    assert n_fine_pts <= u_test.shape[1], (
+        f"batch_windows ({batch_windows}) requires {n_fine_pts} fine points "
+        f"but the test file only stores {u_test.shape[1]}; reduce batch_windows."
+    )
+    # (B, total_fine_steps_batch + 1, N)
+    x_true_fine_batch    = u_test[:B, 0:n_fine_pts:fine_stride, :]
+    x_true_at_obs_batch  = x_true_fine_batch[:, obs_step_indices_batch + 1, :]
+
+    # window-boundary fine-step indices
+    window_step_indices = np.array([
+        round((k + 1) * dt_window / dt_fine) - 1
+        for k in range(batch_windows)
+    ])
+
+    m = len(obs_indices)
+
+    # ── Accumulators (window-boundary quantities) ────────────────────────
+    l2_enkf_pi_sum   = np.zeros(batch_windows)
+    l2_enkf_dd_sum   = np.zeros(batch_windows)
+    rmse_enkf_pi_sum = np.zeros(batch_windows)
+    rmse_enkf_dd_sum = np.zeros(batch_windows)
+    spread_pi_sum    = np.zeros(batch_windows)
+    spread_dd_sum    = np.zeros(batch_windows)
+
+    # ── Accumulators (observation-time quantities) ───────────────────────
+    erf_pi_sum = np.zeros(T_obs); erf_pi_sq_sum = np.zeros(T_obs)
+    erf_dd_sum = np.zeros(T_obs); erf_dd_sq_sum = np.zeros(T_obs)
+
+    prior_rmse_pi_sum = np.zeros(T_obs); prior_rmse_pi_sq_sum = np.zeros(T_obs)
+    post_rmse_pi_sum  = np.zeros(T_obs); post_rmse_pi_sq_sum  = np.zeros(T_obs)
+    prior_rmse_dd_sum = np.zeros(T_obs); prior_rmse_dd_sq_sum = np.zeros(T_obs)
+    post_rmse_dd_sum  = np.zeros(T_obs); post_rmse_dd_sq_sum  = np.zeros(T_obs)
+
+    # ── Accumulators (dense fine-timestep L2, the "denser" replacement ───
+    #    for the old per-window plot) ─────────────────────────────────────
+    l2_enkf_pi_dense_sum = np.zeros(total_fine_steps_batch)
+    l2_enkf_dd_dense_sum = np.zeros(total_fine_steps_batch)
+
+    for ic in range(B):
+        key    = jax.random.PRNGKey(ic + 77777)
+        u_true = jnp.array(u0_batch[ic])
+
+        x_true_fine   = x_true_fine_batch[ic]     # (T+1, N) numpy
+        x_true_at_obs = x_true_at_obs_batch[ic]    # (T_obs, N) numpy
+
+        # ── Shared noisy observation sequence for both propagators ───────
+        H_list, y_obs_list = [], []
+        for obs_idx in range(T_obs):
+            x_true_t = x_true_at_obs[obs_idx]
+
+            if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
+                key, subkey  = jax.random.split(key)
+                obs_idx_vars = jax.random.choice(subkey, N, shape=(m,), replace=False)
+            else:
+                obs_idx_vars = obs_indices
+
+            m_t = len(obs_idx_vars)
+            H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx_vars].set(1.0)
+
+            key, subkey = jax.random.split(key)
+            noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
+            y_t   = jnp.array(x_true_t)[obs_idx_vars] + noise
+
+            H_list.append(H_t)
+            y_obs_list.append(y_t)
+
+        H_seq     = jnp.stack(H_list)
+        y_obs_seq = jnp.stack(y_obs_list)
+
+        # ── Shared initial ensemble ───────────────────────────────────────
+        key, key_ic, key_ens = jax.random.split(key, 3)
+        x0_hat    = u_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
+        ensemble0 = init_ensemble(x0_hat, P0, N_ens, key_ens)
+
+        # ── PI EnKF ────────────────────────────────────────────────────────
+        x_means_pi, x_spreads_pi, prior_means_pi = run_enkf_smoother(
+            predict_fn_pi, update_fn_pi,
+            ensemble0, y_obs_seq, obs_step_indices_batch,
+            H_seq, Q_fine, R, key, total_fine_steps_batch,
+            dt_fine=dt_fine, dt_window=dt_window,
+        )
+
+        # ── DD EnKF — identical obs sequence, ensemble IC, and key ────────
+        x_means_dd, x_spreads_dd, prior_means_dd = run_enkf_smoother(
+            predict_fn_dd, update_fn_dd,
+            ensemble0, y_obs_seq, obs_step_indices_batch,
+            H_seq, Q_fine, R, key, total_fine_steps_batch,
+            dt_fine=dt_fine, dt_window=dt_window,
+        )
+
+        # ── ERF / RMSE at observation times ───────────────────────────────
+        post_means_pi = x_means_pi[obs_step_indices_batch]
+        post_means_dd = x_means_dd[obs_step_indices_batch]
+
+        prior_rmse_pi = np.sqrt(np.mean((np.array(prior_means_pi) - x_true_at_obs) ** 2, axis=1))
+        post_rmse_pi  = np.sqrt(np.mean((np.array(post_means_pi)  - x_true_at_obs) ** 2, axis=1))
+        prior_rmse_dd = np.sqrt(np.mean((np.array(prior_means_dd) - x_true_at_obs) ** 2, axis=1))
+        post_rmse_dd  = np.sqrt(np.mean((np.array(post_means_dd)  - x_true_at_obs) ** 2, axis=1))
+
+        erf_pi = prior_rmse_pi / (post_rmse_pi + 1e-12)
+        erf_dd = prior_rmse_dd / (post_rmse_dd + 1e-12)
+
+        erf_pi_sum += erf_pi; erf_pi_sq_sum += erf_pi ** 2
+        erf_dd_sum += erf_dd; erf_dd_sq_sum += erf_dd ** 2
+
+        prior_rmse_pi_sum += prior_rmse_pi; prior_rmse_pi_sq_sum += prior_rmse_pi ** 2
+        post_rmse_pi_sum  += post_rmse_pi;  post_rmse_pi_sq_sum  += post_rmse_pi ** 2
+        prior_rmse_dd_sum += prior_rmse_dd; prior_rmse_dd_sq_sum += prior_rmse_dd ** 2
+        post_rmse_dd_sum  += post_rmse_dd;  post_rmse_dd_sq_sum  += post_rmse_dd ** 2
+
+        # ── Window-boundary L2 / RMSE / spread ────────────────────────────
+        x_true_at_windows = x_true_fine[window_step_indices + 1]   # (batch_windows, N)
+        x_hat_pi_windows  = np.array(x_means_pi[window_step_indices])
+        x_hat_dd_windows  = np.array(x_means_dd[window_step_indices])
+
+        den = np.linalg.norm(x_true_at_windows, axis=1) + 1e-12
+        l2_enkf_pi_sum += np.linalg.norm(x_hat_pi_windows - x_true_at_windows, axis=1) / den
+        l2_enkf_dd_sum += np.linalg.norm(x_hat_dd_windows - x_true_at_windows, axis=1) / den
+
+        rmse_enkf_pi_sum += np.sqrt(np.mean((x_hat_pi_windows - x_true_at_windows) ** 2, axis=1))
+        rmse_enkf_dd_sum += np.sqrt(np.mean((x_hat_dd_windows - x_true_at_windows) ** 2, axis=1))
+
+        spread_pi_sum += np.sqrt(np.mean(np.array(x_spreads_pi[window_step_indices]) ** 2, axis=1))
+        spread_dd_sum += np.sqrt(np.mean(np.array(x_spreads_dd[window_step_indices]) ** 2, axis=1))
+
+        # ── Dense per-timestamp L2 (denser than window-level) ─────────────
+        x_true_fine_tail = x_true_fine[1:]   # (total_fine_steps_batch, N)
+        den_dense = np.linalg.norm(x_true_fine_tail, axis=1) + 1e-12
+        l2_enkf_pi_dense_sum += np.linalg.norm(np.array(x_means_pi) - x_true_fine_tail, axis=1) / den_dense
+        l2_enkf_dd_dense_sum += np.linalg.norm(np.array(x_means_dd) - x_true_fine_tail, axis=1) / den_dense
+
+    # ── Open-loop dense rollouts, vectorised over B (same ICs as above) ───
+    u0_batch_j = jnp.array(u0_batch)
+    predict_full_pi = jax.jit(jax.vmap(
+        lambda u: model_pi.x_pred_fn(params_pi, u, t_star_window), in_axes=0))
+    predict_full_dd = jax.jit(jax.vmap(
+        lambda u: model_dd.x_pred_fn(params_dd, u, t_star_window), in_axes=0))
+
+    x_pred_dense_pi_list, x_pred_dense_dd_list = [], []
+    u_current_pi, u_current_dd = u0_batch_j, u0_batch_j
+    for k in range(batch_windows):
+        x_win_pi = predict_full_pi(u_current_pi)
+        x_win_dd = predict_full_dd(u_current_dd)
+
+        if k == 0:
+            x_pred_dense_pi_list.append(x_win_pi)
+            x_pred_dense_dd_list.append(x_win_dd)
+        else:
+            x_pred_dense_pi_list.append(x_win_pi[:, 1:, :])
+            x_pred_dense_dd_list.append(x_win_dd[:, 1:, :])
+
+        u_current_pi = x_win_pi[:, -1, :]
+        u_current_dd = x_win_dd[:, -1, :]
+
+    x_pred_dense_pi = jnp.concatenate(x_pred_dense_pi_list, axis=1)   # (B, total_steps, N)
+    x_pred_dense_dd = jnp.concatenate(x_pred_dense_dd_list, axis=1)
+
+    total_steps_ol = x_pred_dense_pi.shape[1]
+    x_ref_dense_ol = jnp.array(u_test[:B, :total_steps_ol, :])
+    t_eval_ol      = t_test[:total_steps_ol]
+
+    denom_ol = jnp.linalg.norm(x_ref_dense_ol, axis=2) + 1e-12
+    l2_ol_pi = np.array(jnp.mean(jnp.linalg.norm(x_pred_dense_pi - x_ref_dense_ol, axis=2) / denom_ol, axis=0))
+    l2_ol_dd = np.array(jnp.mean(jnp.linalg.norm(x_pred_dense_dd - x_ref_dense_ol, axis=2) / denom_ol, axis=0))
+
+    # ── Batch averages ─────────────────────────────────────────────────────
+    l2_enkf_pi   = l2_enkf_pi_sum   / B
+    l2_enkf_dd   = l2_enkf_dd_sum   / B
+    rmse_enkf_pi = rmse_enkf_pi_sum / B
+    rmse_enkf_dd = rmse_enkf_dd_sum / B
+    spread_pi    = spread_pi_sum    / B
+    spread_dd    = spread_dd_sum    / B
+
+    erf_pi_mean = erf_pi_sum / B
+    erf_pi_std  = np.sqrt(np.maximum(erf_pi_sq_sum / B - erf_pi_mean ** 2, 0.0))
+    erf_dd_mean = erf_dd_sum / B
+    erf_dd_std  = np.sqrt(np.maximum(erf_dd_sq_sum / B - erf_dd_mean ** 2, 0.0))
+
+    prior_rmse_pi_mean = prior_rmse_pi_sum / B
+    prior_rmse_pi_std  = np.sqrt(np.maximum(prior_rmse_pi_sq_sum / B - prior_rmse_pi_mean ** 2, 0.0))
+    post_rmse_pi_mean  = post_rmse_pi_sum / B
+    post_rmse_pi_std   = np.sqrt(np.maximum(post_rmse_pi_sq_sum / B - post_rmse_pi_mean ** 2, 0.0))
+
+    prior_rmse_dd_mean = prior_rmse_dd_sum / B
+    prior_rmse_dd_std  = np.sqrt(np.maximum(prior_rmse_dd_sq_sum / B - prior_rmse_dd_mean ** 2, 0.0))
+    post_rmse_dd_mean  = post_rmse_dd_sum / B
+    post_rmse_dd_std   = np.sqrt(np.maximum(post_rmse_dd_sq_sum / B - post_rmse_dd_mean ** 2, 0.0))
+
+    t_dense_fine     = np.arange(1, total_fine_steps_batch + 1) * dt_fine
+    l2_enkf_pi_dense = l2_enkf_pi_dense_sum / B
+    l2_enkf_dd_dense = l2_enkf_dd_dense_sum / B
+
+    logging.info(
+        f"  [batch] Final-timestep mean L2 -> "
+        f"PI open-loop: {float(l2_ol_pi[-1]):.3e} | PI+EnKF: {l2_enkf_pi_dense[-1]:.3e} | "
+        f"DD open-loop: {float(l2_ol_dd[-1]):.3e} | DD+EnKF: {l2_enkf_dd_dense[-1]:.3e}"
+    )
+    logging.info(
+        f"  [batch] Final-window mean L2 (boundary-only, for reference) -> "
+        f"PI+EnKF: {l2_enkf_pi[-1]:.3e} | DD+EnKF: {l2_enkf_dd[-1]:.3e}"
+    )
+
+    # ── Plotting ──────────────────────────────────────────────────────────
+    save_dir = os.path.join(workdir, "figures", "comparison")
+
+    # Plot 1 — dense per-timestamp L2: EnKF vs open-loop, PI vs DD
+    curves = {
+        "PI Open-loop": (np.array(t_eval_ol), l2_ol_pi),
+        "PI + EnKF":    (t_dense_fine,        l2_enkf_pi_dense),
+        "DD Open-loop": (np.array(t_eval_ol), l2_ol_dd),
+        "DD + EnKF":    (t_dense_fine,        l2_enkf_dd_dense),
+    }
+    colors = {
+        "PI Open-loop": "#90CAF9",
+        "PI + EnKF":    "#2196F3",
+        "DD Open-loop": "#FFCC80",
+        "DD + EnKF":    "#FF8C00",
+    }
+    _plot_l2_per_timestep(
+        curves    = curves,
+        title     = f"EnKF vs open-loop: mean relative L2 per timestep  (PI vs DD, B={B})",
+        save_path = os.path.join(save_dir, "batch_l2_per_timestep_enkf_compare.pdf"),
+        colors    = colors,
+    )
+
+    # Plot 2 — calibration: ensemble spread vs RMSE, PI vs DD
+    _plot_calibration_compare(
+        window_idx = np.arange(1, batch_windows + 1),
+        dt_window  = dt_window,
+        spread_pi  = spread_pi, rmse_pi = rmse_enkf_pi,
+        spread_dd  = spread_dd, rmse_dd = rmse_enkf_dd,
         title      = (
-            f"EnKF Error Reduction Factor per observation time\n"
+            f"Calibration: ensemble spread vs RMSE  (PI vs DD, B={B}, N_ens={N_ens})"
+        ),
+        save_path  = os.path.join(save_dir, "batch_calibration_enkf_compare.pdf"),
+    )
+
+    # Plot 3 — Error Reduction Factor, PI vs DD
+    _plot_erf_compare(
+        obs_times   = obs_times_batch,
+        erf_mean_pi = erf_pi_mean, erf_std_pi = erf_pi_std,
+        erf_mean_dd = erf_dd_mean, erf_std_dd = erf_dd_std,
+        n_traj      = B,
+        title       = (
+            f"EnKF Error Reduction Factor per observation time  (PI vs DD)\n"
             f"(B={B} trajectories, N_ens={N_ens}, "
             f"obs every {obs_every_n}th var, σ_obs={sigma_obs}, dt_obs={dt_obs:.3g})"
         ),
-        save_path  = erf_save_path,
+        save_path   = os.path.join(save_dir, "batch_erf_enkf_compare.pdf"),
     )
 
-    # ── Prior / Posterior RMSE vs noise level ──────────────────────────────────
-    prior_rmse_mean = prior_rmse_sum    / B
-    prior_rmse_std  = np.sqrt(np.maximum(
-        prior_rmse_sq_sum / B - prior_rmse_mean ** 2, 0.0))
-    post_rmse_mean  = post_rmse_sum     / B
-    post_rmse_std   = np.sqrt(np.maximum(
-        post_rmse_sq_sum  / B - post_rmse_mean  ** 2, 0.0))
-
-    rmse_save_path = os.path.join(save_dir, "batch_rmse_enkf.pdf")
-    _plot_rmse_comparison(
-        obs_times       = obs_times_batch,
-        prior_rmse_mean = prior_rmse_mean,
-        prior_rmse_std  = prior_rmse_std,
-        post_rmse_mean  = post_rmse_mean,
-        post_rmse_std   = post_rmse_std,
-        sigma_obs       = sigma_obs,
-        n_traj          = B,
-        title           = (
-            f"EnKF prior vs posterior RMSE\n"
+    # Plot 4 — prior / posterior RMSE, PI vs DD
+    _plot_rmse_comparison_dd_pi(
+        obs_times          = obs_times_batch,
+        prior_rmse_mean_pi = prior_rmse_pi_mean, prior_rmse_std_pi = prior_rmse_pi_std,
+        post_rmse_mean_pi  = post_rmse_pi_mean,  post_rmse_std_pi  = post_rmse_pi_std,
+        prior_rmse_mean_dd = prior_rmse_dd_mean, prior_rmse_std_dd = prior_rmse_dd_std,
+        post_rmse_mean_dd  = post_rmse_dd_mean,  post_rmse_std_dd  = post_rmse_dd_std,
+        sigma_obs = sigma_obs, n_traj = B,
+        title = (
+            f"EnKF prior vs posterior RMSE  (PI vs DD)\n"
             f"(B={B} trajectories, N_ens={N_ens}, "
             f"obs every {obs_every_n}th var, σ_obs={sigma_obs}, dt_obs={dt_obs:.3g})"
         ),
-        save_path       = rmse_save_path,
+        save_path = os.path.join(save_dir, "batch_rmse_enkf_compare.pdf"),
     )
 
-# ── Numerical propagator ──────────────────────────────────────────────────────
-
-def _make_l96_rk4_propagator(
-    dt:         float,
-    F:          float = 6.0,
-    n_substeps: int   = 10,
-) -> Callable:
+def evaluate_enkf_dd_vs_pi(
+    config: ml_collections.ConfigDict,
+    workdir: str,
+    test_h5_path: str = None,
+) -> None:
     """
-    Return a pure-JAX fixed-step RK4 propagator for the Lorenz-96 system.
+    EnKF evaluation comparing the Physics-Informed (PI) and Data-Driven (DD)
+    DeepONet regimes used as ensemble propagators.
 
-    The returned callable integrates the L96 ODE for exactly ``dt`` time
-    units using ``n_substeps`` RK4 steps of size h = dt / n_substeps.
+    This is `evaluate_with_enkf` (filter logic: predict/update, ensemble
+    init, window-aware smoother, single-trajectory plots marking assimilated
+    observations, ERF, and calibration) rewired onto the centralized
+    `l96_forcing_test.h5` data source and PI-vs-DD comparison conventions of
+    `evaluate_dd_vs_pi`:
 
-    Because the implementation uses only ``jnp`` operations and
-    ``jax.lax.scan``, the function is fully compatible with ``jit``,
-    ``vmap`` (used inside ``make_enkf``'s predict step), and ``jacfwd``
-    (used inside ``make_ekf``'s predict step).  No Python-level looping
-    occurs at call time.
-
-    Accuracy note
-    -------------
-    For the L96-N40 system with F = 6 the Lyapunov time is ≈ 1/0.9 ≈ 1.1
-    time units.  Ten RK4 sub-steps per assimilation window of dt = 0.05
-    (h = 0.005) keeps the local truncation error well below observation
-    noise for typical sigma_obs values used here.  Increase n_substeps if
-    dt is large (e.g. dt = 0.25 → n_substeps = 25 is safer).
-
-    Args:
-        dt:         Integration window length, same units as ``t_star``.
-        F:          L96 forcing constant (default 6.0).
-        n_substeps: Number of RK4 micro-steps within each ``dt`` window.
-
-    Returns:
-        propagator: Callable[(N,) -> (N,)] — pure JAX, no side effects.
+      * Test data (initial conditions, forcing F) comes from
+        `l96_forcing_test.h5`, exactly as in `evaluate_dd_vs_pi`.
+      * Single-trajectory plots run for `config.eval.trajectory_windows`
+        windows (longer than the stored test horizon), so their ground
+        truth is generated on the fly with the exact solver used for
+        trajectory-summary plotting in `evaluate_dd_vs_pi`
+        (`LSODA`, `rtol=1e-13`, `atol=1e-14`).
+      * The batch evaluation horizon (`config.eval.windows`) always fits
+        inside the stored test trajectories, so its ground truth is sliced
+        directly out of `l96_forcing_test.h5` rather than re-solved.
+      * The EnKF filter is applied to both the PI and the DD propagator
+        using the *same* observation schedule (and, for the batch
+        evaluation, the same noisy observation draws and initial ensemble)
+        so that the comparison isolates the effect of the surrogate model.
+      * The batch "EnKF vs open-loop" plot reports mean relative L2 at
+        every fine timestep (dense) instead of only at window boundaries.
     """
-    h = dt / n_substeps
+    from examples.l96_6_larger_data.kf import run_enkf_smoother, init_ensemble
 
-    def _l96_rhs(x: jnp.ndarray) -> jnp.ndarray:
-        x_p1 = jnp.roll(x, -1)
-        x_m1 = jnp.roll(x,  1)
-        x_m2 = jnp.roll(x,  2)
-        return (x_p1 - x_m2) * x_m1 - x + F
+    # ── EnKF / observation configuration (identical to evaluate_with_enkf) ──
+    obs_every_n  = config.ekf.get("obs_every_n",   4)
+    sigma_obs    = config.ekf.get("sigma_obs",      0.5)
+    P0_sigma     = config.ekf.get("P0_sigma",       1.0)
+    dynamic_vars = config.ekf.get("dynamic_vars",   False)
+    N_ens        = config.enkf.get("N_ens",         50)
+    sigma_model  = config.enkf.get("sigma_model",   0.1)
 
-    def _rk4_step(x: jnp.ndarray) -> jnp.ndarray:
-        k1 = _l96_rhs(x)
-        k2 = _l96_rhs(x + 0.5 * h * k1)
-        k3 = _l96_rhs(x + 0.5 * h * k2)
-        k4 = _l96_rhs(x + h * k3)
-        return x + (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+    specify_obs_idx = config.kf.get("specify_obs_idx", False)
+    obs_idx_list    = config.kf.get("obs_idx_list", None)
 
-    def propagator(u: jnp.ndarray) -> jnp.ndarray:
-        # lax.scan avoids Python-level unrolling; all n_substeps fused by XLA.
-        x_final, _ = jax.lax.scan(
-            lambda x, _: (_rk4_step(x), None),
-            u, None, length=n_substeps,
-        )
-        return x_final
-
-    return propagator
-
-def _make_l96_rk4_variable_propagator(
-    dt_fine:    float,
-    F:          float = 6.0,
-    n_substeps: int   = 10,
-) -> Callable:
-    """
-    Return a variable-time RK4 propagator for use with the window-aware EnKF.
- 
-    Signature::
- 
-        propagator(u: (N,), t: float) -> (N,)
- 
-    where ``t`` is a Python float representing the desired integration
-    duration.  ``t`` must be a positive integer multiple of ``dt_fine``.
- 
-    Internally, the function runs ``round(t / dt_fine)`` applications of
-    the fixed-step propagator built by ``_make_l96_rk4_propagator``.
-    Because ``make_enkf``'s predict is compiled with
-    ``static_argnums=(3,)`` (the ``t_query`` argument), ``t`` is a
-    compile-time constant here, so ``round(t / dt_fine)`` is a Python
-    int and ``jax.lax.scan`` does not require dynamic shapes.
- 
-    XLA will retrace at most ``steps_per_window`` distinct values of
-    ``t`` (one per distinct in-window offset), after which the JIT cache
-    is reused for every subsequent window.
- 
-    Args:
-        dt_fine:    Duration of one fine step (same units as t_star).
-        F:          L96 forcing constant (default 6.0).
-        n_substeps: Number of RK4 micro-steps *per fine step*.
-                    Total micro-steps for a query at t = k * dt_fine
-                    is k * n_substeps.
- 
-    Returns:
-        propagator: Callable[(N,), float -> (N,)]
-    """
-    _single_fine_step = _make_l96_rk4_propagator(dt_fine, F, n_substeps)
- 
-    def propagator(u: jnp.ndarray, t: float) -> jnp.ndarray:
-        n_fine_steps = round(t / dt_fine)   # Python int — t is static
-        x_final, _ = jax.lax.scan(
-            lambda x, _: (_single_fine_step(x), None),
-            u, None, length=n_fine_steps,
-        )
-        return x_final
- 
-    return propagator
-
-# ── EnKF evaluation — numerical propagator ───────────────────────────────────
-
-def evaluate_with_enkf_numerical(config: ml_collections.ConfigDict, workdir: str):
-    """
-    Per-trajectory EnKF evaluation using a numerical RK4 solver as the
-    ensemble propagator instead of the trained DeepONet.
- 
-    Uses the same window-aware run_enkf_smoother as the DeepONet-based
-    EnKF.  The variable-step RK4 propagator is queried at
-    t_query = step_in_window * dt_fine, mirroring the DeepONet queries.
-    For the RK4 propagator this is equivalent to running exactly
-    round(t_query / dt_fine) fine RK4 steps from the window IC, which is
-    numerically equivalent to chaining fine steps (RK4 has no surrogate
-    error within a window) but uses a consistent interface.
-    """
-    from examples.l96_6_larger_data.kf import make_enkf, run_enkf_smoother, init_ensemble
- 
-    obs_every_n  = config.ekf.get("obs_every_n",    4)
-    sigma_obs    = config.ekf.get("sigma_obs",       0.5)
-    P0_sigma     = config.ekf.get("P0_sigma",        1.0)
-    dynamic_vars = config.ekf.get("dynamic_vars",    False)
-    N_ens        = config.enkf.get("N_ens",          50)
-    sigma_model  = config.enkf.get("sigma_model",    0.1)
-    n_substeps   = config.enkf.get("rk4_substeps",   10)
-    F            = config.enkf.get("l96_forcing",    6.0)
-
-    specify_obs_idx   = config.kf.get("specify_obs_idx", False)
-    obs_idx_list        = config.kf.get("obs_idx_list", None)
- 
     DT_WINDOW = float(config.get("dt_window", 0.25))
     DT_FINE   = float(config.ekf.get("dt_fine",   DT_WINDOW))
     DT_OBS    = float(config.ekf.get("dt_obs",    DT_WINDOW))
- 
-    _, u0_ref_all, t_star_window = get_dataset()
-    N = u0_ref_all.shape[1]
- 
-    # ── Build variable-time RK4 propagator and EnKF functions ────────────────
-    # _make_l96_rk4_variable_propagator returns (u, t) -> u, matching the
-    # interface expected by make_enkf and run_enkf_smoother.
-    propagator = _make_l96_rk4_variable_propagator(
-        dt_fine=DT_FINE, F=F, n_substeps=n_substeps,
-    )
-    predict_fn, update_fn = make_enkf(propagator, N, N_ens)
- 
-    logging.info(
-        f"Numerical EnKF (window-aware): DT_FINE={DT_FINE}, "
-        f"n_substeps={n_substeps}, N_ens={N_ens}, F={F}"
-    )
 
-    # ── Noise covariances ────────────────────────────────────────────────────
-    # Q is specified at the coarse (window) level, then rescaled to dt_fine.
+    # ── 1. Load the long test trajectories and forcing parameters ─────────
+    if test_h5_path is None:
+        test_h5_path = "data/l96_forcing_test.h5"
+
+    with h5py.File(test_h5_path, "r") as f:
+        u_test = f["u"][:]
+        t_test = f["t"][:]
+        F_test = f["F"][:]
+
+    dt_window = float(config.get("dt_window", 0.25))
+
+    trajectory_windows = config.eval.get("trajectory_windows", 160)
+    batch_windows      = config.eval.get("windows", 30)
+    num_ics_eval       = config.eval.get("num_ics", u_test.shape[0])
+    dt_integration     = config.eval.get("dt_integration", 0.005)
+    enkf_batch_size    = config.ekf.get("batch_l2_size", 200)
+ 
+    # ── 2. Models & per-window query grid ───────────────────────────────────
+    time_steps = int(round(dt_window / dt_integration)) + 1 
+    t_star_window = jnp.linspace(0.0, dt_window, time_steps)
+    # T_last is window duration (e.g., 0.25)
+    T_last = float(t_star_window[-1])
+
+    logging.info("Loading PI model...")
+    model_pi = models.L96UDON(config, t_star_window)
+    ckpt_path_pi = os.path.join(os.getcwd(), config.wandb.name_pi, "ckpt", "udon_model")
+    model_pi.state = restore_checkpoint(model_pi.state, ckpt_path_pi)
+    params_pi = model_pi.state.params
+    N = model_pi.N
+
+    logging.info("Loading DD model...")
+    model_dd = models.L96UDON_DD(config, t_star_window)
+    ckpt_path_dd = os.path.join(os.getcwd(), config.wandb.name_dd, "ckpt", "udon_model")
+    if not os.path.exists(ckpt_path_dd):
+        ckpt_path_dd = os.path.join(os.getcwd(), config.wandb.name_dd, "ckpt", "udon_dd_model")
+    model_dd.state = restore_checkpoint(model_dd.state, ckpt_path_dd)
+    params_dd = model_dd.state.params
+
+    # ── 3. EnKF predict/update functions for both regimes ─────────────────
+    predict_fn_pi, update_fn_pi = model_pi.make_enkf_fns(params_pi, N_ens=N_ens)
+    predict_fn_dd, update_fn_dd = model_dd.make_enkf_fns(params_dd, N_ens=N_ens)
+
     steps_per_window = round(DT_WINDOW / DT_FINE)
     Q_coarse = jnp.eye(N) * sigma_model ** 2
     Q_fine   = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
@@ -1690,49 +1588,50 @@ def evaluate_with_enkf_numerical(config: ml_collections.ConfigDict, workdir: str
     R  = jnp.eye(m) * sigma_obs ** 2
     P0 = jnp.eye(N) * P0_sigma ** 2
 
-    # ── Observation schedule ─────────────────────────────────────────────────
-    num_windows = config.training.num_time_windows
-    total_time  = num_windows * DT_WINDOW
+    # ── 4. Per-IC single-trajectory EnKF evaluation (PI vs DD) ────────────
+    num_plots  = min(config.saving.total_plots, u_test.shape[0])
+    total_time = trajectory_windows * DT_WINDOW
 
     obs_times, obs_step_indices, total_fine_steps = build_obs_schedule(
-        total_time=total_time,
-        dt_fine=DT_FINE,
-        dt_obs=DT_OBS,
+        total_time = total_time,
+        dt_fine    = DT_FINE,
+        dt_obs     = DT_OBS,
     )
 
-    # ── Reference ODE (scipy, high accuracy) ─────────────────────────────────
-    def lorenz_96(t, state, _F=F):
-        xp1 = np.roll(state, -1)
-        xm1 = np.roll(state,  1)
-        xm2 = np.roll(state,  2)
-        return (xp1 - xm2) * xm1 - state + _F
+    for ic_idx in range(num_plots):
+        logging.info(f"--- [EnKF Compare] Evaluating Trajectory for IC index {ic_idx} ---")
 
-    # ── Per-IC evaluation loop ────────────────────────────────────────────────
-    for ic_idx in range(config.saving.total_plots):
-        logging.info(
-            f"--- EnKF (numerical) Evaluation for IC {ic_idx} "
-            f"(N_ens={N_ens}, n_substeps={n_substeps}) ---"
-        )
-        u_current_true = u0_ref_all[ic_idx, :]
+        u0_np          = u_test[ic_idx, 0, :]
+        F_i            = float(F_test[ic_idx])
+        u_current_true = jnp.array(u0_np)
 
-        # Ground-truth trajectory at fine resolution (scipy reference)
+        # ── Ground truth computed ON THE SPOT — exact gen_data.py solver,
+        #    matching the single-trajectory reference in evaluate_dd_vs_pi ─
+        def lorenz_96(t, state, F=F_i):
+            x_plus_1  = np.roll(state, -1)
+            x_minus_1 = np.roll(state, 1)
+            x_minus_2 = np.roll(state, 2)
+            return (x_plus_1 - x_minus_2) * x_minus_1 - state + F
+
         t_eval_fine = np.linspace(0.0, total_time, total_fine_steps + 1)
         sol = solve_ivp(
             lorenz_96,
             t_span=[0.0, total_time],
-            y0=np.array(u_current_true),
+            y0=np.array(u0_np),
             t_eval=t_eval_fine,
-            rtol=1e-9, atol=1e-11,
+            method='LSODA',
+            rtol=1e-13,
+            atol=1e-14,
         )
         x_true_fine   = jnp.array(sol.y.T)               # (total_fine_steps+1, N)
         x_true_at_obs = x_true_fine[obs_step_indices + 1] # (T_obs, N)
 
-        # ── Build noisy observation sequence ──────────────────────────────────
+        # ── Build ONE noisy observation sequence, shared by both regimes ──
         key = jax.random.PRNGKey(ic_idx)
         H_list, y_obs_list, obs_coords = [], [], []
 
         for obs_idx in range(len(obs_times)):
-            x_true_t = x_true_at_obs[obs_idx]   # (N,)
+            x_true_t = x_true_at_obs[obs_idx]
 
             if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
                 key, subkey  = jax.random.split(key)
@@ -1752,76 +1651,79 @@ def evaluate_with_enkf_numerical(config: ml_collections.ConfigDict, workdir: str
             for j, vi in enumerate(obs_idx_vars):
                 obs_coords.append((int(vi), obs_times[obs_idx], float(y_t[j])))
 
-        H_seq     = jnp.stack(H_list)       # (T_obs, m, N)
-        y_obs_seq = jnp.stack(y_obs_list)   # (T_obs, m)
+        H_seq     = jnp.stack(H_list)
+        y_obs_seq = jnp.stack(y_obs_list)
 
-        # ── Initialise ensemble from the prior ────────────────────────────────
-        # The ensemble mean is a noisy copy of the true IC; the spread is
-        # governed by P0_sigma, which should reflect genuine initial uncertainty.
+        # ── Shared initial ensemble (same noise realization for both) ─────
         key, key_ic, key_ens = jax.random.split(key, 3)
         x0_hat    = u_current_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
         ensemble0 = init_ensemble(x0_hat, P0, N_ens, key_ens)
 
-        # ── Run EnKF smoother ─────────────────────────────────────────────────
-        x_means, x_spreads, _ = run_enkf_smoother(
-            predict_fn, update_fn,
-            ensemble0,
-            y_obs_seq,
-            obs_step_indices,   # fine-step indices of each observation
-            H_seq,
-            Q_fine,             # per fine-step process noise
-            R,
-            key,
-            total_fine_steps,
-            dt_fine=DT_FINE,
-            dt_window=DT_WINDOW,
+        # ── Run EnKF: PI propagator ────────────────────────────────────────
+        x_means_pi, x_spreads_pi, _ = run_enkf_smoother(
+            predict_fn_pi, update_fn_pi,
+            ensemble0, y_obs_seq, obs_step_indices,
+            H_seq, Q_fine, R, key, total_fine_steps,
+            dt_fine=DT_FINE, dt_window=DT_WINDOW,
         )
-        # x_means, x_spreads: (total_fine_steps, N)
 
-        # ── Trajectory summary plot ───────────────────────────────────────────
-        t_fine_axis = t_eval_fine[1:]   # exclude t=0 to align with filter output
-        _plot_trajectory_summary(
+        # ── Run EnKF: DD propagator — identical obs sequence, ensemble IC,
+        #    and key, so only the propagator itself differs ─────────────
+        x_means_dd, x_spreads_dd, _ = run_enkf_smoother(
+            predict_fn_dd, update_fn_dd,
+            ensemble0, y_obs_seq, obs_step_indices,
+            H_seq, Q_fine, R, key, total_fine_steps,
+            dt_fine=DT_FINE, dt_window=DT_WINDOW,
+        )
+
+        t_fine_axis = t_eval_fine[1:]
+
+        _plot_trajectory_summary_compare_enkf(
             t_ax       = t_fine_axis,
             x_true     = np.array(x_true_fine[1:]),
-            x_est      = np.array(x_means),
-            x_std      = np.array(x_spreads),
+            x_est_pi   = np.array(x_means_pi),
+            x_std_pi   = np.array(x_spreads_pi),
+            x_est_dd   = np.array(x_means_dd),
+            x_std_dd   = np.array(x_spreads_dd),
             ic_idx     = ic_idx,
-            est_label  = "EnKF (numerical) mean",
             save_path  = os.path.join(
-                workdir, "figures", config.wandb.name,
-                f"trajectory_summary_enkf_numerical_ic_{ic_idx}.pdf",
+                workdir, "figures", "comparison",
+                f"trajectory_summary_enkf_compare_ic_{ic_idx}.pdf",
             ),
             N          = N,
-            dt_window  = DT_WINDOW,    # NEW
-            obs_coords = obs_coords,   # NEW
+            dt_window  = DT_WINDOW,
+            obs_coords = obs_coords,
         )
 
-        # ── L2 error at window boundaries ─────────────────────────────────────
-        # Extract filter mean and ground truth at each window boundary so the
-        # metric is directly comparable to the DeepONet-based EnKF output.
+        # ── Full-rollout relative L2 errors (window boundaries) ────────────
         window_step_indices = np.array([
             round((w + 1) * DT_WINDOW / DT_FINE) - 1
-            for w in range(num_windows)
+            for w in range(trajectory_windows)
         ])
-        x_means_at_windows = x_means[window_step_indices]           # (num_windows, N)
-        x_true_at_windows  = x_true_fine[window_step_indices + 1]   # (num_windows, N)
+        x_true_at_windows = x_true_fine[window_step_indices + 1]
 
-        l2_enkf     = jnp.linalg.norm(x_means_at_windows - x_true_at_windows) \
-                    / jnp.linalg.norm(x_true_at_windows)
-        mean_spread = float(jnp.mean(x_spreads))
+        l2_pi = jnp.linalg.norm(x_means_pi[window_step_indices] - x_true_at_windows) \
+              / jnp.linalg.norm(x_true_at_windows)
+        l2_dd = jnp.linalg.norm(x_means_dd[window_step_indices] - x_true_at_windows) \
+              / jnp.linalg.norm(x_true_at_windows)
+
         print(
-            f"IC {ic_idx} | EnKF (numerical) L2 (window boundaries): {l2_enkf:.3e} "
-            f"| Mean σ: {mean_spread:.3e}"
+            f"IC {ic_idx} | EnKF PI L2: {l2_pi:.3e} | EnKF DD L2: {l2_dd:.3e} "
+            f"| Mean σ (PI): {float(jnp.mean(x_spreads_pi)):.3e} "
+            f"| Mean σ (DD): {float(jnp.mean(x_spreads_dd)):.3e}"
         )
 
-    # ── Batch L2 deliberately omitted ────────────────────────────────────────
-    # Running the RK4 propagator for every ensemble member and every IC in the
-    # large evaluation pool (B × N_ens solves per window, up to max_additions
-    # windows) offers no vectorisation shortcut analogous to the vmapped network
-    # forward pass and is prohibitively expensive.  Use evaluate_with_enkf (the
-    # DeepONet-based mode) for batch-averaged L2 comparisons.
-    logging.info(
-        "Batch L2 evaluation skipped for numerical EnKF "
-        "(no vmapped network shortcut available).  "
-        "Use evaluate_with_enkf for batch-averaged comparisons."
+    # ── 5. Batch-averaged comparison (open-loop & EnKF, PI vs DD) ─────────
+    _evaluate_batch_enkf_dd_vs_pi(
+        model_pi, params_pi, predict_fn_pi, update_fn_pi,
+        model_dd, params_dd, predict_fn_dd, update_fn_dd,
+        t_star_window,
+        u_test, t_test, F_test,
+        Q_fine, P0, R, obs_indices,
+        N_ens, obs_every_n, sigma_obs, P0_sigma, dynamic_vars,
+        specify_obs_idx, obs_idx_list,
+        DT_WINDOW, DT_FINE, DT_OBS,
+        num_ics_eval, enkf_batch_size, batch_windows,
+        config, workdir,
     )
+

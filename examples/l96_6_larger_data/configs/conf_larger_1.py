@@ -87,6 +87,7 @@ def get_config():
     eval.windows            = 30
     eval.trajectory_windows = 160
     eval.num_ics            = 500
+    eval.dt_integration     = 0.005
 
     # Input shape (t is the only input)
     config.input_dim = 41
