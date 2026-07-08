@@ -35,8 +35,8 @@ class L96UDON(ForwardIVP):
         x = self.x_net(params, u, t).reshape(self.N)
         x_t = jacfwd(self.x_net, argnums=2)(params, u, t).reshape(self.N)
 
-        # Extract F from the 41st dimension of the branch input u
-        F = u[-1]
+        # Extract F from the 41st dimension of the input vector
+        F = u[-1] 
 
         x_plus_1 = jnp.roll(x, -1)
         x_minus_1 = jnp.roll(x, 1)
@@ -75,13 +75,12 @@ class L96UDON(ForwardIVP):
     
     @partial(jit, static_argnums=(0,))
     def losses(self, params, batch):
-        # batch: (batch_u, batch_t)
         batch_u, batch_t = batch
         batch_t = batch_t.reshape(-1)
 
-        # IC Loss
+        # IC Loss: Compare prediction only against the 40 state variables
         x_pred_ic = vmap(self.x_net, (None, 0, None))(params, batch_u, self.t0)
-        ics_loss = jnp.mean((batch_u - x_pred_ic) ** 2)
+        ics_loss = jnp.mean((batch_u[:, :self.N] - x_pred_ic) ** 2)
 
         # Residual loss
         if self.config.weighting.use_causal == True: 

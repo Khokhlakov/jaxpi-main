@@ -282,8 +282,10 @@ def evaluate(
     for ic_idx in range(num_plots):
         logging.info(f"--- [long] Evaluating Trajectory for IC index {ic_idx} ---")
  
-        # Grab IC from the test set
-        u_current = jnp.array(u_test[ic_idx, 0, :])   
+        # Grab F for this specific IC
+        F_i = float(F_test[ic_idx])
+        # Append F_i to the initial condition
+        u_current = jnp.concatenate([jnp.array(u_test[ic_idx, 0, :]), jnp.array([F_i])])
  
         # ── Autoregressive rollout (using trajectory_windows) ───────────────
         x_pred_list, t_full_list = [], []
@@ -298,7 +300,7 @@ def evaluate(
                 x_pred_list.append(x_pred_window[1:])
                 t_full_list.append(t_star_window[1:] + idx * T_last)
  
-            u_current = x_pred_window[-1, :]
+            u_current = jnp.concatenate([x_pred_window[-1, :], jnp.array([F_i])])
  
         x_pred_full = jnp.concatenate(x_pred_list, axis=0)
         t_star_full = jnp.concatenate(t_full_list, axis=0)
@@ -396,6 +398,7 @@ def _evaluate_batch_l2_openloop(
     model, params, t_star_window,
     u_test:           np.ndarray,   # (B, num_test_pts, N) dense test trajectories
     t_test:           np.ndarray,   # (num_test_pts,) relative times, t_test[0] == 0
+    F_test:           np.ndarray,
     dt_window:        float,
     num_windows_long: int,
     config, workdir,
@@ -438,7 +441,8 @@ def _evaluate_batch_l2_openloop(
         "test file."
     )
  
-    u0_batch = jnp.array(u_test[:, 0, :])   # (B, N) — true IC at t = 0
+    u0_batch = jnp.concatenate([jnp.array(u_test[:, 0, :]), F_test[:B, None]], axis=-1)
+    u_current = u0_batch
 
     # 1. JIT-compiled, vmapped FULL-window predictor:  (B, N) → (B, T, N)
     predict_full_window = jax.jit(
@@ -449,7 +453,6 @@ def _evaluate_batch_l2_openloop(
     )
 
     x_pred_dense = []
-    u_current = u0_batch
 
     # 2. Rollout the DeepONet densely
     for k in range(num_windows_long):
@@ -460,7 +463,7 @@ def _evaluate_batch_l2_openloop(
         else:
             x_pred_dense.append(x_pred_window[:, 1:, :]) # skip duplicate boundary
             
-        u_current = x_pred_window[:, -1, :]
+        u_current = jnp.concatenate([x_pred_window[:, -1, :], F_test[:B, None]], axis=-1)
 
     # Shape: (B, total_steps, N)
     x_pred_dense = jnp.concatenate(x_pred_dense, axis=1)
@@ -604,8 +607,12 @@ def _plot_trajectory_summary_compare(
 def _evaluate_batch_l2_openloop_compare(
     model_pi, params_pi, 
     model_dd, params_dd, 
-    t_star_window, u_test: np.ndarray, t_test: np.ndarray, 
-    dt_window: float, num_windows_long: int, 
+    t_star_window, 
+    u_test: np.ndarray, 
+    t_test: np.ndarray, 
+    F_test: np.ndarray,
+    dt_window: float, 
+    num_windows_long: int, 
     config, workdir: str
 ) -> None:
     
@@ -613,7 +620,7 @@ def _evaluate_batch_l2_openloop_compare(
     dt_test = float(t_test[1] - t_test[0])
     pts_pw  = int(round(dt_window / dt_test))
  
-    u0_batch = jnp.array(u_test[:, 0, :])
+    u0_batch = jnp.concatenate([jnp.array(u_test[:, 0, :]), F_test[:B, None]], axis=-1)
 
     # 1. JIT-compiled, vmapped FULL-window predictors
     predict_full_pi = jax.jit(jax.vmap(lambda u: model_pi.x_pred_fn(params_pi, u, t_star_window), in_axes=0))
@@ -635,8 +642,8 @@ def _evaluate_batch_l2_openloop_compare(
             x_pred_dense_pi.append(x_pred_window_pi[:, 1:, :]) 
             x_pred_dense_dd.append(x_pred_window_dd[:, 1:, :]) 
             
-        u_current_pi = x_pred_window_pi[:, -1, :]
-        u_current_dd = x_pred_window_dd[:, -1, :]
+        u_current_pi = jnp.concatenate([x_pred_window_pi[:, -1, :], F_test[:B, None]], axis=-1)
+        u_current_dd = jnp.concatenate([x_pred_window_dd[:, -1, :], F_test[:B, None]], axis=-1)
 
     # Shape: (B, total_steps, N)
     x_pred_dense_pi = jnp.concatenate(x_pred_dense_pi, axis=1)
@@ -728,9 +735,12 @@ def evaluate_dd_vs_pi(
  
     for ic_idx in range(num_plots):
         logging.info(f"--- [Compare] Evaluating Trajectory for IC index {ic_idx} ---")
- 
-        u_current_pi = jnp.array(u_test[ic_idx, 0, :])   
-        u_current_dd = jnp.array(u_test[ic_idx, 0, :])   
+
+        # Grab F for this specific IC
+        F_i = float(F_test[ic_idx])
+        # Append F_i to the initial condition
+        u_current_pi = jnp.concatenate([jnp.array(u_test[ic_idx, 0, :]), jnp.array([F_i])])
+        u_current_dd = jnp.concatenate([jnp.array(u_test[ic_idx, 0, :]), jnp.array([F_i])])
  
         # ── Autoregressive rollout ──────────────────────────────────────────
         x_pred_list_pi, x_pred_list_dd, t_full_list = [], [], []
@@ -751,8 +761,8 @@ def evaluate_dd_vs_pi(
                 x_pred_list_dd.append(x_pred_window_dd[1:])
                 t_full_list.append(t_star_window[1:] + idx * T_last)
  
-            u_current_pi = x_pred_window_pi[-1, :]
-            u_current_dd = x_pred_window_dd[-1, :]
+            u_current_pi = jnp.concatenate([x_pred_window_pi[-1, :], jnp.array([F_i])])
+            u_current_dd = jnp.concatenate([x_pred_window_dd[-1, :], jnp.array([F_i])])
  
         x_pred_full_pi = jnp.concatenate(x_pred_list_pi, axis=0)
         x_pred_full_dd = jnp.concatenate(x_pred_list_dd, axis=0)

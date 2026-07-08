@@ -34,34 +34,34 @@ def train_and_evaluate(config, workdir: str):
     test_file  = "data/l96_forcing_test.h5"
 
     with h5py.File(train_file, 'r') as f_train:
-        u_pool_np = np.array(f_train['u'][:])       # Shape: (num_ics * M, 40)
-        F_values_np = np.array(f_train['F'][:])     # Shape: (num_ics,)
-        # Determine M (windows per trajectory) by dividing total samples by num_ics
-        M_pi_plus_1 = u_pool_np.shape[0] // F_values_np.shape[0]
-        # Repeat F for every boundary state of its trajectory
-        F_pool_np = np.repeat(F_values_np, M_pi_plus_1)
-        # Augment state to 41-D: [u_0, ..., u_39, F]
-        u_pool_np = np.concatenate([u_pool_np, F_pool_np[:, None]], axis=1)
+        u_pool_np = np.array(f_train['u'][:])
+        F_train = np.array(f_train['F'][:])  # Load F
+        
+        # Expand F to match pooled states (501 states per IC)
+        states_per_ic = u_pool_np.shape[0] // len(F_train)
+        F_expanded = np.repeat(F_train, states_per_ic)[:, None]
+        
+        # Concatenate to form a 41-D input
+        u_pool_np = np.concatenate([u_pool_np, F_expanded], axis=-1)
+        
     with h5py.File(test_file, 'r') as f_test:
         x_ref_eval_all = jnp.array(f_test['u'][:])
         t_star_all = jnp.array(f_test['t'][:])
-        F_test_all = jnp.array(f_test['F'][:])      # Shape: (num_ics,)
+        F_test = jnp.array(f_test['F'][:])   # Load test F
 
-    # ── Reference data (used only for eval logging during training) ────────
+    # ── Reference data ─────────────────────────────────────────────────────
     trajs_per_window = 100
     time_steps = 51
 
-    # L2 evaluation dataset setup (First window only)
     t_star = t_star_all[0:time_steps]
-    
-    # Extract the first 100 trajectories for the first time_steps (40 variables)
-    x_ref_eval = x_ref_eval_all[0:trajs_per_window, 0:time_steps, :]  # Shape: (100, 50, 40)
+    x_ref_eval = x_ref_eval_all[0:trajs_per_window, 0:time_steps, :]
     
     # Construct the branch network input [u(t0), F] for evaluation
-    u_init_eval = x_ref_eval_all[0:trajs_per_window, 0, :]            
-    F_init_eval = F_test_all[0:trajs_per_window, None]
-    # Augment evaluation input to 41-D
-    u_ref_eval = jnp.concatenate([u_init_eval, F_init_eval], axis=1)  # Shape: (100, 41)
+    u_init_eval = x_ref_eval_all[0:trajs_per_window, 0, :] 
+    F_eval = F_test[0:trajs_per_window, None]
+    
+    # Concatenate F for the evaluation branch input
+    u_ref_eval = jnp.concatenate([u_init_eval, F_eval], axis=-1)
 
     logging.info("L2 dataset imported:")
     logging.info(f"x_ref_eval: {x_ref_eval.shape}")
@@ -136,7 +136,7 @@ def train_and_evaluate(config, workdir: str):
 
         # ── Adaptive loss weighting (optional) ────────────────────────────
         if config.weighting.scheme in ("grad_norm", "ntk"):
-            if step % config.weighting.update_every_steps == 0 and step >= 500:#config.weighting.warmup_steps::
+            if step % config.weighting.update_every_steps == 0:#config.weighting.warmup_steps::
                 model.state = model.update_weights(model.state, batch)
 
         # ── Logging ────────────────────────────────────────────────────────
@@ -176,19 +176,22 @@ def train_and_evaluate_dd(config, workdir: str):
     wandb.init(project=config.wandb.project, name=config.wandb.name)
 
     # ── Load Dataset from HDF5 ───────────────────────────────────────────────
-    # Pooled dense windows produced by gen_data.py:
-    #   u : (num_ics * M, pts_pw + 1, N + 1)
-    #       - last column of the trailing axis is F, broadcast across every
-    #         timestep of a window
-    #       - remaining N columns are the dense Lorenz-96 trajectory for
-    #         that window (state at t = 0, ws, 2·dt, ... up to window_size)
     train_file = "data/l96_forcing_train_dd.h5"
 
     with h5py.File(train_file, 'r') as f_train:
-        train_data_np = np.array(f_train['u'][:])              # (num_windows, num_t, N+1)
+        train_data_np = np.array(f_train['u'][:])  
         window_size   = float(f_train.attrs.get('window_size', 0.25))
+        F_train       = np.array(f_train['F'][:])
 
-    train_data = jnp.array(train_data_np)
+    # Expand F to match the windows and timesteps (500 windows per IC)
+    windows_per_ic = train_data_np.shape[0] // len(F_train)
+    F_win = np.repeat(F_train, windows_per_ic)[:, None, None]
+    
+    # Broadcast F across all 51 timesteps per window
+    F_broadcast = np.broadcast_to(F_win, (train_data_np.shape[0], train_data_np.shape[1], 1))
+    
+    # Append F to form a 41-D state 
+    train_data = jnp.array(np.concatenate([train_data_np, F_broadcast], axis=-1))
 
     num_windows, num_t, state_dim = train_data.shape
     N = state_dim
@@ -198,28 +201,32 @@ def train_and_evaluate_dd(config, workdir: str):
     dt     = window_size / (num_t - 1)
     t_star = jnp.arange(num_t, dtype=jnp.float32) * dt
 
-    # ── Load Dataset from HDF5 ─────────────────────────────────────────────
+    # ── Load Test Dataset from HDF5 ─────────────────────────────────────────────
     test_file  = "data/l96_forcing_test.h5"
 
     with h5py.File(test_file, 'r') as f_test:
         x_ref_eval_all = jnp.array(f_test['u'][:])
+        F_test = jnp.array(f_test['F'][:])
         
     trajs_per_window = 100
-    time_steps = 51 # Note: DD uses 51 steps based on your t_star definition
+    time_steps = 51 
     num_windows_to_eval = 10 
 
     u_refs = []
     x_refs = []
-    
-    # Notice: we step by 50 to overlap boundary states (0-50, 50-100, etc.)
-    # because the DD dataset was shaped with 51 states per window.
     pts_pw = 50 
+    
+    F_eval = F_test[0:trajs_per_window, None]
     
     for w in range(num_windows_to_eval):
         start_idx = w * pts_pw
         end_idx = start_idx + time_steps
         
-        u_refs.append(x_ref_eval_all[0:trajs_per_window, start_idx, :])
+        # Append F to the reference branch input
+        u_init = x_ref_eval_all[0:trajs_per_window, start_idx, :]
+        u_init_F = jnp.concatenate([u_init, F_eval], axis=-1)
+        u_refs.append(u_init_F)
+        
         x_refs.append(x_ref_eval_all[0:trajs_per_window, start_idx:end_idx, :])
         
     u_ref_eval = jnp.concatenate(u_refs, axis=0) 
@@ -260,14 +267,14 @@ def train_and_evaluate_dd(config, workdir: str):
         idx_win = jax.random.randint(key_win, (batch_size_per_device,), 0, num_windows)
         idx_t   = jax.random.randint(key_t,   (batch_size_per_device,), 0, num_t)
 
-        # Branch input: [u(t0), F] for the sampled window
+        # Branch input: [u(t0), F] for the sampled window (41 Dimensions)
         batch_u = data[idx_win, 0, :]
 
         # Trunk query time
         batch_t = t_array[idx_t].reshape(batch_size_per_device, 1)
 
-        # Trunk target: state only at the sampled time (drop trailing F column)
-        batch_x = data[idx_win, idx_t, :]
+        # Trunk target: state only at the sampled time (Slice to 40 Dimensions)
+        batch_x = data[idx_win, idx_t, :40]
 
         return new_key, (batch_u, batch_t, batch_x)
 
