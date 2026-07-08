@@ -49,8 +49,8 @@ N           = 40
 num_ics     = 500  
 F_val       = 6.0    
 
-M           = 20       # Training windows per trajectory
-M_pi        = 15 * M   # PI training windows (10-fold increase)
+M           = 300      # Training windows per trajectory
+M_pi        = 1 * M    # PI training windows
 window_size = 0.25     # Window duration [time units]
 L           = 30       # Test trajectory length [in windows]
 
