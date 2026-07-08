@@ -2,12 +2,10 @@ import ml_collections
 import jax.numpy as jnp
 
 def get_config():
-    # Config 1 but init weights 10:1 and using causal training
     config = ml_collections.ConfigDict()
     config.mode = "train_dd"
 
     # Weights & Biases
-    # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "L96-F"
     wandb.name          = "test_dd_1" 
@@ -38,7 +36,7 @@ def get_config():
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 2_300 
+    optim.decay_steps = 2_500 
     optim.decay_schedule = "Exponential"
 
     # Training (Windowed Logic)
@@ -55,9 +53,9 @@ def get_config():
     weighting.update_every_steps = 500
 
     # Causal Weighting
-    weighting.use_causal = True
-    weighting.causal_tol = 0.01
-    weighting.num_chunks = 10
+    weighting.use_causal = False
+    weighting.causal_tol = 0.02
+    weighting.num_chunks = 8
 
     # KF settings
     config.kf = kf = ml_collections.ConfigDict()
@@ -99,6 +97,13 @@ def get_config():
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "test_1/ckpt/udon_model"
     saving.total_plots = 3
+
+    # Evaluation
+    config.eval = eval = ml_collections.ConfigDict()
+    eval.windows            = 60
+    eval.trajectory_windows = 160
+    eval.num_ics            = 500
+    eval.dt_integration     = 0.005
 
     # Input shape (t is the only input)
     config.input_dim = 42

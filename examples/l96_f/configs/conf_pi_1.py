@@ -6,7 +6,6 @@ def get_config():
     config.mode = "train"
 
     # Weights & Biases
-    # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "L96-F"
     wandb.name          = "test_pi_1" 
