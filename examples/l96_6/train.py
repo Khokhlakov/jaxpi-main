@@ -195,20 +195,37 @@ def train_and_evaluate_dd(config, workdir: str):
     dt     = window_size / (num_t - 1)
     t_star = jnp.arange(num_t, dtype=jnp.float32) * dt
 
-    logging.info(f"Loaded Supervised Data: {train_data.shape}")
 
-    # Parameters for validation
-    trajs_per_window = min(100, num_windows)
+    # ── Load Dataset from HDF5 ─────────────────────────────────────────────
+    test_file  = "data/l96_forcing_test.h5"
 
-    # Branch input: [u(t0), F] for each evaluation window
-    u_ref_eval = train_data[0:trajs_per_window, 0, :]                # (100, N+1)
-    # Trunk target: dense state-only trajectory across the window (F dropped)
-    x_ref_eval = train_data[0:trajs_per_window, :, :]
+    with h5py.File(test_file, 'r') as f_test:
+        x_ref_eval_all = jnp.array(f_test['u'][:])
+        
+    trajs_per_window = 100
+    time_steps = 51 # Note: DD uses 51 steps based on your t_star definition
+    num_windows_to_eval = 10 
+
+    u_refs = []
+    x_refs = []
+    
+    # Notice: we step by 50 to overlap boundary states (0-50, 50-100, etc.)
+    # because the DD dataset was shaped with 51 states per window.
+    pts_pw = 50 
+    
+    for w in range(num_windows_to_eval):
+        start_idx = w * pts_pw
+        end_idx = start_idx + time_steps
+        
+        u_refs.append(x_ref_eval_all[0:trajs_per_window, start_idx, :])
+        x_refs.append(x_ref_eval_all[0:trajs_per_window, start_idx:end_idx, :])
+        
+    u_ref_eval = jnp.concatenate(u_refs, axis=0) 
+    x_ref_eval = jnp.concatenate(x_refs, axis=0)
 
     logging.info(f"u_ref_eval (Branch Input): {u_ref_eval.shape}")
     logging.info(f"x_ref_eval: {x_ref_eval.shape}")
     logging.info(f"t_star: {t_star.shape}")
-
     # ── Model & Evaluator ──────────────────────────────────────────────────
     model     = models.L96UDON_DD(config, t_star)
     evaluator = models.L96UDONEvaluator_DD(config, model)
