@@ -46,14 +46,15 @@ import h5py
 # ── Configurable Parameters ────────────────────────────────────────────────────
 
 N           = 40       
-num_ics     = 300  
+num_ics     = 500  
 F_val       = 6.0    
 
-M           = 60       # Training windows per trajectory
+M           = 20       # Training windows per trajectory
+M_pi        = 10 * M   # PI training windows (10-fold increase)
 window_size = 0.25     # Window duration [time units]
 L           = 30       # Test trajectory length [in windows]
 
-burn_time   = 20.0     # 80 windows of 0.25
+burn_time   = 15.0     # 80 windows of 0.25
 dt          = 0.005    
 
 SEED        = 42       
@@ -98,13 +99,13 @@ F_values = np.full((num_ics,), F_val, dtype=np.float64)
 # ── Build Combined t_eval (single solver call per trajectory) ─────────────────
 #
 # Training: Dense integration for M windows (M * 50 + 1 points)
-t_train_abs = burn_time + np.arange(M * pts_pw + 1, dtype=np.float64) * dt
+t_train_abs = burn_time + np.arange(M_pi * pts_pw + 1, dtype=np.float64) * dt
 
 # Gap Phase: We skip exactly 1 window (0.25 units) to avoid train/test intersection.
 # The solver will integrate through this period without saving the states.
 
 # Test Phase: Starts at (M + 1) * ws
-t_test_abs = burn_time + (M + 1) * window_size + np.arange(L * pts_pw + 1, dtype=np.float64) * dt
+t_test_abs = burn_time + (M_pi + 1) * window_size + np.arange(L * pts_pw + 1, dtype=np.float64) * dt
 
 t_combined = np.concatenate([t_train_abs, t_test_abs])   
 
@@ -114,7 +115,7 @@ t_test_rel = np.linspace(0.0, L * window_size, num_test_pts, dtype=np.float32)
 # ── Pre-allocate Output Arrays ─────────────────────────────────────────────────
 
 # PI: 21 boundary states per trajectory (0, ws, 2ws, ..., M*ws)
-u_pi_bounds = np.zeros((num_ics, M + 1, N), dtype=np.float32)
+u_pi_bounds = np.zeros((num_ics, M_pi + 1, N), dtype=np.float32)
 
 # DD: 20 windows per trajectory, 51 states per window
 u_dd_windows = np.zeros((num_ics, M, pts_pw + 1, N), dtype=np.float32)
@@ -126,7 +127,7 @@ u_test = np.zeros((num_ics, num_test_pts, N), dtype=np.float32)
 # ── Generation Loop ────────────────────────────────────────────────────────────
 
 print("=" * 64)
-print("Lorenz-96 data generation")
+print("Lorenz-96 data generation  (variable forcing F as parameter)")
 print("=" * 64)
 print(f"  N = {N}  |  trajectories = {num_ics}  |  F = {F_val}")
 print(f"  Burn-in  : {burn_time} t.u.")
@@ -196,9 +197,8 @@ print(f"\nGeneration complete: {time.time() - t_gen_start:.2f} s total\n")
 # the network receives (state, F) in a single 41-D vector.
 #
 #   u_pooled : (num_ics·M, N+1)   — last column is F
-# --- 1. Flatten PI Dataset ---
-# F_col shape: (ics, M+1, 1)
-u_pooled_pi = u_pi_bounds.reshape(num_ics * (M + 1), N)          # Pool of individual states (40-D)
+# F_col shape: (ics, M_pi+1, 1)
+u_pooled_pi = u_pi_bounds.reshape(num_ics * (M_pi + 1), N)          # Pool of individual states (40-D)
 
 # --- 2. Flatten DD Dataset ---
 # F_col shape: (ics, M, 51, 1)
@@ -209,10 +209,10 @@ print(f"Saving PI training data → {train_file_pi}")
 with h5py.File(train_file_pi, 'w') as f:
     f.create_dataset('u', data=u_pooled_pi, dtype='float32', compression='gzip')
     f.create_dataset('F', data=F_values.astype('float32'))
-    f.create_dataset('t_boundaries', data=(np.arange(M + 1) * window_size).astype('float32'))
+    f.create_dataset('t_boundaries', data=(np.arange(M_pi + 1) * window_size).astype('float32'))
     f.attrs.update({
         'description': 'Flattened pool of individual L96 states for PI training. (40 dims)',
-        'num_samples': num_ics * (M + 1),
+        'num_samples': num_ics * (M_pi + 1),
         'window_size': window_size,
     })
 print(f"  u_pi : {u_pooled_pi.shape}")
@@ -237,6 +237,6 @@ with h5py.File(test_file, 'w') as f:
     f.create_dataset('t', data=t_test_rel)
     f.attrs.update({
         'description': 'Dense Lorenz-96 test trajectories.',
-        'start_time':  float((M + 1) * window_size), # Updated to reflect 1-window gap
+        'start_time':  float((M_pi + 1) * window_size), # Updated to reflect new offset
     })
 print(f"  u_test : {u_test.shape}")
