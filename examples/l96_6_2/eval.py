@@ -19,6 +19,34 @@ from scipy.io import loadmat
 import h5py
 
 
+def _plot_l2_per_timestep(
+    curves:    dict[str, tuple[np.ndarray, np.ndarray]], # label -> (time_axis, l2_array)
+    title:     str,
+    save_path: str,
+    colors:    dict[str, str] | None = None,
+) -> None:
+    """Plot average L2 error continuously across fine time stamps."""
+    default_colors = ["#2196F3", "#FF5722", "#4CAF50", "#9C27B0"]
+    fig, ax = plt.subplots(figsize=(8, 5))
+ 
+    for i, (label, (t_axis, l2_arr)) in enumerate(curves.items()):
+        color = (colors or {}).get(label, default_colors[i % len(default_colors)])
+        # Removed markers to prevent clustering on dense data
+        ax.plot(t_axis, l2_arr, linewidth=1.8, label=label, color=color)
+ 
+    ax.set_yscale("log")
+    ax.set_xlabel("Time (t)", fontsize=12)
+    ax.set_ylabel("Mean relative L2 error (log scale)", fontsize=12)
+    ax.set_title(title, fontsize=13)
+    ax.legend(fontsize=11)
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+ 
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    logging.info(f"Dense batch L2 plot saved to: {save_path}")
+
 def _load_l2_eval_pool(
     mat_path:      str,
     max_additions: int,
@@ -878,41 +906,57 @@ def _evaluate_batch_l2_openloop_long(
     )
  
     u0_batch = jnp.array(u_test[:, 0, :])   # (B, N) — true IC at t = 0
- 
-    # JIT-compiled, vmapped single-window predictor:  (B, N) → (B, N)
-    predict_one_window = jax.jit(
+
+    # 1. JIT-compiled, vmapped FULL-window predictor:  (B, N) → (B, T, N)
+    predict_full_window = jax.jit(
         jax.vmap(
-            lambda u: model.x_pred_fn(params, u, t_star_window)[-1],
+            lambda u: model.x_pred_fn(params, u, t_star_window),
             in_axes=0,
         )
     )
- 
-    l2_per_window: list[float] = []
+
+    x_pred_dense = []
     u_current = u0_batch
- 
+
+    # 2. Rollout the DeepONet densely
     for k in range(num_windows_long):
-        u_current = predict_one_window(u_current)                 # (B, N)
- 
-        # Ground truth at window boundary k+1, read straight from the file.
-        x_ref_k = jnp.array(u_test[:, (k + 1) * pts_pw, :])        # (B, N)
- 
-        numer   = jnp.linalg.norm(u_current - x_ref_k, axis=1)     # (B,)
-        denom   = jnp.linalg.norm(x_ref_k,              axis=1)   # (B,)
-        l2_mean = float(jnp.mean(numer / (denom + 1e-12)))
-        l2_per_window.append(l2_mean)
- 
-        logging.info(f"  [long] Window {k+1:>3d} | mean L2: {l2_mean:.3e}")
- 
+        x_pred_window = predict_full_window(u_current)                 
+        
+        if k == 0:
+            x_pred_dense.append(x_pred_window)
+        else:
+            x_pred_dense.append(x_pred_window[:, 1:, :]) # skip duplicate boundary
+            
+        u_current = x_pred_window[:, -1, :]
+
+    # Shape: (B, total_steps, N)
+    x_pred_dense = jnp.concatenate(x_pred_dense, axis=1)
+
+    # 3. Dense ground truth is directly available from the test file.
+    # We slice u_test to perfectly match the concatenated prediction length.
+    total_steps = x_pred_dense.shape[1]
+    x_ref_dense = jnp.array(u_test[:, :total_steps, :])
+    t_eval_long = t_test[:total_steps]
+
+    # 4. Compute L2 error densely across the batch
+    numer = jnp.linalg.norm(x_pred_dense - x_ref_dense, axis=2) # (B, total_steps)
+    denom = jnp.linalg.norm(x_ref_dense, axis=2)                # (B, total_steps)
+    l2_dense = jnp.mean(numer / (denom + 1e-12), axis=0)        # (total_steps,)
+    
+    logging.info(f"  [long] Mean L2 at final timestep: {l2_dense[-1]:.3e}")
+
+    # 5. Plot using the dense timestep plotting function
     save_dir  = os.path.join(workdir, "figures", config.wandb.name)
-    save_path = os.path.join(save_dir, "batch_l2_per_window_openloop_long.pdf")
-    _plot_l2_per_window(
-        curves    = {curve_label: np.array(l2_per_window)},
-        dt        = dt_window,
-        title     = f"Open-loop (long rollout): batch-average L2 per window  (B={B})",
+    save_path = os.path.join(save_dir, "batch_l2_per_timestep_openloop_long.pdf")
+    
+    _plot_l2_per_timestep(
+        curves    = {curve_label: (t_eval_long, l2_dense)},
+        title     = f"Open-loop (long rollout): batch-average L2 per timestep  (B={B})",
         save_path = save_path,
         colors    = {curve_label: "#2196F3"},
     )
-    return np.array(l2_per_window)
+    
+    return np.array(l2_dense)
 
 
 
