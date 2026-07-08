@@ -15,7 +15,6 @@ jax.config.update("jax_default_matmul_precision", "highest")
 
 import examples.l96_6_larger_data.train as train
 import examples.l96_6_larger_data.eval as eval
-import examples.l96_6_larger_data.eval_pi_vs_dd as eval_pi_vs_dd
 
 
 FLAGS = flags.FLAGS
@@ -36,9 +35,6 @@ def main(argv):
 
     elif FLAGS.config.mode == "eval":
         eval.evaluate(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_long":
-        eval.evaluate_long(FLAGS.config, FLAGS.workdir)
 
     elif FLAGS.config.mode == "eval_ekf":
         eval.evaluate_with_ekf(FLAGS.config, FLAGS.workdir)
