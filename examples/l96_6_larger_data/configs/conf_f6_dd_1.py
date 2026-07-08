@@ -9,7 +9,7 @@ def get_config():
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project       = "PI-UDON-L96-F6"
+    wandb.project       = "PI-UDON-L96-n40-f6-ics-2"
     wandb.name          = "test_F6_dd_1"
     wandb.ckpt_name     = "test_F6_dd_1" 
     wandb.tag = None
