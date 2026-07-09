@@ -260,8 +260,8 @@ def evaluate(
     dt_window = float(config.get("dt_window", 0.25))
 
     # Fetch configuration limits with defaults
-    trajectory_windows = config.eval.get("trajectory_windows", 160)
-    batch_windows      = config.eval.get("windows", 320)
+    trajectory_windows = config.eval.get("trajectory_windows", 200)
+    batch_windows      = config.eval.get("windows", 200)
     num_ics_eval       = config.eval.get("num_ics", u_test.shape[0])
     dt_integration     = config.eval.get("dt_integration", 0.005)
  
@@ -701,8 +701,8 @@ def evaluate_dd_vs_pi(
  
     dt_window = float(config.get("dt_window", 0.25))
 
-    trajectory_windows = config.eval.get("trajectory_windows", 160)
-    batch_windows      = config.eval.get("windows", 320)
+    trajectory_windows = config.eval.get("trajectory_windows", 200)
+    batch_windows      = config.eval.get("windows", 200)
     num_ics_eval       = config.eval.get("num_ics", u_test.shape[0])
     dt_integration     = config.eval.get("dt_integration", 0.005)
  
@@ -1563,8 +1563,8 @@ def evaluate_enkf_dd_vs_pi(
 
     dt_window = float(config.get("dt_window", 0.25))
 
-    trajectory_windows = config.eval.get("trajectory_windows", 160)
-    batch_windows      = config.eval.get("windows", 320)
+    trajectory_windows = config.eval.get("trajectory_windows", 200)
+    batch_windows      = config.eval.get("windows", 200)
     num_ics_eval       = config.eval.get("num_ics", u_test.shape[0])
     dt_integration     = config.eval.get("dt_integration", 0.005)
     enkf_batch_size    = config.ekf.get("batch_l2_size", 200)

@@ -103,6 +103,13 @@ def get_config():
     saving.restore_checkpoint_path = "test_1/ckpt/udon_model"
     saving.total_plots = 3
 
+    # Evaluation
+    config.eval = eval = ml_collections.ConfigDict()
+    eval.windows            = 200
+    eval.trajectory_windows = 200
+    eval.num_ics            = 500
+    eval.dt_integration     = 0.005
+
     # Input shape (t is the only input)
     config.input_dim = 41
 
