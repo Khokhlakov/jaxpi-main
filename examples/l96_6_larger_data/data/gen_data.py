@@ -52,7 +52,7 @@ F_val       = 6.0
 M           = 300      # Training windows per trajectory
 M_pi        = 1 * M    # PI training windows
 window_size = 0.25     # Window duration [time units]
-L           = 30       # Test trajectory length [in windows]
+L           = 320      # Test trajectory length [in windows]
 
 burn_time   = 15.0     # 80 windows of 0.25
 dt          = 0.005    
