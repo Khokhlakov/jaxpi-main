@@ -9,8 +9,8 @@ def get_config():
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "PI-UDON-L96-n40-f6-ics-2"
-    wandb.name          = "test_larger_1" 
-    wandb.ckpt_name     = "test_larger_1" 
+    wandb.name          = "test_larger_1_causal" 
+    wandb.ckpt_name     = "test_larger_1_causal" 
     wandb.tag = None
 
     # Arch 
@@ -60,9 +60,9 @@ def get_config():
     weighting.update_every_steps = 500
 
     # Causal Weighting
-    weighting.use_causal = False
-    weighting.causal_tol = 0.02
-    weighting.num_chunks = 8
+    weighting.use_causal = True
+    weighting.causal_tol = 0.1
+    weighting.num_chunks = 10
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
