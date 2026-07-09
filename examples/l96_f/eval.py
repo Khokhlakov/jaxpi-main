@@ -821,7 +821,10 @@ def evaluate_dd_vs_pi(
         model_pi, params_pi, 
         model_dd, params_dd, 
         t_star_window,
-        u_test[:num_ics_eval], t_test, dt_window, batch_windows,
+        u_test[:num_ics_eval], 
+        t_test, 
+        F_test,
+        dt_window, batch_windows,
         config, workdir,
     )
 
