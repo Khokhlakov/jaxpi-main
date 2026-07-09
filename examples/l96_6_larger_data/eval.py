@@ -1235,26 +1235,26 @@ def _evaluate_batch_enkf_dd_vs_pi(
     m = len(obs_indices)
 
     # ── Accumulators (window-boundary quantities) ────────────────────────
-    l2_enkf_pi_sum   = np.zeros(batch_windows)
-    l2_enkf_dd_sum   = np.zeros(batch_windows)
-    rmse_enkf_pi_sum = np.zeros(batch_windows)
-    rmse_enkf_dd_sum = np.zeros(batch_windows)
-    spread_pi_sum    = np.zeros(batch_windows)
-    spread_dd_sum    = np.zeros(batch_windows)
+    l2_enkf_pi_sum   = jnp.zeros(batch_windows)
+    l2_enkf_dd_sum   = jnp.zeros(batch_windows)
+    rmse_enkf_pi_sum = jnp.zeros(batch_windows)
+    rmse_enkf_dd_sum = jnp.zeros(batch_windows)
+    spread_pi_sum    = jnp.zeros(batch_windows)
+    spread_dd_sum    = jnp.zeros(batch_windows)
 
     # ── Accumulators (observation-time quantities) ───────────────────────
-    erf_pi_sum = np.zeros(T_obs); erf_pi_sq_sum = np.zeros(T_obs)
-    erf_dd_sum = np.zeros(T_obs); erf_dd_sq_sum = np.zeros(T_obs)
+    erf_pi_sum = jnp.zeros(T_obs); erf_pi_sq_sum = jnp.zeros(T_obs)
+    erf_dd_sum = jnp.zeros(T_obs); erf_dd_sq_sum = jnp.zeros(T_obs)
 
-    prior_rmse_pi_sum = np.zeros(T_obs); prior_rmse_pi_sq_sum = np.zeros(T_obs)
-    post_rmse_pi_sum  = np.zeros(T_obs); post_rmse_pi_sq_sum  = np.zeros(T_obs)
-    prior_rmse_dd_sum = np.zeros(T_obs); prior_rmse_dd_sq_sum = np.zeros(T_obs)
-    post_rmse_dd_sum  = np.zeros(T_obs); post_rmse_dd_sq_sum  = np.zeros(T_obs)
+    prior_rmse_pi_sum = jnp.zeros(T_obs); prior_rmse_pi_sq_sum = jnp.zeros(T_obs)
+    post_rmse_pi_sum  = jnp.zeros(T_obs); post_rmse_pi_sq_sum  = jnp.zeros(T_obs)
+    prior_rmse_dd_sum = jnp.zeros(T_obs); prior_rmse_dd_sq_sum = jnp.zeros(T_obs)
+    post_rmse_dd_sum  = jnp.zeros(T_obs); post_rmse_dd_sq_sum  = jnp.zeros(T_obs)
 
     # ── Accumulators (dense fine-timestep L2, the "denser" replacement ───
     #    for the old per-window plot) ─────────────────────────────────────
-    l2_enkf_pi_dense_sum = np.zeros(total_fine_steps_batch)
-    l2_enkf_dd_dense_sum = np.zeros(total_fine_steps_batch)
+    l2_enkf_pi_dense_sum = jnp.zeros(total_fine_steps_batch)
+    l2_enkf_dd_dense_sum = jnp.zeros(total_fine_steps_batch)
 
     for ic in range(B):
         key    = jax.random.PRNGKey(ic + 77777)
@@ -1312,10 +1312,10 @@ def _evaluate_batch_enkf_dd_vs_pi(
         post_means_pi = x_means_pi[obs_step_indices_batch]
         post_means_dd = x_means_dd[obs_step_indices_batch]
 
-        prior_rmse_pi = np.sqrt(np.mean((np.array(prior_means_pi) - x_true_at_obs) ** 2, axis=1))
-        post_rmse_pi  = np.sqrt(np.mean((np.array(post_means_pi)  - x_true_at_obs) ** 2, axis=1))
-        prior_rmse_dd = np.sqrt(np.mean((np.array(prior_means_dd) - x_true_at_obs) ** 2, axis=1))
-        post_rmse_dd  = np.sqrt(np.mean((np.array(post_means_dd)  - x_true_at_obs) ** 2, axis=1))
+        prior_rmse_pi = jnp.sqrt(jnp.mean((jnp.array(prior_means_pi) - x_true_at_obs) ** 2, axis=1))
+        post_rmse_pi  = jnp.sqrt(jnp.mean((jnp.array(post_means_pi)  - x_true_at_obs) ** 2, axis=1))
+        prior_rmse_dd = jnp.sqrt(jnp.mean((jnp.array(prior_means_dd) - x_true_at_obs) ** 2, axis=1))
+        post_rmse_dd  = jnp.sqrt(jnp.mean((jnp.array(post_means_dd)  - x_true_at_obs) ** 2, axis=1))
 
         erf_pi = prior_rmse_pi / (post_rmse_pi + 1e-12)
         erf_dd = prior_rmse_dd / (post_rmse_dd + 1e-12)
@@ -1330,24 +1330,24 @@ def _evaluate_batch_enkf_dd_vs_pi(
 
         # ── Window-boundary L2 / RMSE / spread ────────────────────────────
         x_true_at_windows = x_true_fine[window_step_indices + 1]   # (batch_windows, N)
-        x_hat_pi_windows  = np.array(x_means_pi[window_step_indices])
-        x_hat_dd_windows  = np.array(x_means_dd[window_step_indices])
+        x_hat_pi_windows  = jnp.array(x_means_pi[window_step_indices])
+        x_hat_dd_windows  = jnp.array(x_means_dd[window_step_indices])
 
-        den = np.linalg.norm(x_true_at_windows, axis=1) + 1e-12
-        l2_enkf_pi_sum += np.linalg.norm(x_hat_pi_windows - x_true_at_windows, axis=1) / den
-        l2_enkf_dd_sum += np.linalg.norm(x_hat_dd_windows - x_true_at_windows, axis=1) / den
+        den = jnp.linalg.norm(x_true_at_windows, axis=1) + 1e-12
+        l2_enkf_pi_sum += jnp.linalg.norm(x_hat_pi_windows - x_true_at_windows, axis=1) / den
+        l2_enkf_dd_sum += jnp.linalg.norm(x_hat_dd_windows - x_true_at_windows, axis=1) / den
 
-        rmse_enkf_pi_sum += np.sqrt(np.mean((x_hat_pi_windows - x_true_at_windows) ** 2, axis=1))
-        rmse_enkf_dd_sum += np.sqrt(np.mean((x_hat_dd_windows - x_true_at_windows) ** 2, axis=1))
+        rmse_enkf_pi_sum += jnp.sqrt(jnp.mean((x_hat_pi_windows - x_true_at_windows) ** 2, axis=1))
+        rmse_enkf_dd_sum += jnp.sqrt(jnp.mean((x_hat_dd_windows - x_true_at_windows) ** 2, axis=1))
 
-        spread_pi_sum += np.sqrt(np.mean(np.array(x_spreads_pi[window_step_indices]) ** 2, axis=1))
-        spread_dd_sum += np.sqrt(np.mean(np.array(x_spreads_dd[window_step_indices]) ** 2, axis=1))
+        spread_pi_sum += jnp.sqrt(jnp.mean(jnp.array(x_spreads_pi[window_step_indices]) ** 2, axis=1))
+        spread_dd_sum += jnp.sqrt(jnp.mean(jnp.array(x_spreads_dd[window_step_indices]) ** 2, axis=1))
 
         # ── Dense per-timestamp L2 (denser than window-level) ─────────────
         x_true_fine_tail = x_true_fine[1:]   # (total_fine_steps_batch, N)
-        den_dense = np.linalg.norm(x_true_fine_tail, axis=1) + 1e-12
-        l2_enkf_pi_dense_sum += np.linalg.norm(np.array(x_means_pi) - x_true_fine_tail, axis=1) / den_dense
-        l2_enkf_dd_dense_sum += np.linalg.norm(np.array(x_means_dd) - x_true_fine_tail, axis=1) / den_dense
+        den_dense = jnp.linalg.norm(x_true_fine_tail, axis=1) + 1e-12
+        l2_enkf_pi_dense_sum += jnp.linalg.norm(jnp.array(x_means_pi) - x_true_fine_tail, axis=1) / den_dense
+        l2_enkf_dd_dense_sum += jnp.linalg.norm(jnp.array(x_means_dd) - x_true_fine_tail, axis=1) / den_dense
 
     # ── Open-loop dense rollouts, vectorised over B (same ICs as above) ───
     u0_batch_j = jnp.array(u0_batch)
@@ -1384,31 +1384,31 @@ def _evaluate_batch_enkf_dd_vs_pi(
     l2_ol_dd = np.array(jnp.mean(jnp.linalg.norm(x_pred_dense_dd - x_ref_dense_ol, axis=2) / denom_ol, axis=0))
 
     # ── Batch averages ─────────────────────────────────────────────────────
-    l2_enkf_pi   = l2_enkf_pi_sum   / B
-    l2_enkf_dd   = l2_enkf_dd_sum   / B
-    rmse_enkf_pi = rmse_enkf_pi_sum / B
-    rmse_enkf_dd = rmse_enkf_dd_sum / B
-    spread_pi    = spread_pi_sum    / B
-    spread_dd    = spread_dd_sum    / B
+    l2_enkf_pi   = np.array(l2_enkf_pi_sum)   / B
+    l2_enkf_dd   = np.array(l2_enkf_dd_sum)   / B
+    rmse_enkf_pi = np.array(rmse_enkf_pi_sum) / B
+    rmse_enkf_dd = np.array(rmse_enkf_dd_sum) / B
+    spread_pi    = np.array(spread_pi_sum)    / B
+    spread_dd    = np.array(spread_dd_sum)    / B
 
     erf_pi_mean = erf_pi_sum / B
     erf_pi_std  = np.sqrt(np.maximum(erf_pi_sq_sum / B - erf_pi_mean ** 2, 0.0))
     erf_dd_mean = erf_dd_sum / B
     erf_dd_std  = np.sqrt(np.maximum(erf_dd_sq_sum / B - erf_dd_mean ** 2, 0.0))
 
-    prior_rmse_pi_mean = prior_rmse_pi_sum / B
+    prior_rmse_pi_mean = np.array(prior_rmse_pi_sum) / B
     prior_rmse_pi_std  = np.sqrt(np.maximum(prior_rmse_pi_sq_sum / B - prior_rmse_pi_mean ** 2, 0.0))
-    post_rmse_pi_mean  = post_rmse_pi_sum / B
+    post_rmse_pi_mean  = np.array(post_rmse_pi_sum) / B
     post_rmse_pi_std   = np.sqrt(np.maximum(post_rmse_pi_sq_sum / B - post_rmse_pi_mean ** 2, 0.0))
 
-    prior_rmse_dd_mean = prior_rmse_dd_sum / B
+    prior_rmse_dd_mean = np.array(prior_rmse_dd_sum) / B
     prior_rmse_dd_std  = np.sqrt(np.maximum(prior_rmse_dd_sq_sum / B - prior_rmse_dd_mean ** 2, 0.0))
-    post_rmse_dd_mean  = post_rmse_dd_sum / B
+    post_rmse_dd_mean  = np.array(post_rmse_dd_sum) / B
     post_rmse_dd_std   = np.sqrt(np.maximum(post_rmse_dd_sq_sum / B - post_rmse_dd_mean ** 2, 0.0))
 
     t_dense_fine     = np.arange(1, total_fine_steps_batch + 1) * dt_fine
-    l2_enkf_pi_dense = l2_enkf_pi_dense_sum / B
-    l2_enkf_dd_dense = l2_enkf_dd_dense_sum / B
+    l2_enkf_pi_dense = np.array(l2_enkf_pi_dense_sum) / B
+    l2_enkf_dd_dense = np.array(l2_enkf_dd_dense_sum) / B
 
     logging.info(
         f"  [batch] Final-timestep mean L2 -> "
@@ -1955,26 +1955,34 @@ def _evaluate_batch_enkf_dd_vs_pi_vs_num(
     window_step_indices = np.array([round((k + 1) * dt_window / dt_fine) - 1 for k in range(batch_windows)])
 
     # Core accumulators
-    l2_pi_sum = np.zeros(batch_windows); l2_dd_sum = np.zeros(batch_windows); l2_num_sum = np.zeros(batch_windows)
-    rmse_pi_sum = np.zeros(batch_windows); rmse_dd_sum = np.zeros(batch_windows); rmse_num_sum = np.zeros(batch_windows)
-    spread_pi_sum = np.zeros(batch_windows); spread_dd_sum = np.zeros(batch_windows); spread_num_sum = np.zeros(batch_windows)
+    l2_pi_sum     = jnp.zeros(batch_windows); l2_dd_sum     = jnp.zeros(batch_windows); l2_num_sum     = jnp.zeros(batch_windows)
+    rmse_pi_sum   = jnp.zeros(batch_windows); rmse_dd_sum   = jnp.zeros(batch_windows); rmse_num_sum   = jnp.zeros(batch_windows)
+    spread_pi_sum = jnp.zeros(batch_windows); spread_dd_sum = jnp.zeros(batch_windows); spread_num_sum = jnp.zeros(batch_windows)
     
-    erf_pi_sum = np.zeros(T_obs); erf_dd_sum = np.zeros(T_obs); erf_num_sum = np.zeros(T_obs)
-    erf_pi_sq = np.zeros(T_obs); erf_dd_sq = np.zeros(T_obs); erf_num_sq = np.zeros(T_obs)
+    erf_pi_sum = jnp.zeros(T_obs); erf_dd_sum = jnp.zeros(T_obs); erf_num_sum = jnp.zeros(T_obs)
+    erf_pi_sq  = jnp.zeros(T_obs); erf_dd_sq  = jnp.zeros(T_obs); erf_num_sq  = jnp.zeros(T_obs)
 
     # Dense time-step accumulators (For the dense plot output requested)
-    l2_dense_pi_sum = np.zeros(total_fine_steps_batch)
-    l2_dense_dd_sum = np.zeros(total_fine_steps_batch)
-    l2_dense_num_sum = np.zeros(total_fine_steps_batch)
+    l2_dense_pi_sum  = jnp.zeros(total_fine_steps_batch)
+    l2_dense_dd_sum  = jnp.zeros(total_fine_steps_batch)
+    l2_dense_num_sum = jnp.zeros(total_fine_steps_batch)
 
     # RMSE accums
-    prior_rmse_pi_sum = np.zeros(T_obs); post_rmse_pi_sum = np.zeros(T_obs)
-    prior_rmse_dd_sum = np.zeros(T_obs); post_rmse_dd_sum = np.zeros(T_obs)
-    prior_rmse_num_sum = np.zeros(T_obs); post_rmse_num_sum = np.zeros(T_obs)
+    prior_rmse_pi_sum  = jnp.zeros(T_obs); post_rmse_pi_sum  = jnp.zeros(T_obs)
+    prior_rmse_dd_sum  = jnp.zeros(T_obs); post_rmse_dd_sum  = jnp.zeros(T_obs)
+    prior_rmse_num_sum = jnp.zeros(T_obs); post_rmse_num_sum = jnp.zeros(T_obs)
     
-    prior_pi_sq = np.zeros(T_obs); post_pi_sq = np.zeros(T_obs)
-    prior_dd_sq = np.zeros(T_obs); post_dd_sq = np.zeros(T_obs)
-    prior_num_sq = np.zeros(T_obs); post_num_sq = np.zeros(T_obs)
+    prior_pi_sq  = jnp.zeros(T_obs); post_pi_sq  = jnp.zeros(T_obs)
+    prior_dd_sq  = jnp.zeros(T_obs); post_dd_sq  = jnp.zeros(T_obs)
+    prior_num_sq = jnp.zeros(T_obs); post_num_sq = jnp.zeros(T_obs)
+
+    F_fixed = jnp.array(F_batch[0]) 
+    
+    def num_prop(u, t_query):
+        steps = jnp.round(t_query / dt_integration).astype(jnp.int32)
+        return jax.lax.fori_loop(0, steps, lambda i, val: rk4_step_jax(val, F_fixed, dt_integration), u)
+        
+    predict_fn_num, update_fn_num = make_enkf(num_prop, N, N_ens)
 
     m = len(obs_indices)
 
@@ -2013,20 +2021,14 @@ def _evaluate_batch_enkf_dd_vs_pi_vs_num(
         # ── 2. DD EnKF ──
         x_means_dd, x_spreads_dd, prior_dd = run_enkf_smoother(
             predict_fn_dd, update_fn_dd, ensemble0, y_obs_seq, obs_step_indices_batch, H_seq, Q_fine, R, key, total_fine_steps_batch, dt_fine, dt_window)
-        
         # ── 3. Numerical EnKF (Dynamically compiled for F_i) ──
-        def num_prop(u, t_query):
-            steps = jnp.round(t_query / dt_integration).astype(jnp.int32)
-            return jax.lax.fori_loop(0, steps, lambda i, val: rk4_step_jax(val, F_i, dt_integration), u)
-        
-        predict_fn_num, update_fn_num = make_enkf(num_prop, N, N_ens)
         x_means_num, x_spreads_num, prior_num = run_enkf_smoother(
             predict_fn_num, update_fn_num, ensemble0, y_obs_seq, obs_step_indices_batch, H_seq, Q_fine, R, key, total_fine_steps_batch, dt_fine, dt_window)
 
         # ERF Accums
-        p_rmse_pi = np.sqrt(np.mean((np.array(prior_pi) - x_true_at_obs) ** 2, axis=1)); po_rmse_pi = np.sqrt(np.mean((np.array(x_means_pi[obs_step_indices_batch]) - x_true_at_obs) ** 2, axis=1))
-        p_rmse_dd = np.sqrt(np.mean((np.array(prior_dd) - x_true_at_obs) ** 2, axis=1)); po_rmse_dd = np.sqrt(np.mean((np.array(x_means_dd[obs_step_indices_batch]) - x_true_at_obs) ** 2, axis=1))
-        p_rmse_num= np.sqrt(np.mean((np.array(prior_num)- x_true_at_obs) ** 2, axis=1)); po_rmse_num= np.sqrt(np.mean((np.array(x_means_num[obs_step_indices_batch])- x_true_at_obs) ** 2, axis=1))
+        p_rmse_pi = jnp.sqrt(jnp.mean((jnp.array(prior_pi) - x_true_at_obs) ** 2, axis=1)); po_rmse_pi = jnp.sqrt(jnp.mean((jnp.array(x_means_pi[obs_step_indices_batch]) - x_true_at_obs) ** 2, axis=1))
+        p_rmse_dd = jnp.sqrt(jnp.mean((jnp.array(prior_dd) - x_true_at_obs) ** 2, axis=1)); po_rmse_dd = jnp.sqrt(jnp.mean((jnp.array(x_means_dd[obs_step_indices_batch]) - x_true_at_obs) ** 2, axis=1))
+        p_rmse_num= jnp.sqrt(jnp.mean((jnp.array(prior_num)- x_true_at_obs) ** 2, axis=1)); po_rmse_num= jnp.sqrt(jnp.mean((jnp.array(x_means_num[obs_step_indices_batch])- x_true_at_obs) ** 2, axis=1))
         
         e_pi = p_rmse_pi / (po_rmse_pi + 1e-12); erf_pi_sum += e_pi; erf_pi_sq += e_pi**2
         e_dd = p_rmse_dd / (po_rmse_dd + 1e-12); erf_dd_sum += e_dd; erf_dd_sq += e_dd**2
@@ -2034,25 +2036,25 @@ def _evaluate_batch_enkf_dd_vs_pi_vs_num(
 
         # L2 / Calibration accums
         x_tw = x_true_fine[window_step_indices + 1]
-        den = np.linalg.norm(x_tw, axis=1) + 1e-12
-        l2_pi_sum += np.linalg.norm(np.array(x_means_pi[window_step_indices]) - x_tw, axis=1) / den
-        l2_dd_sum += np.linalg.norm(np.array(x_means_dd[window_step_indices]) - x_tw, axis=1) / den
-        l2_num_sum+= np.linalg.norm(np.array(x_means_num[window_step_indices])- x_tw, axis=1) / den
+        den = jnp.linalg.norm(x_tw, axis=1) + 1e-12
+        l2_pi_sum += jnp.linalg.norm(jnp.array(x_means_pi[window_step_indices]) - x_tw, axis=1) / den
+        l2_dd_sum += jnp.linalg.norm(jnp.array(x_means_dd[window_step_indices]) - x_tw, axis=1) / den
+        l2_num_sum+= jnp.linalg.norm(jnp.array(x_means_num[window_step_indices])- x_tw, axis=1) / den
         
-        rmse_pi_sum += np.sqrt(np.mean((np.array(x_means_pi[window_step_indices]) - x_tw) ** 2, axis=1))
-        rmse_dd_sum += np.sqrt(np.mean((np.array(x_means_dd[window_step_indices]) - x_tw) ** 2, axis=1))
-        rmse_num_sum+= np.sqrt(np.mean((np.array(x_means_num[window_step_indices])- x_tw) ** 2, axis=1))
+        rmse_pi_sum += jnp.sqrt(jnp.mean((jnp.array(x_means_pi[window_step_indices]) - x_tw) ** 2, axis=1))
+        rmse_dd_sum += jnp.sqrt(jnp.mean((jnp.array(x_means_dd[window_step_indices]) - x_tw) ** 2, axis=1))
+        rmse_num_sum+= jnp.sqrt(jnp.mean((jnp.array(x_means_num[window_step_indices])- x_tw) ** 2, axis=1))
 
-        spread_pi_sum += np.sqrt(np.mean(np.array(x_spreads_pi[window_step_indices]) ** 2, axis=1))
-        spread_dd_sum += np.sqrt(np.mean(np.array(x_spreads_dd[window_step_indices]) ** 2, axis=1))
-        spread_num_sum+= np.sqrt(np.mean(np.array(x_spreads_num[window_step_indices])** 2, axis=1))
+        spread_pi_sum += jnp.sqrt(jnp.mean(jnp.array(x_spreads_pi[window_step_indices]) ** 2, axis=1))
+        spread_dd_sum += jnp.sqrt(jnp.mean(jnp.array(x_spreads_dd[window_step_indices]) ** 2, axis=1))
+        spread_num_sum+= jnp.sqrt(jnp.mean(jnp.array(x_spreads_num[window_step_indices])** 2, axis=1))
         
         # Dense per-timestamp L2 accums
         x_true_fine_tail = x_true_fine[1:]
-        den_dense = np.linalg.norm(x_true_fine_tail, axis=1) + 1e-12
-        l2_dense_pi_sum += np.linalg.norm(np.array(x_means_pi) - x_true_fine_tail, axis=1) / den_dense
-        l2_dense_dd_sum += np.linalg.norm(np.array(x_means_dd) - x_true_fine_tail, axis=1) / den_dense
-        l2_dense_num_sum+= np.linalg.norm(np.array(x_means_num)- x_true_fine_tail, axis=1) / den_dense
+        den_dense = jnp.linalg.norm(x_true_fine_tail, axis=1) + 1e-12
+        l2_dense_pi_sum += jnp.linalg.norm(jnp.array(x_means_pi) - x_true_fine_tail, axis=1) / den_dense
+        l2_dense_dd_sum += jnp.linalg.norm(jnp.array(x_means_dd) - x_true_fine_tail, axis=1) / den_dense
+        l2_dense_num_sum+= jnp.linalg.norm(jnp.array(x_means_num)- x_true_fine_tail, axis=1) / den_dense
 
 
         # RMSE 
@@ -2099,9 +2101,12 @@ def _evaluate_batch_enkf_dd_vs_pi_vs_num(
     t_dense_fine = np.arange(1, total_fine_steps_batch + 1) * dt_fine
     
     # Means calculation
-    erf_pi_mean = erf_pi_sum/B;   erf_pi_std = np.sqrt(np.maximum(erf_pi_sq/B - erf_pi_mean**2, 0.0))
-    erf_dd_mean = erf_dd_sum/B;   erf_dd_std = np.sqrt(np.maximum(erf_dd_sq/B - erf_dd_mean**2, 0.0))
-    erf_num_mean= erf_num_sum/B; erf_num_std = np.sqrt(np.maximum(erf_num_sq/B- erf_num_mean**2, 0.0))
+    erf_pi_mean = np.array(erf_pi_sum) / B
+    erf_pi_std  = np.sqrt(np.maximum(erf_pi_sq/B - erf_pi_mean**2, 0.0))
+    erf_dd_mean = np.array(erf_dd_sum) / B
+    erf_dd_std  = np.sqrt(np.maximum(erf_dd_sq/B - erf_dd_mean**2, 0.0))
+    erf_num_mean= np.array(erf_num_sum) / B
+    erf_num_std = np.sqrt(np.maximum(erf_num_sq/B- erf_num_mean**2, 0.0))
     
     save_dir = os.path.join(workdir, "figures", "comparison_3way")
     
@@ -2123,7 +2128,14 @@ def _evaluate_batch_enkf_dd_vs_pi_vs_num(
 
     # ── Plot 2: ERF ──
     _plot_erf_compare_3way(
-        obs_times_batch, erf_pi_mean, erf_pi_std, erf_dd_mean, erf_dd_std, erf_num_mean, erf_num_std, B,
+        obs_times_batch, 
+        erf_pi_mean, 
+        erf_pi_std, 
+        erf_dd_mean, 
+        erf_dd_std, 
+        erf_num_mean, 
+        erf_num_std, 
+        B,
         title=f"EnKF ERF (PI vs DD vs Num)\n(B={B}, obs_n={obs_every_n}, σ_obs={sigma_obs})",
         save_path=os.path.join(save_dir, "batch_erf_enkf_compare_3way.pdf")
     )
@@ -2131,7 +2143,12 @@ def _evaluate_batch_enkf_dd_vs_pi_vs_num(
     # ── Plot 3: Calibration ──
     _plot_calibration_compare_3way(
         np.arange(1, batch_windows + 1), dt_window,
-        spread_pi_sum/B, rmse_pi_sum/B, spread_dd_sum/B, rmse_dd_sum/B, spread_num_sum/B, rmse_num_sum/B,
+        np.array(spread_pi_sum) / B, 
+        np.array(rmse_pi_sum) / B, 
+        np.array(spread_dd_sum) / B,
+        np.array(rmse_dd_sum) / B,
+        np.array(spread_num_sum) / B,
+        np.array(rmse_num_sum) / B,
         title=f"Calibration (PI vs DD vs Num, B={B}, N_ens={N_ens})",
         save_path=os.path.join(save_dir, "batch_calibration_enkf_compare_3way.pdf")
     )
@@ -2139,12 +2156,18 @@ def _evaluate_batch_enkf_dd_vs_pi_vs_num(
     # ── Plot 4: RMSE Comparison ──
     _plot_rmse_comparison_3way(
         obs_times_batch,
-        prior_rmse_pi_sum/B, np.sqrt(np.maximum(prior_pi_sq/B - (prior_rmse_pi_sum/B)**2, 0)),
-        post_rmse_pi_sum/B, np.sqrt(np.maximum(post_pi_sq/B - (post_rmse_pi_sum/B)**2, 0)),
-        prior_rmse_dd_sum/B, np.sqrt(np.maximum(prior_dd_sq/B - (prior_rmse_dd_sum/B)**2, 0)),
-        post_rmse_dd_sum/B, np.sqrt(np.maximum(post_dd_sq/B - (post_rmse_dd_sum/B)**2, 0)),
-        prior_rmse_num_sum/B, np.sqrt(np.maximum(prior_num_sq/B - (prior_rmse_num_sum/B)**2, 0)),
-        post_rmse_num_sum/B, np.sqrt(np.maximum(post_num_sq/B - (post_rmse_num_sum/B)**2, 0)),
+        np.array(prior_rmse_pi_sum) / B, 
+        np.sqrt(np.maximum(prior_pi_sq/B - (prior_rmse_pi_sum/B)**2, 0)),
+        np.array(post_rmse_pi_sum) / B, 
+        np.sqrt(np.maximum(post_pi_sq/B - (post_rmse_pi_sum/B)**2, 0)),
+        np.array(prior_rmse_dd_sum) / B, 
+        np.sqrt(np.maximum(prior_dd_sq/B - (prior_rmse_dd_sum/B)**2, 0)),
+        np.array(post_rmse_dd_sum) / B, 
+        np.sqrt(np.maximum(post_dd_sq/B - (post_rmse_dd_sum/B)**2, 0)),
+        np.array(prior_rmse_num_sum) / B,  
+        np.sqrt(np.maximum(prior_num_sq/B - (prior_rmse_num_sum/B)**2, 0)),
+        np.array(post_rmse_num_sum) / B, 
+        np.sqrt(np.maximum(post_num_sq/B - (post_rmse_num_sum/B)**2, 0)),
         sigma_obs, B,
         title=f"EnKF Prior/Post RMSE (PI vs DD vs Num)\n(B={B}, σ_obs={sigma_obs})",
         save_path=os.path.join(save_dir, "batch_rmse_enkf_compare_3way.pdf")
@@ -2199,6 +2222,14 @@ def evaluate_enkf_dd_vs_pi_vs_num(
     obs_indices = jnp.array(obs_idx_list) if specify_obs_idx and obs_idx_list else jnp.arange(0, N, obs_every_n)
     R, P0 = jnp.eye(len(obs_indices)) * sigma_obs ** 2, jnp.eye(N) * P0_sigma ** 2
 
+    # ── Compile Numerical Propagator ───────
+    F_fixed_single = float(F_test[0])
+    def num_prop_single(u, t_query):
+        steps = jnp.round(t_query / dt_integration).astype(jnp.int32)
+        return jax.lax.fori_loop(0, steps, lambda i, val: rk4_step_jax(val, F_fixed_single, dt_integration), u)
+        
+    predict_fn_num, update_fn_num = make_enkf(num_prop_single, N, N_ens)
+
     # ── Single Trajectory Loops ──
     num_plots = min(config.saving.total_plots, u_test.shape[0])
     obs_times, obs_step_indices, total_fine_steps = build_obs_schedule(trajectory_windows * DT_WINDOW, DT_FINE, DT_OBS)
@@ -2237,14 +2268,8 @@ def evaluate_enkf_dd_vs_pi_vs_num(
         key, key_ic, key_ens = jax.random.split(key, 3)
         ensemble0 = init_ensemble(jnp.array(u0_np) + P0_sigma * jax.random.normal(key_ic, shape=(N,)), P0, N_ens, key_ens)
 
-        x_means_pi, x_spreads_pi, _ = run_enkf_smoother(predict_fn_pi, update_fn_pi, ensemble0, y_obs_seq, obs_step_indices, H_seq, Q_fine, R, key, total_fine_steps, DT_FINE, DT_WINDOW)
-        x_means_dd, x_spreads_dd, _ = run_enkf_smoother(predict_fn_dd, update_fn_dd, ensemble0, y_obs_seq, obs_step_indices, H_seq, Q_fine, R, key, total_fine_steps, DT_FINE, DT_WINDOW)
-
-        def num_prop(u, t_query):
-            steps = jnp.round(t_query / dt_integration).astype(jnp.int32)
-            return jax.lax.fori_loop(0, steps, lambda i, val: rk4_step_jax(val, F_i, dt_integration), u)
-        
-        predict_fn_num, update_fn_num = make_enkf(num_prop, N, N_ens)
+        x_means_pi, x_spreads_pi, _   = run_enkf_smoother(predict_fn_pi, update_fn_pi, ensemble0, y_obs_seq, obs_step_indices, H_seq, Q_fine, R, key, total_fine_steps, DT_FINE, DT_WINDOW)
+        x_means_dd, x_spreads_dd, _   = run_enkf_smoother(predict_fn_dd, update_fn_dd, ensemble0, y_obs_seq, obs_step_indices, H_seq, Q_fine, R, key, total_fine_steps, DT_FINE, DT_WINDOW)
         x_means_num, x_spreads_num, _ = run_enkf_smoother(predict_fn_num, update_fn_num, ensemble0, y_obs_seq, obs_step_indices, H_seq, Q_fine, R, key, total_fine_steps, DT_FINE, DT_WINDOW)
 
         _plot_trajectory_summary_compare_enkf_3way(
