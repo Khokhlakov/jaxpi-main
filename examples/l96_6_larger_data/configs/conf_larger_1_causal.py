@@ -43,14 +43,8 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 150_000
-    training.batch_size_per_device = 100#16384
-    training.num_time_windows = 160
+    training.batch_size_per_device = 100
     training.use_cartesian_prod = True
-    training.update_interval = 1000
-    training.num_initial_ics = 8000
-    training.max_additions = 30
-    training.augmentation_scheme = "file" #"model" 
-    training.augmentation_file_name = "train_rollouts_025.mat"
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
