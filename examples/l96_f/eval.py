@@ -1065,18 +1065,18 @@ def _plot_rmse_comparison_dd_pi(
 
     # ── PI ──────────────────────────────────────────────────────────────
     ax.plot(obs_times, prior_rmse_mean_pi,
-            color="#2196F3", linewidth=2.0, marker="o", markersize=4,
+            color="#0A36C7", linewidth=2.0, marker="o", markersize=4,
             linestyle="-", label=f"PI prior RMSE  (n = {n_traj})")
     ax.fill_between(
         obs_times, prior_rmse_mean_pi - prior_rmse_std_pi, prior_rmse_mean_pi + prior_rmse_std_pi,
-        color="#2196F3", alpha=0.15, linewidth=0,
+        color="#0A36C7", alpha=0.15, linewidth=0,
     )
     ax.plot(obs_times, post_rmse_mean_pi,
-            color="#FF5722", linewidth=2.0, marker="s", markersize=4,
+            color="#A30005", linewidth=2.0, marker="s", markersize=4,
             linestyle="-", label=f"PI posterior RMSE  (n = {n_traj})")
     ax.fill_between(
         obs_times, post_rmse_mean_pi - post_rmse_std_pi, post_rmse_mean_pi + post_rmse_std_pi,
-        color="#FF5722", alpha=0.15, linewidth=0,
+        color="#A30005", alpha=0.15, linewidth=0,
     )
 
     # ── DD ──────────────────────────────────────────────────────────────
