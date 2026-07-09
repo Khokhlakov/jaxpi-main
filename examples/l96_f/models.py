@@ -97,69 +97,19 @@ class L96UDON(ForwardIVP):
         return loss_dict
 
     def make_surrogate_propagator(self, params) -> Callable:
-        """
-        Return a variable-time surrogate propagator suitable for both the EKF
-        (when wrapped with a fixed ``t``) and the window-aware EnKF.
- 
-        The returned callable has the signature::
- 
-            propagator(u: (N,), t: float) -> (N,)
- 
-        where ``t`` is the query time *within the current assimilation window*
-        (0 < t <= DT_WINDOW).  The DeepONet is queried as x(t | u), exploiting
-        the full [t0, t1] training range rather than always stepping by dt_fine.
- 
-        Because ``t`` is a plain Python float (treated as static inside
-        ``make_enkf``'s ``@partial(jit, static_argnums=(3,))`` predict function),
-        ``jnp.array([t])`` resolves to a compile-time constant array — no
-        retracing overhead beyond the first ``steps_per_window`` distinct values.
- 
-        Args:
-            params: frozen (unreplicated) network parameters.
- 
-        Returns:
-            propagator: Callable[(N,), float -> (N,)]
-        """
         def propagator(u: jnp.ndarray, t: float) -> jnp.ndarray:
-            t_vec = jnp.array([t])  # t is a static Python float → constant array
-            return self.x_net(params, u, t_vec).reshape(self.N)
- 
+            t_vec = jnp.array([t])
+            # Predict the 40 dynamic variables using the 41-D input u
+            x_pred = self.x_net(params, u, t_vec).reshape(self.N)
+            # Re-append the constant forcing parameter F located at u[self.N:] (or u[-1:])
+            return jnp.concatenate([x_pred, u[self.N:]])
         return propagator
  
     def make_enkf_fns(self, params, N_ens: int = 50):
-        """
-        Convenience method: build JIT-compiled EnKF predict/update functions
-        using the variable-time surrogate propagator.
- 
-        Unlike ``make_ekf_fns``, no fixed ``dt`` is baked in.  The returned
-        ``predict_fn`` accepts ``t_query`` as a *static* argument at each call
-        site, allowing ``run_enkf_smoother`` to vary the in-window query time
-        step-by-step:
- 
-            predict_fn(enkf_state, Q, key, t_query=k * dt_fine)
- 
-        This means step ``k`` within a window evaluates
-        ``x(window_ic, k * dt_fine)`` directly instead of chaining
-        ``f(f(…f(u, dt_fine)…), dt_fine)``, which would accumulate surrogate
-        error across fine steps.
- 
-        The ``dt_fine`` and ``dt_window`` needed for the window-reset logic live
-        in ``run_enkf_smoother``, not here.
- 
-        Args:
-            params: frozen (unreplicated) network parameters.
-            N_ens:  ensemble size (≥ 50 recommended for L96-N40).
- 
-        Returns:
-            predict_fn, update_fn — both JIT-compiled EnKF functions.
- 
-        Usage:
-            predict, update = model.make_enkf_fns(params, N_ens=50)
-            # Then call run_enkf_smoother with dt_fine and dt_window.
-        """
-        from examples.KS.kf import make_enkf
-        propagator = self.make_surrogate_propagator(params)  # (u, t) -> u
-        return make_enkf(propagator, self.N, N_ens)
+        from examples.l96_f.kf import make_enkf
+        propagator = self.make_surrogate_propagator(params)
+        # Pass the augmented state dimension (self.N + 1 = 41) to the EnKF factory
+        return make_enkf(propagator, self.N + 1, N_ens)
  
     
     @partial(jit, static_argnums=(0,))
@@ -249,69 +199,19 @@ class L96UDON_DD(ForwardIVP):
         return loss_dict
 
     def make_surrogate_propagator(self, params) -> Callable:
-        """
-        Return a variable-time surrogate propagator suitable for both the EKF
-        (when wrapped with a fixed ``t``) and the window-aware EnKF.
- 
-        The returned callable has the signature::
- 
-            propagator(u: (N,), t: float) -> (N,)
- 
-        where ``t`` is the query time *within the current assimilation window*
-        (0 < t <= DT_WINDOW).  The DeepONet is queried as x(t | u), exploiting
-        the full [t0, t1] training range rather than always stepping by dt_fine.
- 
-        Because ``t`` is a plain Python float (treated as static inside
-        ``make_enkf``'s ``@partial(jit, static_argnums=(3,))`` predict function),
-        ``jnp.array([t])`` resolves to a compile-time constant array — no
-        retracing overhead beyond the first ``steps_per_window`` distinct values.
- 
-        Args:
-            params: frozen (unreplicated) network parameters.
- 
-        Returns:
-            propagator: Callable[(N,), float -> (N,)]
-        """
         def propagator(u: jnp.ndarray, t: float) -> jnp.ndarray:
-            t_vec = jnp.array([t])  # t is a static Python float → constant array
-            return self.x_net(params, u, t_vec).reshape(self.N)
- 
+            t_vec = jnp.array([t])
+            # Predict the 40 dynamic variables using the 41-D input u
+            x_pred = self.x_net(params, u, t_vec).reshape(self.N)
+            # Re-append the constant forcing parameter F located at u[self.N:] (or u[-1:])
+            return jnp.concatenate([x_pred, u[self.N:]])
         return propagator
- 
+    
     def make_enkf_fns(self, params, N_ens: int = 50):
-        """
-        Convenience method: build JIT-compiled EnKF predict/update functions
-        using the variable-time surrogate propagator.
- 
-        Unlike ``make_ekf_fns``, no fixed ``dt`` is baked in.  The returned
-        ``predict_fn`` accepts ``t_query`` as a *static* argument at each call
-        site, allowing ``run_enkf_smoother`` to vary the in-window query time
-        step-by-step:
- 
-            predict_fn(enkf_state, Q, key, t_query=k * dt_fine)
- 
-        This means step ``k`` within a window evaluates
-        ``x(window_ic, k * dt_fine)`` directly instead of chaining
-        ``f(f(…f(u, dt_fine)…), dt_fine)``, which would accumulate surrogate
-        error across fine steps.
- 
-        The ``dt_fine`` and ``dt_window`` needed for the window-reset logic live
-        in ``run_enkf_smoother``, not here.
- 
-        Args:
-            params: frozen (unreplicated) network parameters.
-            N_ens:  ensemble size (≥ 50 recommended for L96-N40).
- 
-        Returns:
-            predict_fn, update_fn — both JIT-compiled EnKF functions.
- 
-        Usage:
-            predict, update = model.make_enkf_fns(params, N_ens=50)
-            # Then call run_enkf_smoother with dt_fine and dt_window.
-        """
-        from examples.KS.kf import make_enkf
-        propagator = self.make_surrogate_propagator(params)  # (u, t) -> u
-        return make_enkf(propagator, self.N, N_ens)
+        from examples.l96_f.kf import make_enkf
+        propagator = self.make_surrogate_propagator(params)
+        # Pass the augmented state dimension (self.N + 1 = 41) to the EnKF factory
+        return make_enkf(propagator, self.N + 1, N_ens)
 
     @partial(jit, static_argnums=(0,))
     def compute_l2_error(self, params, u_test_batch, x_test_batch):

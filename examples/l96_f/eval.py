@@ -1268,6 +1268,7 @@ def _evaluate_batch_enkf_dd_vs_pi(
     for ic in range(B):
         key    = jax.random.PRNGKey(ic + 77777)
         u_true = jnp.array(u0_batch[ic])
+        F_i    = float(F_test[ic])
 
         x_true_fine   = x_true_fine_batch[ic]     # (T+1, N) numpy
         x_true_at_obs = x_true_at_obs_batch[ic]    # (T_obs, N) numpy
@@ -1286,11 +1287,14 @@ def _evaluate_batch_enkf_dd_vs_pi(
             m_t = len(obs_idx_vars)
             H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx_vars].set(1.0)
 
+            # Pad trailing column of zeros to shape (m_t, 41)
+            H_t_aug = jnp.pad(H_t, ((0, 0), (0, 1)), mode='constant')
+            H_list.append(H_t_aug)
+
             key, subkey = jax.random.split(key)
             noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
             y_t   = jnp.array(x_true_t)[obs_idx_vars] + noise
 
-            H_list.append(H_t)
             y_obs_list.append(y_t)
 
         H_seq     = jnp.stack(H_list)
@@ -1298,8 +1302,9 @@ def _evaluate_batch_enkf_dd_vs_pi(
 
         # ── Shared initial ensemble ───────────────────────────────────────
         key, key_ic, key_ens = jax.random.split(key, 3)
-        x0_hat    = u_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
-        ensemble0 = init_ensemble(x0_hat, P0, N_ens, key_ens)
+        x0_hat_40  = u_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
+        x0_hat_aug = jnp.concatenate([x0_hat_40, jnp.array([F_i])])
+        ensemble0  = init_ensemble(x0_hat_aug, P0, N_ens, key_ens)
 
         # ── PI EnKF ────────────────────────────────────────────────────────
         x_means_pi, x_spreads_pi, prior_means_pi = run_enkf_smoother(
@@ -1318,13 +1323,13 @@ def _evaluate_batch_enkf_dd_vs_pi(
         )
 
         # ── ERF / RMSE at observation times ───────────────────────────────
-        post_means_pi = x_means_pi[obs_step_indices_batch]
-        post_means_dd = x_means_dd[obs_step_indices_batch]
-
-        prior_rmse_pi = np.sqrt(np.mean((np.array(prior_means_pi) - x_true_at_obs) ** 2, axis=1))
-        post_rmse_pi  = np.sqrt(np.mean((np.array(post_means_pi)  - x_true_at_obs) ** 2, axis=1))
-        prior_rmse_dd = np.sqrt(np.mean((np.array(prior_means_dd) - x_true_at_obs) ** 2, axis=1))
-        post_rmse_dd  = np.sqrt(np.mean((np.array(post_means_dd)  - x_true_at_obs) ** 2, axis=1))
+        post_means_pi = x_means_pi[obs_step_indices_batch, :N]
+        post_means_dd = x_means_dd[obs_step_indices_batch, :N]
+        
+        prior_rmse_pi = np.sqrt(np.mean((np.array(prior_means_pi[:, :N]) - x_true_at_obs) ** 2, axis=1))
+        post_rmse_pi  = np.sqrt(np.mean((np.array(post_means_pi[:, :N])  - x_true_at_obs) ** 2, axis=1))
+        prior_rmse_dd = np.sqrt(np.mean((np.array(prior_means_dd[:, :N]) - x_true_at_obs) ** 2, axis=1))
+        post_rmse_dd  = np.sqrt(np.mean((np.array(post_means_dd[:, :N])  - x_true_at_obs) ** 2, axis=1))
 
         erf_pi = prior_rmse_pi / (post_rmse_pi + 1e-12)
         erf_dd = prior_rmse_dd / (post_rmse_dd + 1e-12)
@@ -1339,8 +1344,8 @@ def _evaluate_batch_enkf_dd_vs_pi(
 
         # ── Window-boundary L2 / RMSE / spread ────────────────────────────
         x_true_at_windows = x_true_fine[window_step_indices + 1]   # (batch_windows, N)
-        x_hat_pi_windows  = np.array(x_means_pi[window_step_indices])
-        x_hat_dd_windows  = np.array(x_means_dd[window_step_indices])
+        x_hat_pi_windows  = np.array(x_means_pi[window_step_indices, :N])
+        x_hat_dd_windows  = np.array(x_means_dd[window_step_indices, :N])
 
         den = np.linalg.norm(x_true_at_windows, axis=1) + 1e-12
         l2_enkf_pi_sum += np.linalg.norm(x_hat_pi_windows - x_true_at_windows, axis=1) / den
@@ -1349,15 +1354,15 @@ def _evaluate_batch_enkf_dd_vs_pi(
         rmse_enkf_pi_sum += np.sqrt(np.mean((x_hat_pi_windows - x_true_at_windows) ** 2, axis=1))
         rmse_enkf_dd_sum += np.sqrt(np.mean((x_hat_dd_windows - x_true_at_windows) ** 2, axis=1))
 
-        spread_pi_sum += np.sqrt(np.mean(np.array(x_spreads_pi[window_step_indices]) ** 2, axis=1))
-        spread_dd_sum += np.sqrt(np.mean(np.array(x_spreads_dd[window_step_indices]) ** 2, axis=1))
-
+        spread_pi_sum += np.sqrt(np.mean(np.array(x_spreads_pi[window_step_indices, :N]) ** 2, axis=1))
+        spread_dd_sum += np.sqrt(np.mean(np.array(x_spreads_dd[window_step_indices, :N]) ** 2, axis=1))
+        
         # ── Dense per-timestamp L2 (denser than window-level) ─────────────
         x_true_fine_tail = x_true_fine[1:]   # (total_fine_steps_batch, N)
         den_dense = np.linalg.norm(x_true_fine_tail, axis=1) + 1e-12
-        l2_enkf_pi_dense_sum += np.linalg.norm(np.array(x_means_pi) - x_true_fine_tail, axis=1) / den_dense
-        l2_enkf_dd_dense_sum += np.linalg.norm(np.array(x_means_dd) - x_true_fine_tail, axis=1) / den_dense
-
+        l2_enkf_pi_dense_sum += np.linalg.norm(np.array(x_means_pi[:, :N]) - x_true_fine_tail, axis=1) / den_dense
+        l2_enkf_dd_dense_sum += np.linalg.norm(np.array(x_means_dd[:, :N]) - x_true_fine_tail, axis=1) / den_dense
+        
     # ── Open-loop dense rollouts, vectorised over B (same ICs as above) ───
     u0_batch_j = jnp.array(u0_batch)
     predict_full_pi = jax.jit(jax.vmap(
@@ -1366,9 +1371,12 @@ def _evaluate_batch_enkf_dd_vs_pi(
         lambda u: model_dd.x_pred_fn(params_dd, u, t_star_window), in_axes=0))
 
     x_pred_dense_pi_list, x_pred_dense_dd_list = [], []
-    u_current_pi, u_current_dd = u0_batch_j, u0_batch_j
+
+    # Augment batch initial condition to 41-D
+    u0_batch_aug = jnp.concatenate([jnp.array(u0_batch), F_test[:B, None]], axis=-1)
+    u_current_pi, u_current_dd = u0_batch_aug, u0_batch_aug
     for k in range(batch_windows):
-        x_win_pi = predict_full_pi(u_current_pi)
+        x_win_pi = predict_full_pi(u_current_pi)  # Returns (B, T, 40)
         x_win_dd = predict_full_dd(u_current_dd)
 
         if k == 0:
@@ -1378,8 +1386,9 @@ def _evaluate_batch_enkf_dd_vs_pi(
             x_pred_dense_pi_list.append(x_win_pi[:, 1:, :])
             x_pred_dense_dd_list.append(x_win_dd[:, 1:, :])
 
-        u_current_pi = x_win_pi[:, -1, :]
-        u_current_dd = x_win_dd[:, -1, :]
+        # Re-append F to the 40-D predicted boundary states for the next window
+        u_current_pi = jnp.concatenate([x_win_pi[:, -1, :], F_test[:B, None]], axis=-1)
+        u_current_dd = jnp.concatenate([x_win_dd[:, -1, :], F_test[:B, None]], axis=-1)
 
     x_pred_dense_pi = jnp.concatenate(x_pred_dense_pi_list, axis=1)   # (B, total_steps, N)
     x_pred_dense_dd = jnp.concatenate(x_pred_dense_dd_list, axis=1)
@@ -1652,11 +1661,14 @@ def evaluate_enkf_dd_vs_pi(
             m_t = len(obs_idx_vars)
             H_t = jnp.zeros((m_t, N)).at[jnp.arange(m_t), obs_idx_vars].set(1.0)
 
+            # Pad trailing column of zeros to shape (m_t, 41)
+            H_t_aug = jnp.pad(H_t, ((0, 0), (0, 1)), mode='constant')
+            H_list.append(H_t_aug)
+
             key, subkey = jax.random.split(key)
             noise = sigma_obs * jax.random.normal(subkey, shape=(m_t,))
             y_t   = x_true_t[obs_idx_vars] + noise
 
-            H_list.append(H_t)
             y_obs_list.append(y_t)
             for j, vi in enumerate(obs_idx_vars):
                 obs_coords.append((int(vi), obs_times[obs_idx], float(y_t[j])))
@@ -1666,8 +1678,9 @@ def evaluate_enkf_dd_vs_pi(
 
         # ── Shared initial ensemble (same noise realization for both) ─────
         key, key_ic, key_ens = jax.random.split(key, 3)
-        x0_hat    = u_current_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
-        ensemble0 = init_ensemble(x0_hat, P0, N_ens, key_ens)
+        x0_hat_40  = u_current_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
+        x0_hat_aug = jnp.concatenate([x0_hat_40, jnp.array([F_i])])
+        ensemble0  = init_ensemble(x0_hat_aug, P0, N_ens, key_ens)
 
         # ── Run EnKF: PI propagator ────────────────────────────────────────
         x_means_pi, x_spreads_pi, _ = run_enkf_smoother(
@@ -1691,10 +1704,10 @@ def evaluate_enkf_dd_vs_pi(
         _plot_trajectory_summary_compare_enkf(
             t_ax       = t_fine_axis,
             x_true     = np.array(x_true_fine[1:]),
-            x_est_pi   = np.array(x_means_pi),
-            x_std_pi   = np.array(x_spreads_pi),
-            x_est_dd   = np.array(x_means_dd),
-            x_std_dd   = np.array(x_spreads_dd),
+            x_est_pi   = np.array(x_means_pi[:, :N]),
+            x_std_pi   = np.array(x_spreads_pi[:, :N]),
+            x_est_dd   = np.array(x_means_dd[:, :N]),
+            x_std_dd   = np.array(x_spreads_dd[:, :N]),
             ic_idx     = ic_idx,
             save_path  = os.path.join(
                 workdir, "figures", "comparison",
@@ -1712,9 +1725,9 @@ def evaluate_enkf_dd_vs_pi(
         ])
         x_true_at_windows = x_true_fine[window_step_indices + 1]
 
-        l2_pi = jnp.linalg.norm(x_means_pi[window_step_indices] - x_true_at_windows) \
+        l2_pi = jnp.linalg.norm(x_means_pi[window_step_indices, :N] - x_true_at_windows) \
               / jnp.linalg.norm(x_true_at_windows)
-        l2_dd = jnp.linalg.norm(x_means_dd[window_step_indices] - x_true_at_windows) \
+        l2_dd = jnp.linalg.norm(x_means_dd[window_step_indices, :N] - x_true_at_windows) \
               / jnp.linalg.norm(x_true_at_windows)
 
         print(

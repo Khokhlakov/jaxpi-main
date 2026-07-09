@@ -72,58 +72,28 @@ def make_enkf(propagator_fn: Callable, N: int, N_ens: int):
     @partial(jit, static_argnums=(3,))
     def predict(
         enkf_state: EnKFState,
-        Q:          jnp.ndarray,  # (N, N) process noise covariance
-        key:        jnp.ndarray,  # JAX PRNG key
-        t_query:    float,        # STATIC — in-window time offset for this step
+        Q:          jnp.ndarray,  # (N_dyn, N_dyn) process noise (unpadded)
+        key:        jnp.ndarray,
+        t_query:    float,
     ) -> EnKFState:
-        """
-        EnKF prediction step (window-aware).
- 
-        Each ensemble member is propagated by querying the surrogate at
-        ``t_query`` relative to the member's own ``window_ic``, i.e.:
- 
-            x_pred_i = propagator_fn(window_ic_i, t_query)
- 
-        This gives  x(window_ic_i, t_query)  directly, regardless of
-        how many fine steps have elapsed since the window started.  It
-        avoids the cumulative error of chaining  f(f(u, dt), dt) …  when
-        DT_FINE < DT_WINDOW.
- 
-        ``t_query`` is declared static (``static_argnums=(3,)``) so that
-        any Python-level arithmetic on it inside ``propagator_fn`` (e.g.
-        ``n_steps = round(t / dt_fine)`` for a numerical integrator) is a
-        compile-time constant.  XLA retraces at most ``steps_per_window``
-        distinct values per run, after which the JIT cache is reused.
- 
-        Process noise is still added at every fine step so that the
-        ensemble spread reflects per-step model uncertainty.  The noise
-        does *not* flow into the next in-window prediction (which always
-        restarts from ``window_ics``); it only affects the observation
-        update at that fine step.
- 
-        Args:
-            enkf_state: current EnKFState (ensemble + window_ics).
-            Q:          (N, N) per-fine-step process noise covariance.
-            key:        PRNG key for noise sampling.
-            t_query:    Python float — query time within the current window.
-                        Must satisfy  0 < t_query <= DT_WINDOW.
- 
-        Returns:
-            Updated EnKFState with propagated ensemble; window_ics unchanged.
-        """
-        # ── 1. Propagate every member from its window IC at t_query ──────────
-        # vmap over the N_ens axis; t_query is the same for all members.
+        
+        # 1. Propagate full augmented state
         ensemble_pred = vmap(
             lambda u: propagator_fn(u, t_query)
-        )(enkf_state.window_ics)                                   # (N_ens, N)
+        )(enkf_state.window_ics)
+        
+        N_total = ensemble_pred.shape[1]
+        N_dyn   = Q.shape[0]
  
-        # ── 2. Additive process noise from N(0, Q) ────────────────────────────
-        L_Q   = jnp.linalg.cholesky(Q + 1e-10 * jnp.eye(N))      # (N, N)
-        z     = jax.random.normal(key, shape=(N_ens, N))          # (N_ens, N)
-        noise = z @ L_Q.T                                         # (N_ens, N)
+        # 2. Additive process noise strictly on the dynamic sub-state
+        L_Q = jnp.linalg.cholesky(Q + 1e-10 * jnp.eye(N_dyn))
+        z   = jax.random.normal(key, shape=(N_ens, N_dyn))
+        noise = z @ L_Q.T
+        
+        # 3. Pad the noise vector with zeros for the static parameters
+        if N_dyn < N_total:
+            noise = jnp.pad(noise, ((0, 0), (0, N_total - N_dyn)))
  
-        # window_ics are deliberately left unchanged here; they are reset by
-        # run_enkf_smoother at window boundaries and after observation updates.
         return EnKFState(
             ensemble=ensemble_pred + noise,
             window_ics=enkf_state.window_ics,
@@ -320,28 +290,22 @@ def run_enkf_smoother(
 
 
 def init_ensemble(
-    x0_hat:  jnp.ndarray,   # (N,) prior mean
-    P0:      jnp.ndarray,   # (N, N) prior covariance
+    x0_hat:  jnp.ndarray,   # (N_total,) augmented prior mean
+    P0:      jnp.ndarray,   # (N_dyn, N_dyn) prior covariance (unpadded)
     N_ens:   int,
     key:     jnp.ndarray,
 ) -> jnp.ndarray:
-    """
-    Draw the initial ensemble from the prior distribution N(x0_hat, P0).
- 
-    Uses the Cholesky factorisation of P0 so that the full covariance
-    structure (not just the diagonal) is respected during initialisation.
- 
-    Args:
-        x0_hat: (N,) prior mean state estimate.
-        P0:     (N, N) prior error covariance.
-        N_ens:  number of ensemble members.
-        key:    JAX PRNG key.
- 
-    Returns:
-        ensemble: (N_ens, N) initial ensemble.
-    """
-    N   = x0_hat.shape[0]
-    L   = jnp.linalg.cholesky(P0 + 1e-10 * jnp.eye(N))
-    z   = jax.random.normal(key, shape=(N_ens, N))
-    return x0_hat[None, :] + z @ L.T              # (N_ens, N)
-
+    
+    N_total = x0_hat.shape[0]
+    N_dyn   = P0.shape[0]
+    
+    # Cholesky and noise generation strictly on the dynamic sub-state
+    L = jnp.linalg.cholesky(P0 + 1e-10 * jnp.eye(N_dyn))
+    z = jax.random.normal(key, shape=(N_ens, N_dyn))
+    noise = z @ L.T
+    
+    # Pad the noise vector with zeros for the static parameters
+    if N_dyn < N_total:
+        noise = jnp.pad(noise, ((0, 0), (0, N_total - N_dyn)))
+        
+    return x0_hat[None, :] + noise
