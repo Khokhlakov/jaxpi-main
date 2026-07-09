@@ -44,6 +44,10 @@ def main(argv):
         
     elif FLAGS.config.mode == "eval_enkf_dd_vs_pi":
         eval.evaluate_enkf_dd_vs_pi(FLAGS.config, FLAGS.workdir)
+        
+    elif FLAGS.config.mode == "eval_enkf_dd_vs_pi_vs_num":
+        eval.evaluate_enkf_dd_vs_pi_vs_num(FLAGS.config, FLAGS.workdir)
+
     
 
 if __name__ == "__main__":

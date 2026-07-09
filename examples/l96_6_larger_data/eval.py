@@ -8,6 +8,7 @@ import jax
 from jax.tree_util import tree_map
 from flax.jax_utils import replicate
 from typing import Callable
+from functools import partial
 
 from jaxpi.utils import restore_checkpoint
 import examples.l96_6_larger_data.models as models
@@ -1726,4 +1727,545 @@ def evaluate_enkf_dd_vs_pi(
         num_ics_eval, enkf_batch_size, batch_windows,
         config, workdir,
     )
+
+
+# ── PI vs DD vs Numerical + EnKF ─────────────────────────────────────────────
+
+def _plot_trajectory_summary_compare_enkf_3way(
+    t_ax:       np.ndarray,
+    x_true:     np.ndarray,
+    x_est_pi:   np.ndarray, x_std_pi:   np.ndarray | None,
+    x_est_dd:   np.ndarray, x_std_dd:   np.ndarray | None,
+    x_est_num:  np.ndarray, x_std_num:  np.ndarray | None,
+    ic_idx:     int,
+    save_path:  str,
+    N:          int = 40,
+    dt_window:  float | None = None,
+    obs_coords: list[tuple[int, float, float]] | None = None,
+) -> None:
+    """3-way Trajectory summary PDF: Truth vs PI+EnKF vs DD+EnKF vs Num+EnKF"""
+    x_true    = np.asarray(x_true)
+    x_est_pi  = np.asarray(x_est_pi);  x_est_dd  = np.asarray(x_est_dd);  x_est_num = np.asarray(x_est_num)
+    x_std_pi  = np.asarray(x_std_pi) if x_std_pi is not None else None
+    x_std_dd  = np.asarray(x_std_dd) if x_std_dd is not None else None
+    x_std_num = np.asarray(x_std_num) if x_std_num is not None else None
+
+    mean_abs_err_pi  = np.abs(x_true - x_est_pi).mean(axis=1)
+    mean_abs_err_dd  = np.abs(x_true - x_est_dd).mean(axis=1)
+    mean_abs_err_num = np.abs(x_true - x_est_num).mean(axis=1)
+
+    n_var_rows = N // 2
+    t_min, t_max = float(t_ax[0]), float(t_ax[-1])
+    window_boundaries = np.arange(int(np.floor(t_min / dt_window)) * dt_window + dt_window, t_max + 1e-12, dt_window) if dt_window else np.array([])
+
+    obs_by_var = {}
+    if obs_coords is not None:
+        for v_idx, ot, ov in obs_coords:
+            obs_by_var.setdefault(v_idx, []).append((ot, ov))
+
+    top_height, var_row_h = 3.2, 1.9
+    fig = plt.figure(figsize=(14, top_height + n_var_rows * var_row_h))
+    gs  = gridspec.GridSpec(nrows=1 + n_var_rows, ncols=2, height_ratios=[top_height] + [var_row_h] * n_var_rows, hspace=0.55, wspace=0.32)
+
+    # ── Top panel: Mean absolute errors ──
+    ax_top = fig.add_subplot(gs[0, :])
+    ax_top.plot(t_ax, mean_abs_err_pi, color="#2196F3", linewidth=1.6, label="PI + EnKF")
+    ax_top.plot(t_ax, mean_abs_err_dd, color="#FF8C00", linewidth=1.6, label="DD + EnKF")
+    ax_top.plot(t_ax, mean_abs_err_num, color="#4CAF50", linewidth=1.6, label="Num + EnKF")
+
+    for wb in window_boundaries:
+        ax_top.axvline(x=wb, color="#78909C", linestyle="--", linewidth=0.8, alpha=0.55)
+
+    ax_top.set_yscale("log")
+    ax_top.set_xlabel("Time t", fontsize=11)
+    ax_top.set_ylabel("Mean absolute error", fontsize=11)
+    ax_top.set_title(f"IC {ic_idx} — Mean absolute error across all {N} variables", fontsize=12, fontweight="bold")
+    ax_top.legend(fontsize=10)
+    ax_top.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+
+    # ── Colors ──
+    TRUTH_COLOR = "#37474F"; OBS_COLOR = "#E53935"
+    colors = [("#2196F3", "#90CAF9", x_est_pi, x_std_pi, "PI"), 
+              ("#FF8C00", "#FFCC80", x_est_dd, x_std_dd, "DD"), 
+              ("#4CAF50", "#C8E6C9", x_est_num, x_std_num, "Num")]
+
+    # ── Per-variable panels ──
+    for i in range(N):
+        row, col = 1 + i // 2, i % 2
+        ax = fig.add_subplot(gs[row, col])
+
+        for wb in window_boundaries: ax.axvline(x=wb, color="#78909C", linestyle="--", linewidth=0.6, alpha=0.45)
+        ax.plot(t_ax, x_true[:, i], color=TRUTH_COLOR, linewidth=1.2, label="Truth")
+
+        for line_col, band_col, est, std, lbl in colors:
+            ax.plot(t_ax, est[:, i], color=line_col, linewidth=1.0, linestyle="--", label=f"{lbl} + EnKF")
+            if std is not None:
+                ax.fill_between(t_ax, est[:, i] - std[:, i], est[:, i] + std[:, i], color=band_col, alpha=0.30, linewidth=0)
+
+        if i in obs_by_var:
+            ots, ovs = zip(*obs_by_var[i])
+            ax.scatter(ots, ovs, marker="x", s=25, color=OBS_COLOR, zorder=5, label="Obs" if i == min(obs_by_var) else None)
+
+        ax.set_title(f"$x_{{{i}}}$", fontsize=9, pad=2)
+        ax.tick_params(labelsize=7)
+        ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5)
+
+        if row == n_var_rows: ax.set_xlabel("t", fontsize=8)
+        if col == 0: ax.set_ylabel("state", fontsize=8)
+        if i == 0: ax.legend(fontsize=6.5, loc="upper right", handlelength=1.3, framealpha=0.7)
+
+    fig.suptitle(f"Trajectory summary — IC {ic_idx} | PI vs DD vs Num", fontsize=13, fontweight="bold", y=1.002)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+
+def _plot_erf_compare_3way(obs_times, erf_pi, std_pi, erf_dd, std_dd, erf_num, std_num, n_traj, title, save_path):
+    fig, ax = plt.subplots(figsize=(9, 5))
+    
+    plots = [
+        (erf_pi, std_pi, "#2196F3", "o", "PI + EnKF"),
+        (erf_dd, std_dd, "#FF8C00", "s", "DD + EnKF"),
+        (erf_num, std_num, "#4CAF50", "^", "Num + EnKF")
+    ]
+    for mean, std, col, mark, lbl in plots:
+        ax.plot(obs_times, mean, color=col, linewidth=2.0, marker=mark, markersize=4, label=f"{lbl} (n={n_traj})")
+        ax.fill_between(obs_times, mean - std, mean + std, color=col, alpha=0.15, linewidth=0)
+
+    ax.set_yscale("log")
+    ax.axhline(y=1.0, color="#37474F", linestyle="--", linewidth=1.4, label="ERF = 1")
+    ax.set_xlabel("Observation time t", fontsize=12)
+    ax.set_ylabel("Error Reduction Factor", fontsize=11)
+    ax.set_title(title, fontsize=13)
+    ax.legend(fontsize=10)
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+    
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+
+def _plot_calibration_compare_3way(window_idx, dt_window, s_pi, r_pi, s_dd, r_dd, s_num, r_num, title, save_path):
+    fig, ax = plt.subplots(figsize=(9, 5))
+    
+    ax.plot(window_idx, s_pi, marker="^", color="#2196F3", label="PI RMS ensemble σ")
+    ax.plot(window_idx, r_pi, marker="s", linestyle="--", color="#1565C0", label="PI EnKF RMSE")
+    ax.plot(window_idx, s_dd, marker="^", color="#FF9800", label="DD RMS ensemble σ")
+    ax.plot(window_idx, r_dd, marker="s", linestyle="--", color="#E65100", label="DD EnKF RMSE")
+    ax.plot(window_idx, s_num, marker="^", color="#4CAF50", label="Num RMS ensemble σ")
+    ax.plot(window_idx, r_num, marker="s", linestyle="--", color="#1B5E20", label="Num EnKF RMSE")
+
+    ax.set_yscale("log")
+    ax.set_xlabel("Window index", fontsize=12)
+    ax.set_ylabel("Log scale", fontsize=12)
+    ax.set_title(title, fontsize=13)
+    ax.legend(fontsize=9, ncol=3)
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+
+    ax_time = ax.twiny()
+    ax_time.set_xlim(ax.get_xlim())
+    ax_time.set_xticks(window_idx)
+    ax_time.set_xticklabels([f"{k * dt_window:.3g}" for k in window_idx], fontsize=8, rotation=45, ha="left")
+    ax_time.set_xlabel("Simulation time (window × dt)", fontsize=10)
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+
+def _plot_rmse_comparison_3way(
+    obs_times: np.ndarray,
+    prior_pi: np.ndarray, std_prior_pi: np.ndarray, post_pi: np.ndarray, std_post_pi: np.ndarray,
+    prior_dd: np.ndarray, std_prior_dd: np.ndarray, post_dd: np.ndarray, std_post_dd: np.ndarray,
+    prior_num: np.ndarray, std_prior_num: np.ndarray, post_num: np.ndarray, std_post_num: np.ndarray,
+    sigma_obs: float, n_traj: int, title: str, save_path: str,
+) -> None:
+    """3-way Prior/Posterior RMSE comparison."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # PI
+    ax.plot(obs_times, prior_pi, color="#2196F3", marker="o", linestyle="-", label="PI Prior")
+    ax.plot(obs_times, post_pi, color="#1565C0", marker="o", linestyle="--", label="PI Post")
+    # DD
+    ax.plot(obs_times, prior_dd, color="#FF9800", marker="s", linestyle="-", label="DD Prior")
+    ax.plot(obs_times, post_dd, color="#E65100", marker="s", linestyle="--", label="DD Post")
+    # Num
+    ax.plot(obs_times, prior_num, color="#4CAF50", marker="^", linestyle="-", label="Num Prior")
+    ax.plot(obs_times, post_num, color="#1B5E20", marker="^", linestyle="--", label="Num Post")
+
+    ax.axhline(y=sigma_obs, color="#9E9E9E", linestyle=":", linewidth=1.6, label=f"Obs Noise ($\sigma={sigma_obs}$)")
+
+    ax.set_yscale("log")
+    ax.set_xlabel("Observation time t", fontsize=12)
+    ax.set_ylabel("RMSE (log scale)", fontsize=12)
+    ax.set_title(title, fontsize=13)
+    ax.legend(fontsize=9, ncol=3)
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+
+
+def rk4_step_jax(x, F_val, dt_int):
+    """Fast JAX-compiled RK4 step for Lorenz 96"""
+    def rhs(state):
+        return (jnp.roll(state, -1) - jnp.roll(state, 2)) * jnp.roll(state, 1) - state + F_val
+    k1 = rhs(x)
+    k2 = rhs(x + k1 * dt_int / 2.0)
+    k3 = rhs(x + k2 * dt_int / 2.0)
+    k4 = rhs(x + k3 * dt_int)
+    return x + (dt_int / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+
+@partial(jax.jit, static_argnums=(2, 3))
+def vmap_rk4_rollout(u0_b, F_b, num_steps, dt_int):
+    """Vectorized open-loop rollout for the numerical baseline across the whole batch"""
+    def single_traj(u0, F_val):
+        def step_fn(x, _):
+            x_next = rk4_step_jax(x, F_val, dt_int)
+            return x_next, x_next
+        _, traj = jax.lax.scan(step_fn, u0, None, length=num_steps-1)
+        return jnp.concatenate([u0[None, :], traj], axis=0)
+    return jax.vmap(single_traj)(u0_b, F_b)
+
+def _evaluate_batch_enkf_dd_vs_pi_vs_num(
+    model_pi, params_pi, predict_fn_pi, update_fn_pi,
+    model_dd, params_dd, predict_fn_dd, update_fn_dd,
+    t_star_window, u_test, t_test, F_test,
+    Q_fine, P0, R, obs_indices, N_ens, obs_every_n, sigma_obs, P0_sigma,
+    dynamic_vars, specify_obs_idx, obs_idx_list,
+    dt_window, dt_fine, dt_obs, dt_integration,
+    num_ics_eval, enkf_batch_size, batch_windows, config, workdir
+):
+    from examples.l96_6_larger_data.kf import run_enkf_smoother, init_ensemble
+    from examples.KS.kf import make_enkf
+    
+    N = model_pi.N
+    B = min(num_ics_eval, enkf_batch_size, u_test.shape[0])
+    u0_batch = u_test[:B, 0, :]
+    F_batch = F_test[:B]
+    dt_test  = float(t_test[1] - t_test[0])
+
+    total_time_batch = batch_windows * dt_window
+    _, obs_step_indices_batch, total_fine_steps_batch = build_obs_schedule(total_time_batch, dt_fine, dt_obs)
+    T_obs = len(obs_step_indices_batch)
+    obs_times_batch = np.array([(k + 1) * dt_obs for k in range(T_obs)])
+
+    fine_stride = int(round(dt_fine / dt_test))
+    n_fine_pts  = total_fine_steps_batch * fine_stride + 1
+    x_true_fine_batch    = u_test[:B, 0:n_fine_pts:fine_stride, :]
+    x_true_at_obs_batch  = x_true_fine_batch[:, obs_step_indices_batch + 1, :]
+    window_step_indices = np.array([round((k + 1) * dt_window / dt_fine) - 1 for k in range(batch_windows)])
+
+    # Core accumulators
+    l2_pi_sum = np.zeros(batch_windows); l2_dd_sum = np.zeros(batch_windows); l2_num_sum = np.zeros(batch_windows)
+    rmse_pi_sum = np.zeros(batch_windows); rmse_dd_sum = np.zeros(batch_windows); rmse_num_sum = np.zeros(batch_windows)
+    spread_pi_sum = np.zeros(batch_windows); spread_dd_sum = np.zeros(batch_windows); spread_num_sum = np.zeros(batch_windows)
+    
+    erf_pi_sum = np.zeros(T_obs); erf_dd_sum = np.zeros(T_obs); erf_num_sum = np.zeros(T_obs)
+    erf_pi_sq = np.zeros(T_obs); erf_dd_sq = np.zeros(T_obs); erf_num_sq = np.zeros(T_obs)
+
+    # Dense time-step accumulators (For the dense plot output requested)
+    l2_dense_pi_sum = np.zeros(total_fine_steps_batch)
+    l2_dense_dd_sum = np.zeros(total_fine_steps_batch)
+    l2_dense_num_sum = np.zeros(total_fine_steps_batch)
+
+    # RMSE accums
+    prior_rmse_pi_sum = np.zeros(T_obs); post_rmse_pi_sum = np.zeros(T_obs)
+    prior_rmse_dd_sum = np.zeros(T_obs); post_rmse_dd_sum = np.zeros(T_obs)
+    prior_rmse_num_sum = np.zeros(T_obs); post_rmse_num_sum = np.zeros(T_obs)
+    
+    prior_pi_sq = np.zeros(T_obs); post_pi_sq = np.zeros(T_obs)
+    prior_dd_sq = np.zeros(T_obs); post_dd_sq = np.zeros(T_obs)
+    prior_num_sq = np.zeros(T_obs); post_num_sq = np.zeros(T_obs)
+
+    m = len(obs_indices)
+
+    for ic in range(B):
+        key = jax.random.PRNGKey(ic + 77777)
+        u_true = jnp.array(u0_batch[ic])
+        F_i = jnp.array(F_batch[ic])
+        
+        x_true_fine = x_true_fine_batch[ic]
+        x_true_at_obs = x_true_at_obs_batch[ic]
+
+        # Shared Observations
+        H_list, y_obs_list = [], []
+        for obs_idx in range(T_obs):
+            x_true_t = x_true_at_obs[obs_idx]
+            if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
+                key, subkey  = jax.random.split(key)
+                obs_idx_vars = jax.random.choice(subkey, N, shape=(m,), replace=False)
+            else: obs_idx_vars = obs_indices
+            
+            H_t = jnp.zeros((len(obs_idx_vars), N)).at[jnp.arange(len(obs_idx_vars)), obs_idx_vars].set(1.0)
+            key, subkey = jax.random.split(key)
+            y_t = jnp.array(x_true_t)[obs_idx_vars] + sigma_obs * jax.random.normal(subkey, shape=(len(obs_idx_vars),))
+            H_list.append(H_t); y_obs_list.append(y_t)
+            
+        H_seq, y_obs_seq = jnp.stack(H_list), jnp.stack(y_obs_list)
+
+        # Shared Initial Ensemble
+        key, key_ic, key_ens = jax.random.split(key, 3)
+        x0_hat = u_true + P0_sigma * jax.random.normal(key_ic, shape=(N,))
+        ensemble0 = init_ensemble(x0_hat, P0, N_ens, key_ens)
+
+        # ── 1. PI EnKF ──
+        x_means_pi, x_spreads_pi, prior_pi = run_enkf_smoother(
+            predict_fn_pi, update_fn_pi, ensemble0, y_obs_seq, obs_step_indices_batch, H_seq, Q_fine, R, key, total_fine_steps_batch, dt_fine, dt_window)
+        # ── 2. DD EnKF ──
+        x_means_dd, x_spreads_dd, prior_dd = run_enkf_smoother(
+            predict_fn_dd, update_fn_dd, ensemble0, y_obs_seq, obs_step_indices_batch, H_seq, Q_fine, R, key, total_fine_steps_batch, dt_fine, dt_window)
+        
+        # ── 3. Numerical EnKF (Dynamically compiled for F_i) ──
+        def num_prop(u, t_query):
+            steps = jnp.round(t_query / dt_integration).astype(jnp.int32)
+            return jax.lax.fori_loop(0, steps, lambda i, val: rk4_step_jax(val, F_i, dt_integration), u)
+        
+        predict_fn_num, update_fn_num = make_enkf(num_prop, N, N_ens)
+        x_means_num, x_spreads_num, prior_num = run_enkf_smoother(
+            predict_fn_num, update_fn_num, ensemble0, y_obs_seq, obs_step_indices_batch, H_seq, Q_fine, R, key, total_fine_steps_batch, dt_fine, dt_window)
+
+        # ERF Accums
+        p_rmse_pi = np.sqrt(np.mean((np.array(prior_pi) - x_true_at_obs) ** 2, axis=1)); po_rmse_pi = np.sqrt(np.mean((np.array(x_means_pi[obs_step_indices_batch]) - x_true_at_obs) ** 2, axis=1))
+        p_rmse_dd = np.sqrt(np.mean((np.array(prior_dd) - x_true_at_obs) ** 2, axis=1)); po_rmse_dd = np.sqrt(np.mean((np.array(x_means_dd[obs_step_indices_batch]) - x_true_at_obs) ** 2, axis=1))
+        p_rmse_num= np.sqrt(np.mean((np.array(prior_num)- x_true_at_obs) ** 2, axis=1)); po_rmse_num= np.sqrt(np.mean((np.array(x_means_num[obs_step_indices_batch])- x_true_at_obs) ** 2, axis=1))
+        
+        e_pi = p_rmse_pi / (po_rmse_pi + 1e-12); erf_pi_sum += e_pi; erf_pi_sq += e_pi**2
+        e_dd = p_rmse_dd / (po_rmse_dd + 1e-12); erf_dd_sum += e_dd; erf_dd_sq += e_dd**2
+        e_nu = p_rmse_num/ (po_rmse_num+ 1e-12); erf_num_sum+= e_nu; erf_num_sq+= e_nu**2
+
+        # L2 / Calibration accums
+        x_tw = x_true_fine[window_step_indices + 1]
+        den = np.linalg.norm(x_tw, axis=1) + 1e-12
+        l2_pi_sum += np.linalg.norm(np.array(x_means_pi[window_step_indices]) - x_tw, axis=1) / den
+        l2_dd_sum += np.linalg.norm(np.array(x_means_dd[window_step_indices]) - x_tw, axis=1) / den
+        l2_num_sum+= np.linalg.norm(np.array(x_means_num[window_step_indices])- x_tw, axis=1) / den
+        
+        rmse_pi_sum += np.sqrt(np.mean((np.array(x_means_pi[window_step_indices]) - x_tw) ** 2, axis=1))
+        rmse_dd_sum += np.sqrt(np.mean((np.array(x_means_dd[window_step_indices]) - x_tw) ** 2, axis=1))
+        rmse_num_sum+= np.sqrt(np.mean((np.array(x_means_num[window_step_indices])- x_tw) ** 2, axis=1))
+
+        spread_pi_sum += np.sqrt(np.mean(np.array(x_spreads_pi[window_step_indices]) ** 2, axis=1))
+        spread_dd_sum += np.sqrt(np.mean(np.array(x_spreads_dd[window_step_indices]) ** 2, axis=1))
+        spread_num_sum+= np.sqrt(np.mean(np.array(x_spreads_num[window_step_indices])** 2, axis=1))
+        
+        # Dense per-timestamp L2 accums
+        x_true_fine_tail = x_true_fine[1:]
+        den_dense = np.linalg.norm(x_true_fine_tail, axis=1) + 1e-12
+        l2_dense_pi_sum += np.linalg.norm(np.array(x_means_pi) - x_true_fine_tail, axis=1) / den_dense
+        l2_dense_dd_sum += np.linalg.norm(np.array(x_means_dd) - x_true_fine_tail, axis=1) / den_dense
+        l2_dense_num_sum+= np.linalg.norm(np.array(x_means_num)- x_true_fine_tail, axis=1) / den_dense
+
+
+        # RMSE 
+        prior_rmse_pi_sum += p_rmse_pi; post_rmse_pi_sum += po_rmse_pi
+        prior_pi_sq += p_rmse_pi**2; post_pi_sq += po_rmse_pi**2
+        
+        prior_rmse_dd_sum += p_rmse_dd; post_rmse_dd_sum += po_rmse_dd
+        prior_dd_sq += p_rmse_dd**2; post_dd_sq += po_rmse_dd**2
+        
+        prior_rmse_num_sum += p_rmse_num; post_rmse_num_sum += po_rmse_num
+        prior_num_sq += p_rmse_num**2; post_num_sq += po_rmse_num**2
+
+    # ── Open-Loop Rollouts ──
+    predict_full_pi = jax.jit(jax.vmap(lambda u: model_pi.x_pred_fn(params_pi, u, t_star_window), in_axes=0))
+    predict_full_dd = jax.jit(jax.vmap(lambda u: model_dd.x_pred_fn(params_dd, u, t_star_window), in_axes=0))
+
+    x_dense_pi_list, x_dense_dd_list = [], []
+    u_curr_pi, u_curr_dd = jnp.array(u0_batch), jnp.array(u0_batch)
+    
+    for k in range(batch_windows):
+        x_win_pi = predict_full_pi(u_curr_pi); x_win_dd = predict_full_dd(u_curr_dd)
+        if k == 0:
+            x_dense_pi_list.append(x_win_pi); x_dense_dd_list.append(x_win_dd)
+        else:
+            x_dense_pi_list.append(x_win_pi[:, 1:, :]); x_dense_dd_list.append(x_win_dd[:, 1:, :])
+        u_curr_pi = x_win_pi[:, -1, :]; u_curr_dd = x_win_dd[:, -1, :]
+
+    x_pred_dense_pi = jnp.concatenate(x_dense_pi_list, axis=1)
+    x_pred_dense_dd = jnp.concatenate(x_dense_dd_list, axis=1)
+    
+    total_steps_ol = x_pred_dense_pi.shape[1]
+    
+    # ── Numerical Open-Loop Rollout ──
+    x_pred_dense_num = vmap_rk4_rollout(jnp.array(u0_batch), jnp.array(F_batch), total_steps_ol, dt_integration)
+    
+    x_ref_dense_ol = jnp.array(u_test[:B, :total_steps_ol, :])
+    t_eval_ol = t_test[:total_steps_ol]
+
+    denom_ol = jnp.linalg.norm(x_ref_dense_ol, axis=2) + 1e-12
+    l2_ol_pi = np.array(jnp.mean(jnp.linalg.norm(x_pred_dense_pi - x_ref_dense_ol, axis=2) / denom_ol, axis=0))
+    l2_ol_dd = np.array(jnp.mean(jnp.linalg.norm(x_pred_dense_dd - x_ref_dense_ol, axis=2) / denom_ol, axis=0))
+    l2_ol_num= np.array(jnp.mean(jnp.linalg.norm(x_pred_dense_num- x_ref_dense_ol, axis=2) / denom_ol, axis=0))
+
+    t_dense_fine = np.arange(1, total_fine_steps_batch + 1) * dt_fine
+    
+    # Means calculation
+    erf_pi_mean = erf_pi_sum/B;   erf_pi_std = np.sqrt(np.maximum(erf_pi_sq/B - erf_pi_mean**2, 0.0))
+    erf_dd_mean = erf_dd_sum/B;   erf_dd_std = np.sqrt(np.maximum(erf_dd_sq/B - erf_dd_mean**2, 0.0))
+    erf_num_mean= erf_num_sum/B; erf_num_std = np.sqrt(np.maximum(erf_num_sq/B- erf_num_mean**2, 0.0))
+    
+    save_dir = os.path.join(workdir, "figures", "comparison_3way")
+    
+    # ── Plot 1: DENSE L2 (Includes both EnKF and Open Loop across the 3 regimes) ──
+    curves = {
+        "PI Open-loop": (np.array(t_eval_ol), l2_ol_pi), "PI + EnKF": (t_dense_fine, l2_dense_pi_sum / B),
+        "DD Open-loop": (np.array(t_eval_ol), l2_ol_dd), "DD + EnKF": (t_dense_fine, l2_dense_dd_sum / B),
+        "Num Open-loop": (np.array(t_eval_ol), l2_ol_num), "Num + EnKF": (t_dense_fine, l2_dense_num_sum / B),
+    }
+    colors = {
+        "PI Open-loop": "#90CAF9", "PI + EnKF": "#2196F3",
+        "DD Open-loop": "#FFCC80", "DD + EnKF": "#FF8C00",
+        "Num Open-loop": "#A5D6A7", "Num + EnKF": "#4CAF50"
+    }
+    _plot_l2_per_timestep(
+        curves=curves, title=f"EnKF vs open-loop: mean relative L2 per timestep (PI vs DD vs Num, B={B})",
+        save_path=os.path.join(save_dir, "batch_l2_per_timestep_enkf_compare_3way.pdf"), colors=colors
+    )
+
+    # ── Plot 2: ERF ──
+    _plot_erf_compare_3way(
+        obs_times_batch, erf_pi_mean, erf_pi_std, erf_dd_mean, erf_dd_std, erf_num_mean, erf_num_std, B,
+        title=f"EnKF ERF (PI vs DD vs Num)\n(B={B}, obs_n={obs_every_n}, σ_obs={sigma_obs})",
+        save_path=os.path.join(save_dir, "batch_erf_enkf_compare_3way.pdf")
+    )
+
+    # ── Plot 3: Calibration ──
+    _plot_calibration_compare_3way(
+        np.arange(1, batch_windows + 1), dt_window,
+        spread_pi_sum/B, rmse_pi_sum/B, spread_dd_sum/B, rmse_dd_sum/B, spread_num_sum/B, rmse_num_sum/B,
+        title=f"Calibration (PI vs DD vs Num, B={B}, N_ens={N_ens})",
+        save_path=os.path.join(save_dir, "batch_calibration_enkf_compare_3way.pdf")
+    )
+
+    # ── Plot 4: RMSE Comparison ──
+    _plot_rmse_comparison_3way(
+        obs_times_batch,
+        prior_rmse_pi_sum/B, np.sqrt(np.maximum(prior_pi_sq/B - (prior_rmse_pi_sum/B)**2, 0)),
+        post_rmse_pi_sum/B, np.sqrt(np.maximum(post_pi_sq/B - (post_rmse_pi_sum/B)**2, 0)),
+        prior_rmse_dd_sum/B, np.sqrt(np.maximum(prior_dd_sq/B - (prior_rmse_dd_sum/B)**2, 0)),
+        post_rmse_dd_sum/B, np.sqrt(np.maximum(post_dd_sq/B - (post_rmse_dd_sum/B)**2, 0)),
+        prior_rmse_num_sum/B, np.sqrt(np.maximum(prior_num_sq/B - (prior_rmse_num_sum/B)**2, 0)),
+        post_rmse_num_sum/B, np.sqrt(np.maximum(post_num_sq/B - (post_rmse_num_sum/B)**2, 0)),
+        sigma_obs, B,
+        title=f"EnKF Prior/Post RMSE (PI vs DD vs Num)\n(B={B}, σ_obs={sigma_obs})",
+        save_path=os.path.join(save_dir, "batch_rmse_enkf_compare_3way.pdf")
+    )
+
+
+def evaluate_enkf_dd_vs_pi_vs_num(
+    config: ml_collections.ConfigDict,
+    workdir: str,
+    test_h5_path: str = None,
+) -> None:
+    from examples.l96_6_larger_data.kf import run_enkf_smoother, init_ensemble
+    from examples.KS.kf import make_enkf
+
+    if test_h5_path is None: test_h5_path = "data/l96_forcing_test.h5"
+
+    with h5py.File(test_h5_path, "r") as f:
+        u_test = f["u"][:]
+        t_test = f["t"][:]
+        F_test = f["F"][:]
+
+    # Parameters loading
+    obs_every_n, sigma_obs, P0_sigma, dynamic_vars = config.ekf.get("obs_every_n", 4), config.ekf.get("sigma_obs", 0.5), config.ekf.get("P0_sigma", 1.0), config.ekf.get("dynamic_vars", False)
+    specify_obs_idx, obs_idx_list = config.kf.get("specify_obs_idx", False), config.kf.get("obs_idx_list", None)
+    N_ens, sigma_model = config.enkf.get("N_ens", 50), config.enkf.get("sigma_model", 0.1)
+
+    DT_WINDOW = float(config.get("dt_window", 0.25))
+    DT_FINE, DT_OBS = float(config.ekf.get("dt_fine", DT_WINDOW)), float(config.ekf.get("dt_obs", DT_WINDOW))
+    
+    trajectory_windows, batch_windows = config.eval.get("trajectory_windows", 160), config.eval.get("windows", 30)
+    num_ics_eval, enkf_batch_size = config.eval.get("num_ics", u_test.shape[0]), config.ekf.get("batch_l2_size", 200)
+    dt_integration = config.eval.get("dt_integration", 0.005)
+
+    t_star_window = jnp.linspace(0.0, DT_WINDOW, int(round(DT_WINDOW / dt_integration)) + 1)
+    
+    # Instantiating Networks
+    model_pi = models.L96UDON(config, t_star_window)
+    model_pi.state = restore_checkpoint(model_pi.state, os.path.join(os.getcwd(), config.wandb.name_pi, "ckpt", "udon_model"))
+    params_pi = model_pi.state.params
+    N = model_pi.N
+
+    model_dd = models.L96UDON_DD(config, t_star_window)
+    ckpt_dd = os.path.join(os.getcwd(), config.wandb.name_dd, "ckpt", "udon_model")
+    if not os.path.exists(ckpt_dd): ckpt_dd = os.path.join(os.getcwd(), config.wandb.name_dd, "ckpt", "udon_dd_model")
+    model_dd.state = restore_checkpoint(model_dd.state, ckpt_dd)
+    params_dd = model_dd.state.params
+
+    predict_fn_pi, update_fn_pi = model_pi.make_enkf_fns(params_pi, N_ens=N_ens)
+    predict_fn_dd, update_fn_dd = model_dd.make_enkf_fns(params_dd, N_ens=N_ens)
+
+    Q_fine = scale_Q_for_fine_steps(jnp.eye(N) * sigma_model ** 2, round(DT_WINDOW / DT_FINE))
+    obs_indices = jnp.array(obs_idx_list) if specify_obs_idx and obs_idx_list else jnp.arange(0, N, obs_every_n)
+    R, P0 = jnp.eye(len(obs_indices)) * sigma_obs ** 2, jnp.eye(N) * P0_sigma ** 2
+
+    # ── Single Trajectory Loops ──
+    num_plots = min(config.saving.total_plots, u_test.shape[0])
+    obs_times, obs_step_indices, total_fine_steps = build_obs_schedule(trajectory_windows * DT_WINDOW, DT_FINE, DT_OBS)
+
+    for ic_idx in range(num_plots):
+        logging.info(f"--- [EnKF Compare 3-Way] Trajectory IC {ic_idx} ---")
+        u0_np, F_i = u_test[ic_idx, 0, :], float(F_test[ic_idx])
+        
+        def lorenz_96(t, state, F=F_i):
+            return (np.roll(state, -1) - np.roll(state, 2)) * np.roll(state, 1) - state + F
+
+        t_eval_fine = np.linspace(0.0, trajectory_windows * DT_WINDOW, total_fine_steps + 1)
+        sol = solve_ivp(lorenz_96, t_span=[0.0, trajectory_windows * DT_WINDOW], y0=np.array(u0_np), t_eval=t_eval_fine, method='LSODA', rtol=1e-13, atol=1e-14)
+        x_true_fine = jnp.array(sol.y.T)
+        x_true_at_obs = x_true_fine[obs_step_indices + 1]
+
+        key = jax.random.PRNGKey(ic_idx)
+        H_list, y_obs_list, obs_coords = [], [], []
+
+        for obs_idx in range(len(obs_times)):
+            x_true_t = x_true_at_obs[obs_idx]
+            if not (specify_obs_idx and obs_idx_list) and dynamic_vars:
+                key, subkey  = jax.random.split(key)
+                obs_idx_vars = jax.random.choice(subkey, N, shape=(len(obs_indices),), replace=False)
+            else: obs_idx_vars = obs_indices
+
+            H_t = jnp.zeros((len(obs_idx_vars), N)).at[jnp.arange(len(obs_idx_vars)), obs_idx_vars].set(1.0)
+            key, subkey = jax.random.split(key)
+            y_t = x_true_t[obs_idx_vars] + sigma_obs * jax.random.normal(subkey, shape=(len(obs_idx_vars),))
+
+            H_list.append(H_t); y_obs_list.append(y_t)
+            for j, vi in enumerate(obs_idx_vars): obs_coords.append((int(vi), obs_times[obs_idx], float(y_t[j])))
+
+        H_seq, y_obs_seq = jnp.stack(H_list), jnp.stack(y_obs_list)
+
+        key, key_ic, key_ens = jax.random.split(key, 3)
+        ensemble0 = init_ensemble(jnp.array(u0_np) + P0_sigma * jax.random.normal(key_ic, shape=(N,)), P0, N_ens, key_ens)
+
+        x_means_pi, x_spreads_pi, _ = run_enkf_smoother(predict_fn_pi, update_fn_pi, ensemble0, y_obs_seq, obs_step_indices, H_seq, Q_fine, R, key, total_fine_steps, DT_FINE, DT_WINDOW)
+        x_means_dd, x_spreads_dd, _ = run_enkf_smoother(predict_fn_dd, update_fn_dd, ensemble0, y_obs_seq, obs_step_indices, H_seq, Q_fine, R, key, total_fine_steps, DT_FINE, DT_WINDOW)
+
+        def num_prop(u, t_query):
+            steps = jnp.round(t_query / dt_integration).astype(jnp.int32)
+            return jax.lax.fori_loop(0, steps, lambda i, val: rk4_step_jax(val, F_i, dt_integration), u)
+        
+        predict_fn_num, update_fn_num = make_enkf(num_prop, N, N_ens)
+        x_means_num, x_spreads_num, _ = run_enkf_smoother(predict_fn_num, update_fn_num, ensemble0, y_obs_seq, obs_step_indices, H_seq, Q_fine, R, key, total_fine_steps, DT_FINE, DT_WINDOW)
+
+        _plot_trajectory_summary_compare_enkf_3way(
+            t_ax=t_eval_fine[1:], x_true=np.array(x_true_fine[1:]),
+            x_est_pi=np.array(x_means_pi), x_std_pi=np.array(x_spreads_pi),
+            x_est_dd=np.array(x_means_dd), x_std_dd=np.array(x_spreads_dd),
+            x_est_num=np.array(x_means_num), x_std_num=np.array(x_spreads_num),
+            ic_idx=ic_idx, save_path=os.path.join(workdir, "figures", "comparison_3way", f"trajectory_summary_enkf_compare_3way_ic_{ic_idx}.pdf"),
+            N=N, dt_window=DT_WINDOW, obs_coords=obs_coords
+        )
+
+    # ── Batch EnKF Eval Loops ──
+    _evaluate_batch_enkf_dd_vs_pi_vs_num(
+        model_pi, params_pi, predict_fn_pi, update_fn_pi,
+        model_dd, params_dd, predict_fn_dd, update_fn_dd,
+        t_star_window, u_test, t_test, F_test,
+        Q_fine, P0, R, obs_indices, N_ens, obs_every_n, sigma_obs, P0_sigma,
+        dynamic_vars, specify_obs_idx, obs_idx_list,
+        DT_WINDOW, DT_FINE, DT_OBS, dt_integration,
+        num_ics_eval, enkf_batch_size, batch_windows, config, workdir
+    )
+
+
 

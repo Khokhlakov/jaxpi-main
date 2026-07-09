@@ -104,7 +104,7 @@ def get_config():
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
-    eval.windows            = 30
+    eval.windows            = 320
     eval.trajectory_windows = 160
     eval.num_ics            = 500
     eval.dt_integration     = 0.005
