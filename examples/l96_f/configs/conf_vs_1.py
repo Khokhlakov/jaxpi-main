@@ -76,7 +76,7 @@ def get_config():
     ekf.batch_l2_size   = 100
 
     ekf.dt_fine = 0.005
-    ekf.dt_obs  = 0.25
+    ekf.dt_obs  = 0.5
     # dt_fine must divide dt_obs and dt_window
 
     # EnKF settings
