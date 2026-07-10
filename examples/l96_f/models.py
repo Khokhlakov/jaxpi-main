@@ -109,48 +109,8 @@ class L96UDON(ForwardIVP):
         from examples.l96_f.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)
         # Pass the augmented state dimension (self.N + 1 = 41) to the EnKF factory
-        return make_enkf(propagator, self.N + 1, N_ens)
-    
-    def make_residual_fn(self, params) -> Callable:
-        """
-        Closure over trained ``params`` exposing the PDE residual with the
-        SAME (u, t) calling convention as ``make_surrogate_propagator``: u
-        is the (N+1,) augmented window IC, t is the in-window query time.
-
-        This is exactly ``r_net`` -- rho = x_t - F(x; mu), the same residual
-        already used in the physics loss -- reused here at inference time.
-        No gradient is taken w.r.t. params; only the jacfwd already inside
-        ``r_net`` (w.r.t. t) is exercised.
-
-        Used by Route B (``kf.make_route_b_enkf``) to turn the surrogate's
-        own physics-consistency into flow-dependent process-noise inflation.
-        """
-        def residual(u: jnp.ndarray, t: float) -> jnp.ndarray:
-            t_vec = jnp.array([t])
-            return self.r_net(params, u, t_vec)
-        return residual
-
-    def make_route_b_enkf_fns(self, params, N_ens: int = 50):
-        """
-        Route B (residual-scaled covariance) EnKF predict/update pair.
-        See ``kf.make_route_b_enkf`` for the forecast-step math.
-
-        Only defined here (on the physics-informed model): ``L96UDON_DD``
-        has no PDE residual (no ``r_net``, since it's a purely data-driven
-        fit) and so cannot drive Route B's physics-based inflation -- use
-        the fixed-Q ``make_enkf_fns`` for it instead.
-        """
-        from examples.l96_f.kf import make_route_b_enkf
-        propagator = self.make_surrogate_propagator(params)
-        residual   = self.make_residual_fn(params)
-        # Pass the augmented state dimension (self.N + 1 = 41) to the EnKF factory
-        return make_route_b_enkf(
-            propagator_fn=propagator,
-            residual_fn=residual,
-            N=self.N + 1,
-            N_ens=N_ens,
-        )
-    
+        return make_enkf(propagator, self.N + 1, N_ens, N_dyn=self.N)
+ 
     @partial(jit, static_argnums=(0,))
     def compute_l2_error(self, params, u_test_batch, x_test_batch):
         # 1. Vectorize x_pred_fn to handle a batch of initial conditions (axis 0 of u_test_batch)
@@ -250,7 +210,7 @@ class L96UDON_DD(ForwardIVP):
         from examples.l96_f.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)
         # Pass the augmented state dimension (self.N + 1 = 41) to the EnKF factory
-        return make_enkf(propagator, self.N + 1, N_ens)
+        return make_enkf(propagator, self.N + 1, N_ens, N_dyn=self.N)
 
     @partial(jit, static_argnums=(0,))
     def compute_l2_error(self, params, u_test_batch, x_test_batch):
