@@ -82,7 +82,7 @@ def get_config():
     kf.N_ens            = 90
 
     kf.route_b_alpha  = 1.0
-    kf.route_b_beta   = 5.0
+    kf.route_b_beta   = 250.0
     kf.Q0_sigma       = 0.3
     kf.route_b_n_quad = 3
 
