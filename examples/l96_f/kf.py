@@ -43,11 +43,11 @@ def make_enkf(propagator_fn: Callable, N: int, N_ens: int, N_dyn: int = 40):
     Factory that builds JIT-compiled EnKF predict/update steps with Multiplicative Covariance Inflation.
     """
 
-    @partial(jit, static_argnums=(3,))
+    @jit
     def predict(
         enkf_state: EnKFState,
-        alpha:      float,        # REPLACED Q: scalar fine-step inflation factor >= 1.0
-        key:        jnp.ndarray,  # Unused in deterministic MCI, kept for signature uniformity
+        alpha:      float,        
+        key:        jnp.ndarray,  
         t_query:    float,
     ) -> EnKFState:
         
@@ -216,11 +216,14 @@ def run_enkf_smoother(
         # step_in_window = 0 on the first step of every window, so t_query
         # starts at dt_fine and increases by dt_fine on each subsequent step.
         t_query = (step_in_window + 1) * dt_fine  # Python float — static for JIT
- 
+
+        # Calculate the cumulative inflation for this exact point in the window
+        cumulative_alpha = alpha_fine ** (step_in_window + 1)
+
         key, key_pred, key_upd = jax.random.split(key, 3)
  
         # Predict: queries propagator_fn(window_ic_i, t_query) for each member.
-        state = predict_fn(state, alpha_fine, key_pred, t_query)
+        state = predict_fn(state, cumulative_alpha, key_pred, t_query)
         
  
         # Conditionally update if an observation falls on this fine step.
