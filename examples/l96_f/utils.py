@@ -62,7 +62,6 @@ def build_obs_schedule(
 
     return obs_times, obs_step_indices, total_fine_steps
 
-
 def scale_Q_for_fine_steps(
     Q_coarse:      "jnp.ndarray",
     steps_per_window: int,
@@ -83,4 +82,24 @@ def scale_Q_for_fine_steps(
         Q_fine: (N, N) per-fine-step process noise covariance.
     """
     return Q_coarse / steps_per_window
+
+def scale_inflation_for_fine_steps(
+    alpha_coarse: float,
+    steps_per_window: int,
+) -> float:
+    """
+    Scale a window-level multiplicative inflation factor to a per-fine-step value.
+
+    To ensure that compounding inflation across k fine steps equals the desired
+    window-level inflation alpha_coarse, the per-step factor must be the k-th root:
+        prod_{i=1}^k (alpha_fine) = alpha_coarse  =>  alpha_fine = alpha_coarse ** (1 / k)
+
+    Args:
+        alpha_coarse:     Desired covariance inflation over one full window (e.g., 1.05).
+        steps_per_window: Integer ratio DT_WINDOW / dt_fine.
+
+    Returns:
+        alpha_fine: Per-fine-step multiplicative inflation scalar.
+    """
+    return float(alpha_coarse ** (1.0 / steps_per_window))
 

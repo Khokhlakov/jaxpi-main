@@ -38,64 +38,38 @@ class EnKFState(NamedTuple):
     window_ics: jnp.ndarray  # (N_ens, N)
  
  
-def make_enkf(propagator_fn: Callable, N: int, N_ens: int):
+def make_enkf(propagator_fn: Callable, N: int, N_ens: int, N_dyn: int = 40):
     """
-    Factory that builds JIT-compiled EnKF predict/update steps.
- 
-    The surrogate propagator is now expected to have the signature
-        propagator_fn(u: (N,), t: float) -> (N,)
-    where ``t`` is the query time *within the current window*.  Inside
-    the ``predict`` step, ``t`` is marked as a static argument so that
-    JAX can treat ``round(t / dt_fine)`` as a compile-time constant when
-    the propagator is a numerical integrator (see
-    ``_make_l96_rk4_variable_propagator``).  For the DeepONet surrogate,
-    ``t`` is simply forwarded to ``x_net``.
- 
-    Key differences from the EKF:
-    • No Jacobian — the nonlinear surrogate is applied to every member
-      via vmap, propagating the full nonlinearity.
-    • Window-aware prediction — each member is propagated from its
-      ``window_ic`` at the appropriate in-window offset, not chained from
-      the previous fine-step output.
-    • Stochastic update — each member receives an independently-perturbed
-      observation.
- 
-    Args:
-        propagator_fn: callable (u: (N,), t: float) -> (N,).
-        N:     state dimension (40 for L96).
-        N_ens: ensemble size.
- 
-    Returns:
-        predict_fn, update_fn — both JIT-compiled.
+    Factory that builds JIT-compiled EnKF predict/update steps with Multiplicative Covariance Inflation.
     """
- 
+
     @partial(jit, static_argnums=(3,))
     def predict(
         enkf_state: EnKFState,
-        Q:          jnp.ndarray,  # (N_dyn, N_dyn) process noise (unpadded)
-        key:        jnp.ndarray,
+        alpha:      float,        # REPLACED Q: scalar fine-step inflation factor >= 1.0
+        key:        jnp.ndarray,  # Unused in deterministic MCI, kept for signature uniformity
         t_query:    float,
     ) -> EnKFState:
         
-        # 1. Propagate full augmented state
+        # 1. Propagate full augmented state (41-D)
         ensemble_pred = vmap(
             lambda u: propagator_fn(u, t_query)
         )(enkf_state.window_ics)
         
-        N_total = ensemble_pred.shape[1]
-        N_dyn   = Q.shape[0]
- 
-        # 2. Additive process noise strictly on the dynamic sub-state
-        L_Q = jnp.linalg.cholesky(Q + 1e-10 * jnp.eye(N_dyn))
-        z   = jax.random.normal(key, shape=(N_ens, N_dyn))
-        noise = z @ L_Q.T
+        # 2. Compute ensemble mean and anomalies
+        x_mean = jnp.mean(ensemble_pred, axis=0, keepdims=True)  # (1, N)
+        x_anom = ensemble_pred - x_mean                          # (N_ens, N)
+
+        # 3. Apply multiplicative inflation strictly to dynamic variables
+        # Construct mask: [alpha, alpha, ..., alpha (40 times), 1.0 (for F)]
+        inflation_mask = jnp.ones((N,))
+        inflation_mask = inflation_mask.at[:N_dyn].set(alpha)
         
-        # 3. Pad the noise vector with zeros for the static parameters
-        if N_dyn < N_total:
-            noise = jnp.pad(noise, ((0, 0), (0, N_total - N_dyn)))
- 
+        # Scale anomalies and reconstruct ensemble
+        ensemble_inf = x_mean + x_anom * inflation_mask
+
         return EnKFState(
-            ensemble=ensemble_pred + noise,
+            ensemble=ensemble_inf,
             window_ics=enkf_state.window_ics,
         )
  
@@ -162,7 +136,7 @@ def run_enkf_smoother(
     observations:      jnp.ndarray,   # (T_obs, m)
     obs_step_indices:  np.ndarray,    # (T_obs,) int — fine step of each obs
     H_seq:             jnp.ndarray,   # (T_obs, m, N)
-    Q:                 jnp.ndarray,   # (N, N) — per fine step
+    alpha_fine:        float,
     R:                 jnp.ndarray,   # (m, m)
     key:               jnp.ndarray,
     total_fine_steps:  int,
@@ -209,7 +183,7 @@ def run_enkf_smoother(
         observations:     (T_obs, m) observation vectors.
         obs_step_indices: (T_obs,) fine-step indices of each observation.
         H_seq:            (T_obs, m, N) observation matrices.
-        Q:                (N, N) per-fine-step process noise covariance.
+        alpha_fine:       multiplicative inflation
         R:                (m, m) observation noise covariance.
         key:              JAX PRNG key.
         total_fine_steps: total number of fine steps to run.
@@ -236,7 +210,7 @@ def run_enkf_smoother(
     x_spreads: list[jnp.ndarray] = []
     prior_means_at_obs: list[jnp.ndarray] = []
     step_in_window = 0  # Python int — used to compute t_query
- 
+    
     for fine_t in range(total_fine_steps):
         # In-window query time: (step_in_window + 1) * dt_fine.
         # step_in_window = 0 on the first step of every window, so t_query
@@ -246,7 +220,8 @@ def run_enkf_smoother(
         key, key_pred, key_upd = jax.random.split(key, 3)
  
         # Predict: queries propagator_fn(window_ic_i, t_query) for each member.
-        state = predict_fn(state, Q, key_pred, t_query)
+        state = predict_fn(state, alpha_fine, key_pred, t_query)
+        
  
         # Conditionally update if an observation falls on this fine step.
         reset_window = False
