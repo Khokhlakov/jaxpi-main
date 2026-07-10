@@ -11,7 +11,7 @@ from typing import Callable
 
 from jaxpi.utils import restore_checkpoint
 import examples.l96_f.models as models
-from examples.l96_f.utils import build_obs_schedule, scale_inflation_for_fine_steps
+from examples.l96_f.utils import build_obs_schedule, scale_Q_for_fine_steps
 
 import numpy as np
 from scipy.integrate import solve_ivp
@@ -53,7 +53,7 @@ def _plot_trajectory_summary(
     x_est:      np.ndarray,        # (T, N) estimate (prediction / filter mean)
     x_std:      np.ndarray | None, # (T, N) per-variable std, or None
     ic_idx:     int,
-    est_label:  str,               # e.g. "DeepONet", "EnKF mean"
+    est_label:  str,               # e.g. "DeepONet", "EKF estimate", "EnKF mean"
     save_path:  str,
     N:          int = 40,
     dt_window:  float | None = None,
@@ -199,7 +199,7 @@ def _plot_trajectory_summary(
                 color=EST_COLOR, linewidth=1.0, linestyle="--",
                 label=est_label)
  
-        # ±1σ uncertainty band (EnKF only)
+        # ±1σ uncertainty band (EKF or EnKF only)
         if x_std is not None:
             ax.fill_between(
                 t_ax,
@@ -1168,7 +1168,7 @@ def _evaluate_batch_enkf_dd_vs_pi(
     u_test:            np.ndarray,   # (num_ics, num_test_pts, N)
     t_test:            np.ndarray,   # (num_test_pts,)
     F_test:            np.ndarray,   # (num_ics,)
-    alpha_fine, P0, R, obs_indices,
+    Q_fine, P0, R, obs_indices,
     N_ens:             int,
     obs_every_n:       int,
     sigma_obs:         float,
@@ -1313,7 +1313,7 @@ def _evaluate_batch_enkf_dd_vs_pi(
         x_means_pi, x_spreads_pi, prior_means_pi = run_enkf_smoother(
             predict_fn_pi, update_fn_pi,
             ensemble0, y_obs_seq, obs_step_indices_batch,
-            H_seq, alpha_fine, R, key, total_fine_steps_batch,
+            H_seq, Q_fine, R, key, total_fine_steps_batch,
             dt_fine=dt_fine, dt_window=dt_window,
         )
 
@@ -1321,7 +1321,7 @@ def _evaluate_batch_enkf_dd_vs_pi(
         x_means_dd, x_spreads_dd, prior_means_dd = run_enkf_smoother(
             predict_fn_dd, update_fn_dd,
             ensemble0, y_obs_seq, obs_step_indices_batch,
-            H_seq, alpha_fine, R, key, total_fine_steps_batch,
+            H_seq, Q_fine, R, key, total_fine_steps_batch,
             dt_fine=dt_fine, dt_window=dt_window,
         )
 
@@ -1541,19 +1541,19 @@ def evaluate_enkf_dd_vs_pi(
     from examples.l96_f.kf import run_enkf_smoother, init_ensemble
 
     # ── EnKF / observation configuration (identical to evaluate_with_enkf) ──
-    obs_every_n  = config.kf.get("obs_every_n",   4)
-    sigma_obs    = config.kf.get("sigma_obs",      0.5)
-    P0_sigma     = config.kf.get("P0_sigma",       1.0)
-    dynamic_vars = config.kf.get("dynamic_vars",   False)
-    N_ens        = config.kf.get("N_ens",         50)
-    alpha_coarse = config.kf.get("inflation_factor", 1.05)
+    obs_every_n  = config.ekf.get("obs_every_n",   4)
+    sigma_obs    = config.ekf.get("sigma_obs",      0.5)
+    P0_sigma     = config.ekf.get("P0_sigma",       1.0)
+    dynamic_vars = config.ekf.get("dynamic_vars",   False)
+    N_ens        = config.enkf.get("N_ens",         50)
+    sigma_model  = config.enkf.get("sigma_model",   0.1)
 
     specify_obs_idx = config.kf.get("specify_obs_idx", False)
     obs_idx_list    = config.kf.get("obs_idx_list", None)
 
     DT_WINDOW = float(config.get("dt_window", 0.25))
-    DT_FINE   = float(config.kf.get("dt_fine",   DT_WINDOW))
-    DT_OBS    = float(config.kf.get("dt_obs",    DT_WINDOW))
+    DT_FINE   = float(config.ekf.get("dt_fine",   DT_WINDOW))
+    DT_OBS    = float(config.ekf.get("dt_obs",    DT_WINDOW))
 
     # ── 1. Load the long test trajectories and forcing parameters ─────────
     if test_h5_path is None:
@@ -1570,7 +1570,7 @@ def evaluate_enkf_dd_vs_pi(
     batch_windows      = config.eval.get("windows", 200)
     num_ics_eval       = config.eval.get("num_ics", u_test.shape[0])
     dt_integration     = config.eval.get("dt_integration", 0.005)
-    enkf_batch_size    = config.kf.get("batch_l2_size", 200)
+    enkf_batch_size    = config.ekf.get("batch_l2_size", 200)
  
     # ── 2. Models & per-window query grid ───────────────────────────────────
     time_steps = int(round(dt_window / dt_integration)) + 1 
@@ -1597,9 +1597,9 @@ def evaluate_enkf_dd_vs_pi(
     predict_fn_pi, update_fn_pi = model_pi.make_enkf_fns(params_pi, N_ens=N_ens)
     predict_fn_dd, update_fn_dd = model_dd.make_enkf_fns(params_dd, N_ens=N_ens)
 
-    # Scale multiplicative inflation geometrically for fine timesteps
     steps_per_window = round(DT_WINDOW / DT_FINE)
-    alpha_fine       = scale_inflation_for_fine_steps(alpha_coarse, steps_per_window)
+    Q_coarse = jnp.eye(N) * sigma_model ** 2
+    Q_fine   = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
 
     if specify_obs_idx and obs_idx_list:
         obs_indices = jnp.array(obs_idx_list)
@@ -1689,7 +1689,7 @@ def evaluate_enkf_dd_vs_pi(
         x_means_pi, x_spreads_pi, _ = run_enkf_smoother(
             predict_fn_pi, update_fn_pi,
             ensemble0, y_obs_seq, obs_step_indices,
-            H_seq, alpha_fine, R, key, total_fine_steps,
+            H_seq, Q_fine, R, key, total_fine_steps,
             dt_fine=DT_FINE, dt_window=DT_WINDOW,
         )
 
@@ -1698,7 +1698,7 @@ def evaluate_enkf_dd_vs_pi(
         x_means_dd, x_spreads_dd, _ = run_enkf_smoother(
             predict_fn_dd, update_fn_dd,
             ensemble0, y_obs_seq, obs_step_indices,
-            H_seq, alpha_fine, R, key, total_fine_steps,
+            H_seq, Q_fine, R, key, total_fine_steps,
             dt_fine=DT_FINE, dt_window=DT_WINDOW,
         )
 
@@ -1745,7 +1745,7 @@ def evaluate_enkf_dd_vs_pi(
         model_dd, params_dd, predict_fn_dd, update_fn_dd,
         t_star_window,
         u_test, t_test, F_test,
-        alpha_fine, P0, R, obs_indices,
+        Q_fine, P0, R, obs_indices,
         N_ens, obs_every_n, sigma_obs, P0_sigma, dynamic_vars,
         specify_obs_idx, obs_idx_list,
         DT_WINDOW, DT_FINE, DT_OBS,

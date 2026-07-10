@@ -109,8 +109,9 @@ class L96UDON(ForwardIVP):
         from examples.l96_f.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)
         # Pass the augmented state dimension (self.N + 1 = 41) to the EnKF factory
-        return make_enkf(propagator, self.N + 1, N_ens, N_dyn=self.N)
+        return make_enkf(propagator, self.N + 1, N_ens)
  
+    
     @partial(jit, static_argnums=(0,))
     def compute_l2_error(self, params, u_test_batch, x_test_batch):
         # 1. Vectorize x_pred_fn to handle a batch of initial conditions (axis 0 of u_test_batch)
@@ -210,7 +211,7 @@ class L96UDON_DD(ForwardIVP):
         from examples.l96_f.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)
         # Pass the augmented state dimension (self.N + 1 = 41) to the EnKF factory
-        return make_enkf(propagator, self.N + 1, N_ens, N_dyn=self.N)
+        return make_enkf(propagator, self.N + 1, N_ens)
 
     @partial(jit, static_argnums=(0,))
     def compute_l2_error(self, params, u_test_batch, x_test_batch):
