@@ -1541,19 +1541,19 @@ def evaluate_enkf_dd_vs_pi(
     from examples.l96_f.kf import run_enkf_smoother, init_ensemble
 
     # ── EnKF / observation configuration (identical to evaluate_with_enkf) ──
-    obs_every_n  = config.ekf.get("obs_every_n",   4)
-    sigma_obs    = config.ekf.get("sigma_obs",      0.5)
-    P0_sigma     = config.ekf.get("P0_sigma",       1.0)
-    dynamic_vars = config.ekf.get("dynamic_vars",   False)
-    N_ens        = config.enkf.get("N_ens",         50)
-    sigma_model  = config.enkf.get("sigma_model",   0.1)
+    obs_every_n  = config.kf.get("obs_every_n",   4)
+    sigma_obs    = config.kf.get("sigma_obs",      0.5)
+    P0_sigma     = config.kf.get("P0_sigma",       1.0)
+    dynamic_vars = config.kf.get("dynamic_vars",   False)
+    N_ens        = config.kf.get("N_ens",         50)
+    sigma_model  = config.kf.get("sigma_model",   0.1)
 
     specify_obs_idx = config.kf.get("specify_obs_idx", False)
     obs_idx_list    = config.kf.get("obs_idx_list", None)
 
     DT_WINDOW = float(config.get("dt_window", 0.25))
-    DT_FINE   = float(config.ekf.get("dt_fine",   DT_WINDOW))
-    DT_OBS    = float(config.ekf.get("dt_obs",    DT_WINDOW))
+    DT_FINE   = float(config.kf.get("dt_fine",   DT_WINDOW))
+    DT_OBS    = float(config.kf.get("dt_obs",    DT_WINDOW))
 
     # ── 1. Load the long test trajectories and forcing parameters ─────────
     if test_h5_path is None:
@@ -1570,7 +1570,7 @@ def evaluate_enkf_dd_vs_pi(
     batch_windows      = config.eval.get("windows", 200)
     num_ics_eval       = config.eval.get("num_ics", u_test.shape[0])
     dt_integration     = config.eval.get("dt_integration", 0.005)
-    enkf_batch_size    = config.ekf.get("batch_l2_size", 200)
+    enkf_batch_size    = config.kf.get("batch_l2_size", 200)
  
     # ── 2. Models & per-window query grid ───────────────────────────────────
     time_steps = int(round(dt_window / dt_integration)) + 1 
