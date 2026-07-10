@@ -53,7 +53,7 @@ def _plot_trajectory_summary(
     x_est:      np.ndarray,        # (T, N) estimate (prediction / filter mean)
     x_std:      np.ndarray | None, # (T, N) per-variable std, or None
     ic_idx:     int,
-    est_label:  str,               # e.g. "DeepONet", "EKF estimate", "EnKF mean"
+    est_label:  str,               # e.g. "DeepONet", "EnKF mean"
     save_path:  str,
     N:          int = 40,
     dt_window:  float | None = None,
@@ -199,7 +199,7 @@ def _plot_trajectory_summary(
                 color=EST_COLOR, linewidth=1.0, linestyle="--",
                 label=est_label)
  
-        # ±1σ uncertainty band (EKF or EnKF only)
+        # ±1σ uncertainty band (EnKF only)
         if x_std is not None:
             ax.fill_between(
                 t_ax,
@@ -1541,19 +1541,19 @@ def evaluate_enkf_dd_vs_pi(
     from examples.l96_f.kf import run_enkf_smoother, init_ensemble
 
     # ── EnKF / observation configuration (identical to evaluate_with_enkf) ──
-    obs_every_n  = config.ekf.get("obs_every_n",   4)
-    sigma_obs    = config.ekf.get("sigma_obs",      0.5)
-    P0_sigma     = config.ekf.get("P0_sigma",       1.0)
-    dynamic_vars = config.ekf.get("dynamic_vars",   False)
-    N_ens        = config.enkf.get("N_ens",         50)
-    alpha_coarse = config.enkf.get("inflation_factor", 1.05)
+    obs_every_n  = config.kf.get("obs_every_n",   4)
+    sigma_obs    = config.kf.get("sigma_obs",      0.5)
+    P0_sigma     = config.kf.get("P0_sigma",       1.0)
+    dynamic_vars = config.kf.get("dynamic_vars",   False)
+    N_ens        = config.kf.get("N_ens",         50)
+    alpha_coarse = config.kf.get("inflation_factor", 1.05)
 
     specify_obs_idx = config.kf.get("specify_obs_idx", False)
     obs_idx_list    = config.kf.get("obs_idx_list", None)
 
     DT_WINDOW = float(config.get("dt_window", 0.25))
-    DT_FINE   = float(config.ekf.get("dt_fine",   DT_WINDOW))
-    DT_OBS    = float(config.ekf.get("dt_obs",    DT_WINDOW))
+    DT_FINE   = float(config.kf.get("dt_fine",   DT_WINDOW))
+    DT_OBS    = float(config.kf.get("dt_obs",    DT_WINDOW))
 
     # ── 1. Load the long test trajectories and forcing parameters ─────────
     if test_h5_path is None:
@@ -1570,7 +1570,7 @@ def evaluate_enkf_dd_vs_pi(
     batch_windows      = config.eval.get("windows", 200)
     num_ics_eval       = config.eval.get("num_ics", u_test.shape[0])
     dt_integration     = config.eval.get("dt_integration", 0.005)
-    enkf_batch_size    = config.ekf.get("batch_l2_size", 200)
+    enkf_batch_size    = config.kf.get("batch_l2_size", 200)
  
     # ── 2. Models & per-window query grid ───────────────────────────────────
     time_steps = int(round(dt_window / dt_integration)) + 1 

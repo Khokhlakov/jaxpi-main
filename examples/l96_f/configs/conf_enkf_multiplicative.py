@@ -4,7 +4,7 @@ import jax.numpy as jnp
 def get_config():
     # Config 1 but init weights 10:1 and using causal training
     config = ml_collections.ConfigDict()
-    config.mode = "eval_dd_vs_pi"
+    config.mode = "eval_enkf_dd_vs_pi"
 
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
@@ -66,24 +66,20 @@ def get_config():
     kf.specify_obs_idx  = False
     kf.obs_idx_list     = [0,2,4,8,12,14,16,20,24,26,28,32,36]
 
-    # EKF settings
-    config.ekf = ekf = ml_collections.ConfigDict()
-    ekf.obs_every_n  = 4
+    kf.obs_every_n  = 4
 
-    ekf.sigma_obs       = 0.2
-    ekf.P0_sigma        = 0.3
-    ekf.dynamic_vars    = False 
-    ekf.batch_l2_size   = 100
+    kf.sigma_obs       = 0.2
+    kf.P0_sigma        = 0.3
+    kf.dynamic_vars    = False 
+    kf.batch_l2_size   = 100
 
-    ekf.dt_fine = 0.005
-    ekf.dt_obs  = 0.5
+    kf.dt_fine = 0.005
+    kf.dt_obs  = 0.5
     # dt_fine must divide dt_obs and dt_window
 
-    # EnKF settings
-    config.enkf = ml_collections.ConfigDict()
-    config.enkf.sigma_model      = 1.0
-    config.enkf.inflation_factor = 1.05 # window-level 
-    config.enkf.N_ens            = 90
+    kf.sigma_model      = 1.0
+    kf.inflation_factor = 1.05 # window-level 
+    kf.N_ens            = 90
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
