@@ -84,7 +84,7 @@ def get_config():
     kf.route_b_alpha  = 1.0
     kf.route_b_beta   = 5.0
     kf.Q0_sigma       = 0.3
-    kf.route_b_n_quad = 3.0
+    kf.route_b_n_quad = 3
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
