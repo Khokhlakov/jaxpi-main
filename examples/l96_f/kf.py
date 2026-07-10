@@ -107,9 +107,9 @@ def make_enkf(propagator_fn: Callable, N: int, N_ens: int, N_dyn: int = 40):
  
         # Ensemble-based Kalman gain
         scale = 1.0 / (N_ens - 1)
-        PHT   = scale * X_anom.T @ Y_anom                       # (N, m)
-        S     = scale * Y_anom.T @ Y_anom + R                   # (m, m)
-        K     = PHT @ jnp.linalg.inv(S)                        # (N, m)
+        PHT   = scale * X_anom.T @ Y_anom                          # (N, m)
+        S     = scale * Y_anom.T @ Y_anom + R                      # (m, m)
+        K     = jax.scipy.linalg.solve(S, PHT.T, assume_a='pos').T # (N, m)
  
         # Perturbed observations
         L_R         = jnp.linalg.cholesky(R + 1e-10 * jnp.eye(m))
