@@ -4,7 +4,7 @@ import jax.numpy as jnp
 def get_config():
     # Config 1 but init weights 10:1 and using causal training
     config = ml_collections.ConfigDict()
-    config.mode = "eval_enkf_dd_vs_pi"
+    config.mode = "evaluate_enkf_pi_compare"
 
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
