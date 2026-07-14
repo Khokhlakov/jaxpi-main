@@ -84,10 +84,15 @@ def train_and_evaluate(config, workdir: str):
     dom_t_repl  = jax.device_put_replicated(dom_t_np, jax.local_devices())
 
     # 3. Define the PMAP On-Device Sampler
+    #    Key advancement is fused into the same pmapped call that draws the
+    #    batch, so each step is a single fully-parallel dispatch with no
+    #    host round-trip and no cross-device data movement (mirrors the
+    #    fold_in / single-pmap pattern used by the DD sampler below).
     @jax.pmap
-    def sample_on_device(key, local_u_pool, local_dom_t):
-        """Samples initial conditions and time points locally on the accelerator."""
-        key_u, key_t = jax.random.split(key)
+    def get_batch_on_device(device_key, local_u_pool, local_dom_t):
+        """Splits keys and samples entirely on-device. No host involvement."""
+        new_key, sample_key = jax.random.split(device_key)
+        key_u, key_t = jax.random.split(sample_key)
 
         # Sample u (SpaceSampler equivalent)
         idx_u   = jax.random.randint(key_u, (batch_size_per_device,), 0, pool_size)
@@ -98,12 +103,13 @@ def train_and_evaluate(config, workdir: str):
         t_max   = local_dom_t[0, 1]
         batch_t = jax.random.uniform(key_t, (batch_size_per_device, 1), minval=t_min, maxval=t_max)
 
-        return batch_u, batch_t
+        return new_key, (batch_u, batch_t)
 
-    # 4. Initialize reproducible PRNG Keys for all devices
-    seed = config.training.get("seed", 42)
-    base_key = jax.random.PRNGKey(seed)
-    keys = jax.random.split(base_key, num_devices)
+    # 4. Initialize reproducible PRNG Keys, seeded independently per device
+    #    via a device-parallel fold_in (no host-side split + scatter).
+    seed        = config.training.get("seed", 42)
+    init_key    = jax.random.PRNGKey(seed)
+    device_keys = jax.pmap(lambda i: jax.random.fold_in(init_key, i))(jnp.arange(num_devices))
 
     # ── Build model ────────────────────────────────────────────────────────
     model     = models.KSUDON(config, t_star, L=L, N=N, dt=dt)
@@ -122,16 +128,8 @@ def train_and_evaluate(config, workdir: str):
 
     for step in range(config.training.max_steps):
 
-        # ── Roll keys and Sample on-device ─────────────────────────────────
-        # vmap returns a single array of shape (num_devices, 2, 2)
-        split_keys = jax.vmap(jax.random.split)(keys)
-
-        # Slice along axis 1 to separate the new keys and the current step's keys
-        keys      = split_keys[:, 0]  # Shape: (num_devices, 2) - save for next step
-        step_keys = split_keys[:, 1]  # Shape: (num_devices, 2) - use for this step
-
-        # Generates a batch of shape (num_devices, batch_size_per_device, ...)
-        batch = sample_on_device(step_keys, u_pool_repl, dom_t_repl)
+        # ── Sample on-device (key advance + batch draw in one dispatch) ─────
+        device_keys, batch = get_batch_on_device(device_keys, u_pool_repl, dom_t_repl)
 
         # ── Forward + gradient step ────────────────────────────────────────
         model.state = model.step(model.state, batch)

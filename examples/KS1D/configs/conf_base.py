@@ -38,12 +38,12 @@ def get_config():
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 2_500 
+    optim.decay_steps = 1_600 
     optim.decay_schedule = "Exponential"
 
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
-    training.max_steps = 150_000
+    training.max_steps = 30_000
     training.batch_size_per_device = 50
     training.use_cartesian_prod = True
 
