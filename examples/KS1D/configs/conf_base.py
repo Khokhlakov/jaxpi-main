@@ -53,6 +53,8 @@ def get_config():
     weighting.init_weights = ml_collections.ConfigDict({"ics": 1.0, "res": 1.0})#ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
+    weighting.max_weight = 100.0
+    weighting.warmup_steps = 0
 
     # Causal Weighting
     weighting.use_causal = False

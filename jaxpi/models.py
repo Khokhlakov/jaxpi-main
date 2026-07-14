@@ -137,7 +137,7 @@ def _create_train_state(config):
 
     return jax_utils.replicate(state)
 
-
+"""L96
 class PINN:
     def __init__(self, config):
         self.config = config
@@ -210,6 +210,82 @@ class PINN:
         grads = lax.pmean(grads, "batch")
         state = state.apply_gradients(grads=grads)
         return state
+"""
+class PINN:
+    def __init__(self, config):
+        self.config = config
+        self.state = _create_train_state(config)
+
+    def u_net(self, params, *args):
+        raise NotImplementedError("Subclasses should implement this!")
+
+    def r_net(self, params, *args):
+        raise NotImplementedError("Subclasses should implement this!")
+
+    def losses(self, params, batch, *args):
+        raise NotImplementedError("Subclasses should implement this!")
+
+    def compute_diag_ntk(self, params, batch, *args):
+        raise NotImplementedError("Subclasses should implement this!")
+
+    @partial(jit, static_argnums=(0,))
+    def loss(self, params, weights, batch, *args):
+        # Compute losses
+        losses = self.losses(params, batch, *args)
+        # Compute weighted loss
+        weighted_losses = tree_map(lambda x, y: x * y, losses, weights)
+        # Sum weighted losses
+        loss = tree_reduce(lambda x, y: x + y, weighted_losses)
+        return loss
+
+    @partial(jit, static_argnums=(0,))
+    def compute_weights(self, params, batch, *args):
+        eps = 1e-8
+        max_weight = getattr(self.config.weighting, 'max_weight', 100.0)
+        if self.config.weighting.scheme == "grad_norm":
+            # Compute the gradient of each loss w.r.t. the parameters
+            grads = jacrev(self.losses)(params, batch, *args)
+
+            # Compute the grad norm of each loss
+            grad_norm_dict = {}
+            for key, value in grads.items():
+                flattened_grad = flatten_pytree(value)
+                grad_norm_dict[key] = jnp.linalg.norm(flattened_grad)
+
+            # Compute the mean of grad norms over all losses
+            mean_grad_norm = jnp.mean(jnp.stack(tree_leaves(grad_norm_dict)))
+            # Grad Norm Weighting with clipping
+            w = tree_map(lambda x: jnp.clip(mean_grad_norm / (x + eps), a_min=0.0, a_max=max_weight), grad_norm_dict)
+
+        elif self.config.weighting.scheme == "ntk":
+            # Compute the diagonal of the NTK of each loss
+            ntk = self.compute_diag_ntk(params, batch, *args)
+
+            # Compute the mean of the diagonal NTK corresponding to each loss
+            mean_ntk_dict = tree_map(lambda x: jnp.mean(x), ntk)
+
+            # Compute the average over all ntk means
+            mean_ntk = jnp.mean(jnp.stack(tree_leaves(mean_ntk_dict)))
+            # NTK Weighting with clipping
+            w = tree_map(lambda x: jnp.clip(mean_ntk / (x + eps), a_min=0.0, a_max=max_weight), mean_ntk_dict)
+
+        return w
+
+    @partial(pmap, axis_name="batch", static_broadcasted_argnums=(0,))
+    def update_weights(self, state, batch, *args):
+        weights = self.compute_weights(state.params, batch, *args)
+        weights = lax.pmean(weights, "batch")
+        state = state.apply_weights(weights=weights)
+        return state
+
+    @partial(pmap, axis_name="batch", static_broadcasted_argnums=(0,))
+    def step(self, state, batch, *args):
+        grads = grad(self.loss)(state.params, state.weights, batch, *args)
+        grads = lax.pmean(grads, "batch")
+        state = state.apply_gradients(grads=grads)
+        return state
+
+
 
 
 class ForwardIVP(PINN):
