@@ -11,8 +11,8 @@ from typing import Callable
 from functools import partial
 
 from jaxpi.utils import restore_checkpoint
-import examples.l96_6_larger_data.models as models
-from examples.l96_6_larger_data.utils import build_obs_schedule, scale_Q_for_fine_steps
+import examples.KS1D.models as models
+from examples.KS1D.utils import build_obs_schedule, scale_Q_for_fine_steps
 
 import numpy as np
 from scipy.integrate import solve_ivp
@@ -1188,7 +1188,7 @@ def _evaluate_batch_enkf_dd_vs_pi(
     resulting L2 / ERF / RMSE / calibration comparisons isolate the
     effect of the surrogate model rather than differing noise draws.
     """
-    from examples.l96_6_larger_data.kf import run_enkf_smoother, init_ensemble
+    from examples.KS1D.kf import run_enkf_smoother, init_ensemble
 
     N = model_pi.N
     B = min(num_ics_eval, enkf_batch_size, u_test.shape[0])
@@ -1517,7 +1517,7 @@ def evaluate_enkf_dd_vs_pi(
       * The batch "EnKF vs open-loop" plot reports mean relative L2 at
         every fine timestep (dense) instead of only at window boundaries.
     """
-    from examples.l96_6_larger_data.kf import run_enkf_smoother, init_ensemble
+    from examples.KS1D.kf import run_enkf_smoother, init_ensemble
 
     # ── EnKF / observation configuration (identical to evaluate_with_enkf) ──
     obs_every_n  = config.ekf.get("obs_every_n",   4)
@@ -1934,7 +1934,7 @@ def _evaluate_batch_enkf_dd_vs_pi_vs_num(
     dt_window, dt_fine, dt_obs, dt_integration,
     num_ics_eval, enkf_batch_size, batch_windows, config, workdir
 ):
-    from examples.l96_6_larger_data.kf import run_enkf_smoother, init_ensemble
+    from examples.KS1D.kf import run_enkf_smoother, init_ensemble
     from examples.KS.kf import make_enkf
     
     N = model_pi.N
@@ -2179,7 +2179,7 @@ def evaluate_enkf_dd_vs_pi_vs_num(
     workdir: str,
     test_h5_path: str = None,
 ) -> None:
-    from examples.l96_6_larger_data.kf import run_enkf_smoother, init_ensemble
+    from examples.KS1D.kf import run_enkf_smoother, init_ensemble
     from examples.KS.kf import make_enkf
 
     if test_h5_path is None: test_h5_path = "data/l96_forcing_test.h5"
