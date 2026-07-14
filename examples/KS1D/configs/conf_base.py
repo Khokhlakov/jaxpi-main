@@ -49,7 +49,7 @@ def get_config():
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
-    weighting.scheme = None#"grad_norm"
+    weighting.scheme = "grad_norm"
     weighting.init_weights = ml_collections.ConfigDict({"ics": 1.0, "res": 1.0})#ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
