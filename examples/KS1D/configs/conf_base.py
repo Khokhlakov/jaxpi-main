@@ -8,9 +8,9 @@ def get_config():
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project       = "PI-UDON-L96-n40-f6-ics-2"
-    wandb.name          = "test_larger_1" 
-    wandb.ckpt_name     = "test_larger_1" 
+    wandb.project       = "PI-UDON-KS-1S"
+    wandb.name          = "test_base" 
+    wandb.ckpt_name     = "test_base" 
     wandb.tag = None
 
     # Arch 
@@ -19,11 +19,12 @@ def get_config():
     arch.num_branch_layers = 5
     arch.num_trunk_layers = 5
     arch.hidden_dim = 1024
-    arch.branch_input_dim = 40
-    arch.out_dim = 40
+    arch.branch_input_dim = 256
+    # trunk_input_dim = config.input_dim - branch_input_dim
+    arch.out_dim = 256
     arch.activation = "tanh"
     arch.periodicity = None
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 1024})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 2, "embed_dim": 1024})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
@@ -43,14 +44,8 @@ def get_config():
     # Training (Windowed Logic)
     config.training = training = ml_collections.ConfigDict()
     training.max_steps = 150_000
-    training.batch_size_per_device = 100#16384
-    training.num_time_windows = 160
+    training.batch_size_per_device = 50
     training.use_cartesian_prod = True
-    training.update_interval = 1000
-    training.num_initial_ics = 8000
-    training.max_additions = 30
-    training.augmentation_scheme = "file" #"model" 
-    training.augmentation_file_name = "train_rollouts_025.mat"
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
@@ -62,7 +57,7 @@ def get_config():
     # Causal Weighting
     weighting.use_causal = False
     weighting.causal_tol = 0.02
-    weighting.num_chunks = 8
+    weighting.num_chunks = 10
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
@@ -80,7 +75,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
-    saving.total_plots = 3
+    saving.total_plots = 1
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
@@ -90,10 +85,10 @@ def get_config():
     eval.dt_integration     = 0.005
 
     # Input shape (t is the only input)
-    config.input_dim = 41
+    config.input_dim = 256 + 1
 
     # Training window size
-    config.dt_window = 0.25
+    config.dt_window = 1.0
 
     # Integer for PRNG random seed.s
     config.seed = 42

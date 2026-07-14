@@ -31,7 +31,7 @@ def get_config():
     config.optim = optim = ml_collections.ConfigDict()
     optim.grad_accum_steps = 0
     optim.optimizer = "Soap"
-    optim.beta1 = 0.9
+    optim.beta1 = 0.9 
     optim.beta2 = 0.999
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
