@@ -20,7 +20,7 @@ import numpy as np
 #
 # i.e. the semi-discrete ODE the reference solver *advances*, not a
 # discrete update rule for a specific dt.
-from generate_data import KuramotoSivashinskyAdvanced
+from data.generate_data import KuramotoSivashinskyAdvanced
 
 
 # =============================================================================
