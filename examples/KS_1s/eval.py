@@ -184,7 +184,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
 
     # Reconstruct time definitions
     # 1 time unit = 1 window
-    pts_pw = int(round(1.0 / dt))
+    pts_pw = int(round(0.01 / dt))
     t_ax = np.linspace(0, test_windows, num_test_pts)
     
     # Single-window relative time grid required by the surrogate model
