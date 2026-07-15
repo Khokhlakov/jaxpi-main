@@ -99,9 +99,12 @@ def _plot_trajectory_summary(
     ax_l2.plot(t_ax, l2_rel, color="#E53935", linewidth=2.0, label="Relative L2 Error")
     
     # Add vertical lines for window boundaries
+    logging.info(f"Plotting. pts_pw is {pts_pw}. num_boundaries is {num_boundaries}. ")
     for w in range(num_boundaries):
         wb = t_ax[w * pts_pw]
         ax_l2.axvline(x=wb, color="#78909C", linestyle="--", linewidth=0.8, alpha=0.5)
+        logging.info(f"Plotting. wb is {wb}. w is {w}. ")
+    
         
     ax_l2.set_title("Trajectory Relative L2 Error Over Time", fontsize=12, fontweight='bold')
     ax_l2.set_xlabel("Time (t)")
@@ -177,7 +180,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         u_test = jnp.array(f['u'][:])     # Shape: (num_ics, num_test_pts, 256)
         N = f.attrs['N']
         dt = f.attrs['dt']
-        test_windows = 1
+        test_windows = f.attrs['test_windows']
         
     num_ics, num_test_pts, N_loaded = u_test.shape
     assert N_loaded == 256, f"Expected state dimension 256, got {N_loaded}"
