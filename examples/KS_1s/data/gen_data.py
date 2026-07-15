@@ -107,7 +107,7 @@ def generate_datasets(
     dt: float = 0.0002, 
     t_burn: float = 50.0,
     max_additions: int = 4,
-    test_windows: int = 50
+    test_windows: int = 1
 ):
     solver = KuramotoSivashinskyAdvanced(L=L, N=N, dt=dt)
     

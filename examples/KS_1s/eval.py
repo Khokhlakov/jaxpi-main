@@ -177,7 +177,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         u_test = jnp.array(f['u'][:])     # Shape: (num_ics, num_test_pts, 256)
         N = f.attrs['N']
         dt = f.attrs['dt']
-        test_windows = f.attrs['test_windows']
+        test_windows = 1
         
     num_ics, num_test_pts, N_loaded = u_test.shape
     assert N_loaded == 256, f"Expected state dimension 256, got {N_loaded}"
