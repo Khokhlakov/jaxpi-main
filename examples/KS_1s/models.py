@@ -126,13 +126,13 @@ class KSUDON(ForwardIVP):
         return propagator
 
     def make_ekf_fns(self, params, dt: float):
-        from examples.KS.kf import make_ekf
+        from examples.KS_1s.kf import make_ekf
         propagator_vt = self.make_surrogate_propagator(params) 
         propagator    = lambda u: propagator_vt(u, dt)         
         return make_ekf(propagator, self.N)
  
     def make_enkf_fns(self, params, N_ens: int = 50):
-        from examples.KS.kf import make_enkf
+        from examples.KS_1s.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)  
         return make_enkf(propagator, self.N, N_ens)
  
@@ -220,13 +220,13 @@ class KSUDON_DD(ForwardIVP):
         return propagator
 
     def make_ekf_fns(self, params, dt: float):
-        from examples.KS.kf import make_ekf
+        from examples.KS_1s.kf import make_ekf
         propagator_vt = self.make_surrogate_propagator(params)  
         propagator    = lambda u: propagator_vt(u, dt)          
         return make_ekf(propagator, self.N)
  
     def make_enkf_fns(self, params, N_ens: int = 50):
-        from examples.KS.kf import make_enkf
+        from examples.KS_1s.kf import make_enkf
         propagator = self.make_surrogate_propagator(params) 
         return make_enkf(propagator, self.N, N_ens)
 
