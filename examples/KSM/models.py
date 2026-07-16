@@ -87,6 +87,19 @@ class KSUDON(ForwardIVP):
         # coefficients we never call -- it has no bearing on the residual.
         self.solver = KuramotoSivashinskyAdvanced(L=L, N=N, dt=dt)
 
+        ## Wavenumber-band masks for diagnostic residual logging only — no effect
+        # on training. Bands are split relative to the antialiasing cutoff, since
+        # rhs_hat is *exactly* zero at/above that index by construction (it's
+        # zeroed inside _nonlinear_term and again via the explicit _dealias call
+        # in r_net). Any residual power in `above_cutoff` is coming purely from
+        # x_t (the raw, non-dealiased network derivative), not from a genuine
+        # physics mismatch — this isolates that possibility directly.
+        cutoff = self.solver.dealiasing_cutoff
+        idx = jnp.arange(self.solver.k_xi.shape[0])
+        self.mask_low          = (idx < cutoff // 3).astype(jnp.float32)
+        self.mask_mid          = ((idx >= cutoff // 3) & (idx < cutoff)).astype(jnp.float32)
+        self.mask_above_cutoff = (idx >= cutoff).astype(jnp.float32)#
+
         self.t0 = t_star[0]
         self.t1 = t_star[-1]
 
@@ -118,6 +131,34 @@ class KSUDON(ForwardIVP):
 
         r_x = x_t - rhs
         return r_x
+    
+    #
+    @partial(jit, static_argnums=(0,))
+    def r_net_hat(self, params, u, t):
+        """Same residual as r_net, but left in Fourier space for band analysis."""
+        r_x = self.r_net(params, u, t)
+        return jnp.fft.rfft(r_x)#
+
+    #
+    @partial(jit, static_argnums=(0,))
+    def band_residuals(self, params, batch_u, batch_t):
+        batch_t_flat = batch_t.reshape(-1)
+
+        # (num_u, num_t, N_freq) complex
+        r_hat_grid = vmap(vmap(self.r_net_hat, (None, None, 0)), (None, 0, None))(
+            params, batch_u, batch_t_flat
+        )
+        power = jnp.abs(r_hat_grid) ** 2
+
+        def band_mean(mask):
+            # mean power per included mode, averaged over the batch/time grid too
+            return jnp.sum(power * mask) / (jnp.sum(mask) * power.shape[0] * power.shape[1])
+
+        return {
+            "res_band/low_q":          band_mean(self.mask_low),
+            "res_band/mid_q":          band_mean(self.mask_mid),
+            "res_band/above_cutoff":   band_mean(self.mask_above_cutoff),
+        }#
 
     @partial(jit, static_argnums=(0,))
     def res_and_w(self, params, batch):
@@ -314,6 +355,10 @@ class KSUDONEvaluator(BaseEvaluator):
 
         if self.config.logging.log_preds:
             self.log_preds(state.params, u_ref_batch[0])
+
+        if self.config.logging.get("log_band_residuals", False):
+            band_dict = self.model.band_residuals(state.params, batch[0], batch[1])
+            self.log_dict.update(band_dict)
 
         return self.log_dict
 
