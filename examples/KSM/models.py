@@ -112,19 +112,20 @@ class KSUDON(ForwardIVP):
         t = jnp.atleast_1d(t)
         return self.state.apply_fn(params, u, t)
 
-    def r_net(self, params, u, t):
+    def _x_net_dealiased(self, params, u, t):
         x = self.x_net(params, u, t).reshape(self.N)
-        x_t = jacfwd(self.x_net, argnums=2)(params, u, t).reshape(self.N)
+        x_hat = self.solver._dealias(jnp.fft.rfft(x))
+        return jnp.fft.irfft(x_hat, n=self.N)
 
+    def r_net(self, params, u, t):
         # Continuous-time RHS of dv/dtau = L_op * v_hat + N(v_hat), evaluated
         # spectrally on the network's predicted profile -- the exact same
         # operator the reference ETDRK4 solver advances in time (just
         # without the RK4 stage combination, since we want the instantaneous
-        # RHS, not a discrete step).
-        x_hat = jnp.fft.rfft(x)
-
-        # Dealias the raw network output before taking spectral derivatives
-        x_hat = self.solver._dealias(x_hat)
+        # RHS, not a discrete step. Dealiasing x_t).
+    
+        x_hat = self.solver._dealias(jnp.fft.rfft(self.x_net(params, u, t).reshape(self.N)))
+        x_t = jacfwd(self._x_net_dealiased, argnums=2)(params, u, t).reshape(self.N)
 
         rhs_hat = self.solver.L_op * x_hat + self.solver._nonlinear_term(x_hat)
         rhs = jnp.fft.irfft(rhs_hat, n=self.N)
@@ -256,7 +257,7 @@ class KSUDON(ForwardIVP):
             ekf_state = predict(ekf_state, Q)
             ekf_state, K = update(ekf_state, y_obs, H, R)
         """
-        from examples.KS.kf import make_ekf
+        from examples.KSM.kf import make_ekf
         propagator_vt = self.make_surrogate_propagator(params)  # (u, t) -> u
         # Fix t=dt so the EKF always linearises over exactly one fine step.
         propagator    = lambda u: propagator_vt(u, dt)          # (u,) -> (N,)
@@ -295,7 +296,7 @@ class KSUDON(ForwardIVP):
             predict, update = model.make_enkf_fns(params, N_ens=50)
             # Then call run_enkf_smoother with dt_fine and dt_window.
         """
-        from examples.KS.kf import make_enkf
+        from examples.KSM.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)  # (u, t) -> u
         return make_enkf(propagator, self.N, N_ens)
 
@@ -439,7 +440,7 @@ class KSUDON_DD(ForwardIVP):
             ekf_state = predict(ekf_state, Q)
             ekf_state, K = update(ekf_state, y_obs, H, R)
         """
-        from examples.KS.kf import make_ekf
+        from examples.KSM.kf import make_ekf
         propagator_vt = self.make_surrogate_propagator(params)  # (u, t) -> u
         # Fix t=dt so the EKF always linearises over exactly one fine step.
         propagator    = lambda u: propagator_vt(u, dt)          # (u,) -> (N,)
@@ -476,7 +477,7 @@ class KSUDON_DD(ForwardIVP):
             predict, update = model.make_enkf_fns(params, N_ens=50)
             # Then call run_enkf_smoother with dt_fine and dt_window.
         """
-        from examples.KS.kf import make_enkf
+        from examples.KSM.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)  # (u, t) -> u
         return make_enkf(propagator, self.N, N_ens)
 

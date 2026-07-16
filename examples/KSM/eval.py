@@ -1935,7 +1935,7 @@ def _evaluate_batch_enkf_dd_vs_pi_vs_num(
     num_ics_eval, enkf_batch_size, batch_windows, config, workdir
 ):
     from examples.KSM.kf import run_enkf_smoother, init_ensemble
-    from examples.KS.kf import make_enkf
+    from examples.KSM.kf import make_enkf
     
     N = model_pi.N
     B = min(num_ics_eval, enkf_batch_size, u_test.shape[0])
@@ -2180,7 +2180,7 @@ def evaluate_enkf_dd_vs_pi_vs_num(
     test_h5_path: str = None,
 ) -> None:
     from examples.KSM.kf import run_enkf_smoother, init_ensemble
-    from examples.KS.kf import make_enkf
+    from examples.KSM.kf import make_enkf
 
     if test_h5_path is None: test_h5_path = "data/l96_forcing_test.h5"
 

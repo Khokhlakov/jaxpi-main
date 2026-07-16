@@ -106,7 +106,7 @@ def _create_optimizer(config):
     if config.grad_accum_steps > 1:
         tx = optax.MultiSteps(tx, every_k_schedule=config.grad_accum_steps)
 
-    return tx
+    return tx, lr##
 
 
 def _create_train_state(config):
@@ -122,7 +122,8 @@ def _create_train_state(config):
         params = arch.init(random.PRNGKey(config.seed), x)
 
     # Initialize optax optimizer
-    tx = _create_optimizer(config.optim)
+    ##tx = _create_optimizer(config.optim)
+    tx, lr_schedule = _create_optimizer(config.optim)##
 
     # Convert config dict to dict
     init_weights = dict(config.weighting.init_weights)
@@ -135,9 +136,11 @@ def _create_train_state(config):
         momentum=config.weighting.momentum,
     )
 
-    return jax_utils.replicate(state)
+    ##return jax_utils.replicate(state)
 
-"""L96
+    return jax_utils.replicate(state), lr_schedule##
+
+"""L96 Does not have max weight nor returns lr
 class PINN:
     def __init__(self, config):
         self.config = config
@@ -214,7 +217,8 @@ class PINN:
 class PINN:
     def __init__(self, config):
         self.config = config
-        self.state = _create_train_state(config)
+        ##self.state = _create_train_state(config)
+        self.state, self.lr_schedule = _create_train_state(config)##
 
     def u_net(self, params, *args):
         raise NotImplementedError("Subclasses should implement this!")

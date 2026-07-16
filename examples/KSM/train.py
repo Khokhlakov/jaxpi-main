@@ -134,6 +134,13 @@ def train_and_evaluate(config, workdir: str):
         # ── Forward + gradient step ────────────────────────────────────────
         model.state = model.step(model.state, batch)
 
+        ## ── Log LR at EVERY step ───────────────────────────────────────────
+        if jax.process_index() == 0:
+            # Note: Replace `lr_schedule_fn` with your actual Optax schedule variable
+            # (e.g., config.training.lr_schedule or model.lr_fn)
+            current_lr = float(model.lr_schedule(step))
+            wandb.log({"train/learning_rate": current_lr}, step=step)##
+
         # ── Adaptive loss weighting (optional) ────────────────────────────
         if config.weighting.scheme in ("grad_norm", "ntk"):
             if step % config.weighting.update_every_steps == 0 and step >= config.weighting.warmup_steps:
