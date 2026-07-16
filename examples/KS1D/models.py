@@ -109,6 +109,10 @@ class KSUDON(ForwardIVP):
         # without the RK4 stage combination, since we want the instantaneous
         # RHS, not a discrete step).
         x_hat = jnp.fft.rfft(x)
+
+        # Dealias the raw network output before taking spectral derivatives
+        x_hat = self.solver._dealias(x_hat)
+
         rhs_hat = self.solver.L_op * x_hat + self.solver._nonlinear_term(x_hat)
         rhs = jnp.fft.irfft(rhs_hat, n=self.N)
 
