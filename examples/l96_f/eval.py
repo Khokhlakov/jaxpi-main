@@ -1306,6 +1306,8 @@ def _evaluate_batch_enkf_dd_vs_pi(
     _, obs_step_indices_batch, total_fine_steps_batch = build_obs_schedule(
         total_time=total_time_batch, dt_fine=dt_fine, dt_obs=dt_obs
     )
+    obs_step_indices_batch = jnp.array(obs_step_indices_batch)
+
     T_obs = len(obs_step_indices_batch)
     obs_times_batch = np.array([(k + 1) * dt_obs for k in range(T_obs)])
 
@@ -1603,6 +1605,7 @@ def evaluate_enkf_dd_vs_pi(
     obs_times, obs_step_indices, total_fine_steps = build_obs_schedule(
         total_time = total_time, dt_fine = DT_FINE, dt_obs = DT_OBS,
     )
+    obs_step_indices = jnp.array(obs_step_indices)
 
     # PASS 1: Execute SciPy Ground Truth Sequential Solves
     x_true_fine_list, x_true_at_obs_list = [], []

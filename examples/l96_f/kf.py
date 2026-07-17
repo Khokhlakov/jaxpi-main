@@ -201,9 +201,11 @@ def run_enkf_smoother(
     steps_per_window = steps_per_window_exact(dt_window, dt_fine)
  
     # O(1) lookup: fine step index -> observation index (-1 = no obs)
-    obs_at_step = np.full(total_fine_steps, -1, dtype=int)
+    obs_at_step = jnp.full(total_fine_steps, -1, dtype=jnp.int32)
     for obs_idx, step_idx in enumerate(obs_step_indices):
         obs_at_step[step_idx] = obs_idx
+    
+    obs_at_step = jnp.asarray(obs_at_step)
  
     # Initialise state: ensemble and window_ics both start from ensemble0.
     state         = EnKFState(ensemble=ensemble0, window_ics=ensemble0)
