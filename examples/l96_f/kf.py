@@ -212,54 +212,37 @@ def run_enkf_smoother(
     prior_means_at_obs: list[jnp.ndarray] = []
     step_in_window = 0  # Python int — used to compute t_query
     
-    for fine_t in range(total_fine_steps):
-        # In-window query time: (step_in_window + 1) * dt_fine.
-        # step_in_window = 0 on the first step of every window, so t_query
-        # starts at dt_fine and increases by dt_fine on each subsequent step.
-        t_query = (step_in_window + 1) * dt_fine  # Python float — static for JIT
-
-        # Calculate the cumulative inflation for this exact point in the window
+    def step(carry, fine_t):
+        state, step_in_window, key = carry
+        t_query = (step_in_window + 1) * dt_fine
         cumulative_alpha = alpha_fine ** (step_in_window + 1)
-
         key, key_pred, key_upd = jax.random.split(key, 3)
- 
-        # Predict: queries propagator_fn(window_ic_i, t_query) for each member.
         state = predict_fn(state, cumulative_alpha, key_pred, t_query)
-        
- 
-        # Conditionally update if an observation falls on this fine step.
-        reset_window = False
-        obs_idx = obs_at_step[fine_t]
-        if obs_idx >= 0:
-            # ── Capture prior mean BEFORE assimilation ──────────────────────
-            prior_means_at_obs.append(jnp.mean(state.ensemble, axis=0))
 
-            state, _ = update_fn(
-                state,
-                observations[obs_idx],
-                H_seq[obs_idx],
-                R,
-                key_upd,
-            )
-            # After assimilation, start a fresh window from the posterior.
-            reset_window = True
- 
-        x_means.append(jnp.mean(state.ensemble, axis=0))
-        x_spreads.append(jnp.std(state.ensemble, axis=0))
- 
-        # Advance the in-window counter; reset at window boundaries.
-        step_in_window += 1
-        if step_in_window >= steps_per_window:
-            reset_window = True
- 
-        if reset_window:
-            # Set window_ics to the current ensemble so that the next predict
-            # call starts a fresh window query from this state.
-            state = EnKFState(
-                ensemble=state.ensemble,
-                window_ics=state.ensemble,
-            )
-            step_in_window = 0
+        obs_idx   = obs_at_step[fine_t]          # precomputed jnp array, -1 = none
+        has_obs   = obs_idx >= 0
+        safe_idx  = jnp.maximum(obs_idx, 0)
+        prior_mean = jnp.mean(state.ensemble, axis=0)
+
+        state_upd = lax.cond(
+            has_obs,
+            lambda s: update_fn(s, observations[safe_idx], H_seq[safe_idx], R, key_upd)[0],
+            lambda s: s,
+            state,
+        )
+        step_next = step_in_window + 1
+        reset = has_obs | (step_next >= steps_per_window)
+        new_state = EnKFState(
+            ensemble=state_upd.ensemble,
+            window_ics=jnp.where(reset, state_upd.ensemble, state_upd.window_ics),
+        )
+        return (new_state, jnp.where(reset, 0, step_next), key), \
+            (jnp.mean(new_state.ensemble, 0), jnp.std(new_state.ensemble, 0), prior_mean)
+
+    (final_state, _, _), (x_means, x_spreads, prior_means_all) = lax.scan(
+        step, (EnKFState(ensemble0, ensemble0), 0, key), jnp.arange(total_fine_steps)
+    )
+    prior_means_at_obs = prior_means_all[obs_step_indices] 
  
     return (
         jnp.stack(x_means),
@@ -388,7 +371,7 @@ def make_route_b_enkf(
     """
     _, update = make_enkf(propagator_fn, N, N_ens)
 
-    @partial(jit, static_argnums=(6,))
+    @jit
     def predict_route_b(
         enkf_state: EnKFState,
         Q0:         jnp.ndarray,   # (N_dyn, N_dyn) fixed spatial shape/structure
@@ -507,47 +490,46 @@ def run_enkf_smoother_route_b(
     alpha = jnp.asarray(alpha)
     beta  = jnp.asarray(beta)
 
-    for fine_t in range(total_fine_steps):
+    def step(carry, fine_t):
+        state, step_in_window, key = carry
         t_query = (step_in_window + 1) * dt_fine
-
-        # Quadrature times for THIS fine step's residual integral, anchored
-        # at window-local time (matches propagator_fn/residual_fn convention).
+        
         t_a = step_in_window * dt_fine
         t_b = t_query
         t_quad = jnp.linspace(t_a, t_b, n_quad)
-
+        
         key, key_pred, key_upd = jax.random.split(key, 3)
-
+        
+        # Predict
         state, diag = predict_route_b_fn(state, Q0, alpha, beta, t_quad, key_pred, t_query)
-        Q_scale_history.append(diag["scale"])
-
-        reset_window = False
+        
         obs_idx = obs_at_step[fine_t]
-        if obs_idx >= 0:
-            prior_means_at_obs.append(jnp.mean(state.ensemble, axis=0))
+        has_obs = obs_idx >= 0
+        safe_idx = jnp.maximum(obs_idx, 0)
+        prior_mean = jnp.mean(state.ensemble, axis=0)
+        
+        # Update
+        state_upd = jax.lax.cond(
+            has_obs,
+            lambda s: update_fn(s, observations[safe_idx], H_seq[safe_idx], R, key_upd)[0],
+            lambda s: s,
+            state,
+        )
+        
+        step_next = step_in_window + 1
+        reset = has_obs | (step_next >= steps_per_window)
+        
+        new_state = EnKFState(
+            ensemble=state_upd.ensemble,
+            window_ics=jnp.where(reset, state_upd.ensemble, state_upd.window_ics),
+        )
+        
+        return (new_state, jnp.where(reset, 0, step_next), key), \
+            (jnp.mean(new_state.ensemble, 0), jnp.std(new_state.ensemble, 0), prior_mean, diag["scale"])
 
-            state, _ = update_fn(
-                state,
-                observations[obs_idx],
-                H_seq[obs_idx],
-                R,
-                key_upd,
-            )
-            reset_window = True
-
-        x_means.append(jnp.mean(state.ensemble, axis=0))
-        x_spreads.append(jnp.std(state.ensemble, axis=0))
-
-        step_in_window += 1
-        if step_in_window >= steps_per_window:
-            reset_window = True
-
-        if reset_window:
-            state = EnKFState(
-                ensemble=state.ensemble,
-                window_ics=state.ensemble,
-            )
-            step_in_window = 0
+    (final_state, _, _), (x_means, x_spreads, prior_means_all, Q_scale_history) = jax.lax.scan(
+        step, (EnKFState(ensemble0, ensemble0), 0, key), jnp.arange(total_fine_steps)
+    )
 
     return (
         jnp.stack(x_means),
