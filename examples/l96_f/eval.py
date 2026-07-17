@@ -58,6 +58,7 @@ def _plot_trajectory_summary(
     x_est:      np.ndarray,        # (T, N) estimate (prediction / filter mean)
     x_std:      np.ndarray | None, # (T, N) per-variable std, or None
     ic_idx:     int,
+    F_val:      float,
     est_label:  str,               # e.g. "DeepONet", "EnKF mean"
     save_path:  str,
     N:          int = 40,
@@ -239,7 +240,7 @@ def _plot_trajectory_summary(
                       handlelength=1.2, framealpha=0.7)
  
     fig.suptitle(
-        f"Trajectory summary — IC {ic_idx}  |  estimator: {est_label}",
+        f"Trajectory summary — IC {ic_idx} (F = {F_val:.2f}) |  estimator: {est_label}",
         fontsize=13, fontweight="bold", y=1.002,
     )
  
@@ -342,6 +343,7 @@ def evaluate(
             x_est      = np.array(x_pred_full),
             x_std      = None,                     
             ic_idx     = ic_idx,
+            F_val      = F_i,
             est_label  = "DeepONet (long rollout)",
             save_path  = os.path.join(
                 workdir, "figures", config.wandb.name,
@@ -501,67 +503,7 @@ def _evaluate_batch_l2_openloop(
 
 
 
-
 # ── DD vs PI ──────────────────────────────────────────────────────────────────
-
-# jax helpers
-def build_batched_enkf_compare(
-    predict_fn_pi, update_fn_pi, predict_fn_dd, update_fn_dd,
-    N, m, obs_indices, P0_sigma, P0, N_ens, sigma_obs, R, alpha_fine,
-    dt_fine, dt_window, total_fine_steps_batch, obs_step_indices_batch
-):
-    from examples.l96_f.kf import init_ensemble, run_enkf_smoother
-
-    def process_single_ic(key_ic, u_true, F_i, x_true_at_obs, dynamic_vars_static, specify_obs_idx_static):
-        T_obs = x_true_at_obs.shape[0]
-        keys_t = jax.random.split(key_ic, T_obs)
-        
-        # 1. Vectorized observation sequence generation
-        def single_obs(k, x_t):
-            k1, k2 = jax.random.split(k)
-            # Static conditions evaluated at JIT-compile time
-            if (not specify_obs_idx_static) and dynamic_vars_static:
-                idx_vars = jax.random.choice(k1, N, shape=(m,), replace=False)
-            else:
-                idx_vars = obs_indices
-                
-            H = jnp.zeros((m, N)).at[jnp.arange(m), idx_vars].set(1.0)
-            H_aug = jnp.pad(H, ((0, 0), (0, 1)), mode='constant')
-            noise = sigma_obs * jax.random.normal(k2, shape=(m,))
-            return H_aug, x_t[idx_vars] + noise, idx_vars
-            
-        H_seq, y_obs_seq, idx_vars_seq = jax.vmap(single_obs)(keys_t, x_true_at_obs)
-        
-        # 2. Shared initial ensemble
-        k1, k2, k3 = jax.random.split(key_ic, 3)
-        x0_hat_40 = u_true + P0_sigma * jax.random.normal(k2, shape=(N,))
-        x0_hat_aug = jnp.concatenate([x0_hat_40, jnp.array([F_i])])
-        ensemble0 = init_ensemble(x0_hat_aug, P0, N_ens, k3)
-        
-        # 3. Both estimators run concurrently on the exact same noise/observations
-        x_means_pi, x_spreads_pi, prior_means_pi = run_enkf_smoother(
-            predict_fn_pi, update_fn_pi,
-            ensemble0, y_obs_seq, obs_step_indices_batch,
-            H_seq, alpha_fine, R, key_ic, total_fine_steps_batch,
-            dt_fine=dt_fine, dt_window=dt_window,
-        )
-        
-        x_means_dd, x_spreads_dd, prior_means_dd = run_enkf_smoother(
-            predict_fn_dd, update_fn_dd,
-            ensemble0, y_obs_seq, obs_step_indices_batch,
-            H_seq, alpha_fine, R, key_ic, total_fine_steps_batch,
-            dt_fine=dt_fine, dt_window=dt_window,
-        )
-        
-        return (x_means_pi, x_spreads_pi, prior_means_pi, 
-                x_means_dd, x_spreads_dd, prior_means_dd, 
-                y_obs_seq, idx_vars_seq)
-    
-    # Vmap across the batch (in_axes mapped to keys, u_true, F_i, x_true_at_obs)
-    vmapped_fn = jax.vmap(process_single_ic, in_axes=(0, 0, 0, 0, None, None))
-    # Freeze the boolean flags at compile time to avoid JAX tracer errors on if/else
-    return jax.jit(vmapped_fn, static_argnums=(4, 5))
-
 
 def _plot_trajectory_summary_compare(
     t_ax:       np.ndarray,        
@@ -569,6 +511,7 @@ def _plot_trajectory_summary_compare(
     x_est_pi:   np.ndarray,        
     x_est_dd:   np.ndarray,        
     ic_idx:     int,
+    F_val:      float,
     save_path:  str,
     N:          int = 40,
     dt_window:  float | None = None,
@@ -661,7 +604,7 @@ def _plot_trajectory_summary_compare(
             ax.legend(fontsize=7, loc="upper right", handlelength=1.5, framealpha=0.7)
  
     fig.suptitle(
-        f"Trajectory comparison — IC {ic_idx} | PI vs DD",
+        f"Trajectory comparison — IC {ic_idx} (F = {F_val:.2f}) | PI vs DD",
         fontsize=13, fontweight="bold", y=1.002,
     )
  
@@ -869,6 +812,7 @@ def evaluate_dd_vs_pi(
             x_est_pi   = np.array(x_pred_full_pi),
             x_est_dd   = np.array(x_pred_full_dd),
             ic_idx     = ic_idx,
+            F_val      = F_i,
             save_path  = save_path,
             N          = model_pi.N,
             dt_window  = dt_window,
@@ -926,8 +870,66 @@ def _binned_spread_skill(
     return (np.array(bin_rmss_mean), np.array(bin_rmse_mean),
             np.array(bin_rmse_std), np.array(bin_counts))
 
-
 # ── PI vs DD + EnKF ──────────────────────────────────────────────────────────
+
+# jax helpers
+
+def build_batched_enkf_compare(
+    predict_fn_pi, update_fn_pi, predict_fn_dd, update_fn_dd,
+    N, m, obs_indices, P0_sigma, P0, N_ens, sigma_obs, R, alpha_fine,
+    dt_fine, dt_window, total_fine_steps_batch, obs_step_indices_batch
+):
+    from examples.l96_f.kf import init_ensemble, run_enkf_smoother
+
+    def process_single_ic(key_ic, u_true, F_i, x_true_at_obs, dynamic_vars_static, specify_obs_idx_static):
+        T_obs = x_true_at_obs.shape[0]
+        keys_t = jax.random.split(key_ic, T_obs)
+        
+        # 1. Vectorized observation sequence generation
+        def single_obs(k, x_t):
+            k1, k2 = jax.random.split(k)
+            # Static conditions evaluated at JIT-compile time
+            if (not specify_obs_idx_static) and dynamic_vars_static:
+                idx_vars = jax.random.choice(k1, N, shape=(m,), replace=False)
+            else:
+                idx_vars = obs_indices
+                
+            H = jnp.zeros((m, N)).at[jnp.arange(m), idx_vars].set(1.0)
+            H_aug = jnp.pad(H, ((0, 0), (0, 1)), mode='constant')
+            noise = sigma_obs * jax.random.normal(k2, shape=(m,))
+            return H_aug, x_t[idx_vars] + noise, idx_vars
+            
+        H_seq, y_obs_seq, idx_vars_seq = jax.vmap(single_obs)(keys_t, x_true_at_obs)
+        
+        # 2. Shared initial ensemble
+        k1, k2, k3 = jax.random.split(key_ic, 3)
+        x0_hat_40 = u_true + P0_sigma * jax.random.normal(k2, shape=(N,))
+        x0_hat_aug = jnp.concatenate([x0_hat_40, jnp.array([F_i])])
+        ensemble0 = init_ensemble(x0_hat_aug, P0, N_ens, k3)
+        
+        # 3. Both estimators run concurrently on the exact same noise/observations
+        x_means_pi, x_spreads_pi, prior_means_pi = run_enkf_smoother(
+            predict_fn_pi, update_fn_pi,
+            ensemble0, y_obs_seq, obs_step_indices_batch,
+            H_seq, alpha_fine, R, key_ic, total_fine_steps_batch,
+            dt_fine=dt_fine, dt_window=dt_window,
+        )
+        
+        x_means_dd, x_spreads_dd, prior_means_dd = run_enkf_smoother(
+            predict_fn_dd, update_fn_dd,
+            ensemble0, y_obs_seq, obs_step_indices_batch,
+            H_seq, alpha_fine, R, key_ic, total_fine_steps_batch,
+            dt_fine=dt_fine, dt_window=dt_window,
+        )
+        
+        return (x_means_pi, x_spreads_pi, prior_means_pi, 
+                x_means_dd, x_spreads_dd, prior_means_dd, 
+                y_obs_seq, idx_vars_seq)
+    
+    # Vmap across the batch (in_axes mapped to keys, u_true, F_i, x_true_at_obs)
+    vmapped_fn = jax.vmap(process_single_ic, in_axes=(0, 0, 0, 0, None, None))
+    # Freeze the boolean flags at compile time to avoid JAX tracer errors on if/else
+    return jax.jit(vmapped_fn, static_argnums=(4, 5))
 
 def _plot_trajectory_summary_compare_enkf(
     t_ax:       np.ndarray,        # (T,)   time axis
@@ -937,6 +939,7 @@ def _plot_trajectory_summary_compare_enkf(
     x_est_dd:   np.ndarray,        # (T, N) DD + EnKF mean
     x_std_dd:   np.ndarray | None, # (T, N) DD ensemble std, or None
     ic_idx:     int,
+    F_val:      float,
     save_path:  str,
     N:          int = 40,
     dt_window:  float | None = None,
@@ -1088,7 +1091,7 @@ def _plot_trajectory_summary_compare_enkf(
                       handlelength=1.3, framealpha=0.7)
 
     fig.suptitle(
-        f"Trajectory summary — IC {ic_idx}  |  PI+EnKF vs DD+EnKF",
+        f"Trajectory summary — IC {ic_idx} (F = {F_val:.2f}) |  PI+EnKF vs DD+EnKF",
         fontsize=13, fontweight="bold", y=1.002,
     )
 
@@ -1668,7 +1671,7 @@ def evaluate_enkf_dd_vs_pi(
             t_ax=t_fine_axis, x_true=np.array(x_true_fine[1:]),
             x_est_pi=np.array(x_means_pi[:, :N]), x_std_pi=np.array(x_spreads_pi[:, :N]),
             x_est_dd=np.array(x_means_dd[:, :N]), x_std_dd=np.array(x_spreads_dd[:, :N]),
-            ic_idx=ic_idx, N=N, dt_window=DT_WINDOW, obs_coords=obs_coords,
+            ic_idx=ic_idx, F_val= F_i, N=N, dt_window=DT_WINDOW, obs_coords=obs_coords,
             save_path=os.path.join(workdir, "figures", "comparison", f"trajectory_summary_enkf_compare_ic_{ic_idx}.pdf")
         )
 
@@ -1695,8 +1698,6 @@ def evaluate_enkf_dd_vs_pi(
         num_ics_eval, enkf_batch_size, batch_windows,
         config, workdir,
     )
-
-
 
 
 
@@ -1728,6 +1729,7 @@ def _plot_trajectory_summary_compare_enkf_rb(
     x_est_rb:      np.ndarray,        # (T, N) PI + Route B EnKF mean
     x_std_rb:      np.ndarray | None, # (T, N) Route B ensemble std, or None
     ic_idx:        int,
+    F_val:         float,
     save_path:     str,
     N:             int = 40,
     dt_window:     float | None = None,
@@ -1878,7 +1880,7 @@ def _plot_trajectory_summary_compare_enkf_rb(
                       handlelength=1.3, framealpha=0.7)
 
     fig.suptitle(
-        f"Trajectory summary — IC {ic_idx}  |  PI + Classic EnKF vs PI + Route B EnKF",
+        f"Trajectory summary — IC {ic_idx} (F = {F_val:.2f}) |  PI + Classic EnKF vs PI + Route B EnKF",
         fontsize=13, fontweight="bold", y=1.002,
     )
 
@@ -2743,6 +2745,7 @@ def evaluate_enkf_pi_compare(
             x_est_rb      = np.array(x_means_rb[:, :N]),
             x_std_rb      = np.array(x_spreads_rb[:, :N]),
             ic_idx        = ic_idx,
+            F_val         = F_i,
             save_path     = os.path.join(
                 workdir, "figures", "route_b_comparison",
                 f"trajectory_summary_enkf_rb_compare_ic_{ic_idx}.pdf",
