@@ -14,6 +14,8 @@ def get_config():
     wandb.ckpt_name_pi  = "test_pi_1"
     wandb.name_dd       = "test_dd_1"
     wandb.ckpt_name_dd  = "test_dd_1"
+    wandb.name          = "test_pi_1"
+    wandb.ckpt_name     = "test_pi_1"
     wandb.tag = None
 
     # Arch 
