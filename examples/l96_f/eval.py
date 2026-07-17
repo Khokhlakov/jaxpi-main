@@ -1717,6 +1717,70 @@ def evaluate_enkf_dd_vs_pi(
 #                                       flow-dependent, with no per-member
 #                                       tangent-linear solve.
 
+def build_batched_enkf_pi_compare(
+    predict_fn_a, update_fn_a, predict_fn_b, update_fn_b,
+    N, m, obs_indices, P0_sigma, P0, N_ens, sigma_obs, R, 
+    alpha_fine_a, alpha_b, beta_b, Q0,
+    dt_fine, dt_window, total_fine_steps_batch, obs_step_indices_batch
+):
+    """
+    JIT-compiled, batched execution of two EnKF inflation methods (Route A vs Route B)
+    sharing the same observations and initial ensemble per trajectory.
+    """
+    from examples.l96_f.kf import init_ensemble, run_enkf_smoother, run_enkf_smoother_route_b
+
+    def process_single_ic(key_ic, u_true, F_i, x_true_at_obs, dynamic_vars_static, specify_obs_idx_static):
+        T_obs = x_true_at_obs.shape[0]
+        keys_t = jax.random.split(key_ic, T_obs)
+        
+        # 1. Vectorized observation sequence generation
+        def single_obs(k, x_t):
+            k1, k2 = jax.random.split(k)
+            # Static conditions evaluated at JIT-compile time
+            if (not specify_obs_idx_static) and dynamic_vars_static:
+                idx_vars = jax.random.choice(k1, N, shape=(m,), replace=False)
+            else:
+                idx_vars = obs_indices
+                
+            H = jnp.zeros((m, N)).at[jnp.arange(m), idx_vars].set(1.0)
+            H_aug = jnp.pad(H, ((0, 0), (0, 1)), mode='constant')
+            noise = sigma_obs * jax.random.normal(k2, shape=(m,))
+            return H_aug, x_t[idx_vars] + noise, idx_vars
+            
+        H_seq, y_obs_seq, idx_vars_seq = jax.vmap(single_obs)(keys_t, x_true_at_obs)
+        
+        # 2. Shared initial ensemble
+        k1, k2, k3 = jax.random.split(key_ic, 3)
+        x0_hat_40 = u_true + P0_sigma * jax.random.normal(k2, shape=(N,))
+        x0_hat_aug = jnp.concatenate([x0_hat_40, jnp.array([F_i])])
+        ensemble0 = init_ensemble(x0_hat_aug, P0, N_ens, k3)
+        
+        # 3. Route A: Standard Multiplicative Inflation
+        x_means_a, x_spreads_a, prior_means_a = run_enkf_smoother(
+            predict_fn_a, update_fn_a,
+            ensemble0, y_obs_seq, obs_step_indices_batch,
+            H_seq, alpha_fine_a, R, key_ic, total_fine_steps_batch,
+            dt_fine=dt_fine, dt_window=dt_window,
+        )
+        
+        # 4. Route B: Residual-Scaled Covariance Inflation
+        x_means_b, x_spreads_b, prior_means_b, Q_scale_history = run_enkf_smoother_route_b(
+            predict_fn_b, update_fn_b,
+            ensemble0, y_obs_seq, obs_step_indices_batch,
+            H_seq, Q0, alpha_b, beta_b, R, key_ic, total_fine_steps_batch,
+            dt_fine=dt_fine, dt_window=dt_window, n_quad=3
+        )
+        
+        return (x_means_a, x_spreads_a, prior_means_a, 
+                x_means_b, x_spreads_b, prior_means_b, Q_scale_history,
+                y_obs_seq, idx_vars_seq)
+    
+    # Vmap across the batch (in_axes mapped to keys, u_true, F_i, x_true_at_obs)
+    vmapped_fn = jax.vmap(process_single_ic, in_axes=(0, 0, 0, 0, None, None))
+    # Freeze boolean flags at compile time
+    return jax.jit(vmapped_fn, static_argnums=(4, 5))
+
+
 def _plot_trajectory_summary_compare_enkf_rb(
     t_ax:          np.ndarray,        # (T,)   time axis
     x_true:        np.ndarray,        # (T, N) ground-truth state
@@ -2046,6 +2110,7 @@ def _plot_calibration_compare_rb(
                                  fontsize=7, rotation=45, ha="left")
         ax_time.set_xlabel("Simulation time  (window × dt)", fontsize=9)
 
+        
     ax_cl = fig.add_subplot(gs[0])
     _timeseries_panel(ax_cl, spread_classic, rmse_classic, "#4CAF50", "#FF5722", "Classic")
 
