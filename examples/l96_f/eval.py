@@ -1656,6 +1656,7 @@ def evaluate_enkf_dd_vs_pi(
     window_step_indices = np.array([round((w + 1) * DT_WINDOW / DT_FINE) - 1 for w in range(trajectory_windows)])
     
     for ic_idx in range(num_plots):
+        F_i = float(F_test[ic_idx])
         x_true_fine = x_true_fine_batch[ic_idx]
         x_means_pi, x_spreads_pi = batch_x_means_pi[ic_idx], batch_x_spreads_pi[ic_idx]
         x_means_dd, x_spreads_dd = batch_x_means_dd[ic_idx], batch_x_spreads_dd[ic_idx]
