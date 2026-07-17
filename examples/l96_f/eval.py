@@ -1697,6 +1697,9 @@ def evaluate_enkf_dd_vs_pi(
     )
 
 
+
+
+
 # ── PI: classic EnKF vs Route B (residual-scaled covariance) EnKF ────────────
 #
 # Same propagator (the physics-informed L96UDON surrogate) is used for both
@@ -2184,8 +2187,6 @@ def _evaluate_batch_enkf_pi_compare(
     u0_batch = u_test[:B, 0, :]          # (B, N)
     dt_test  = float(t_test[1] - t_test[0])
 
-    seed = config.training.get("seed", 42)
-
     # ── Batch horizon & observation schedule ─────────────────────────────
     total_time_batch = batch_windows * dt_window
     _, obs_step_indices_batch, total_fine_steps_batch = build_obs_schedule(
@@ -2251,7 +2252,7 @@ def _evaluate_batch_enkf_pi_compare(
     spread_rb_raw_list, rmse_rb_raw_list = [], []
 
     for ic in range(B):
-        key    = jax.random.PRNGKey(ic + seed)
+        key    = jax.random.PRNGKey(ic + 77777)
         u_true = jnp.array(u0_batch[ic])
         F_i    = float(F_test[ic])
 
@@ -2784,5 +2785,3 @@ def evaluate_enkf_pi_compare(
         num_ics_eval, enkf_batch_size, batch_windows,
         config, workdir,
     )
-
-
