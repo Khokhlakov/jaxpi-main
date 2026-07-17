@@ -224,7 +224,7 @@ def run_enkf_smoother(
         safe_idx  = jnp.maximum(obs_idx, 0)
         prior_mean = jnp.mean(state.ensemble, axis=0)
 
-        state_upd = lax.cond(
+        state_upd = jax.lax.cond(
             has_obs,
             lambda s: update_fn(s, observations[safe_idx], H_seq[safe_idx], R, key_upd)[0],
             lambda s: s,
@@ -239,7 +239,7 @@ def run_enkf_smoother(
         return (new_state, jnp.where(reset, 0, step_next), key), \
             (jnp.mean(new_state.ensemble, 0), jnp.std(new_state.ensemble, 0), prior_mean)
 
-    (final_state, _, _), (x_means, x_spreads, prior_means_all) = lax.scan(
+    (final_state, _, _), (x_means, x_spreads, prior_means_all) = jax.lax.scan(
         step, (EnKFState(ensemble0, ensemble0), 0, key), jnp.arange(total_fine_steps)
     )
     prior_means_at_obs = prior_means_all[obs_step_indices] 
