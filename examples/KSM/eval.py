@@ -11,7 +11,7 @@ from typing import Callable
 
 from jaxpi.utils import restore_checkpoint
 import examples.KSM.models as models
-from examples.KSM.utils import get_dataset, build_obs_schedule, scale_Q_for_fine_steps
+from examples.KSM.utils import build_obs_schedule, scale_Q_for_fine_steps
 
 import numpy as np
 from scipy.integrate import solve_ivp
