@@ -60,7 +60,7 @@ def get_config():
     # Causal Weighting
     weighting.use_causal = False
     weighting.causal_tol = 0.02
-    weighting.num_chunks = 10
+    weighting.num_chunks = 10 # must evenly divide the per-device t-batch size (50)
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()

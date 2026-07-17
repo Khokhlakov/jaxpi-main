@@ -15,6 +15,7 @@ from examples.l96_f.utils import (
  	    build_obs_schedule,
  	    scale_inflation_for_fine_steps,
  	    scale_Q_for_fine_steps,
+        steps_per_window_exact,
  	)
 
 import numpy as np
@@ -833,6 +834,38 @@ def evaluate_dd_vs_pi(
     )
 
 
+
+def _binned_spread_skill(
+    rmss: np.ndarray,
+    rmse: np.ndarray,
+    n_bins: int = 10,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Bin raw (RMSS, RMSE) pairs into `n_bins` equal-population bins
+    (deciles by default) over RMSS. Raw per-(IC, window) spread/skill pairs
+    form an unreadable cloud; binning is the standard fix.
+
+    Returns bin_rmss_mean, bin_rmse_mean, bin_rmse_std, bin_counts,
+    each shape (n_bins,) (fewer if some bins end up empty).
+    """
+    rmss = np.asarray(rmss).ravel()
+    rmse = np.asarray(rmse).ravel()
+    order = np.argsort(rmss)
+    rmss_sorted, rmse_sorted = rmss[order], rmse[order]
+
+    bin_rmss_mean, bin_rmse_mean, bin_rmse_std, bin_counts = [], [], [], []
+    for idx in np.array_split(np.arange(len(rmss_sorted)), n_bins):
+        if idx.size == 0:
+            continue
+        bin_rmss_mean.append(rmss_sorted[idx].mean())
+        bin_rmse_mean.append(rmse_sorted[idx].mean())
+        bin_rmse_std.append(rmse_sorted[idx].std())
+        bin_counts.append(idx.size)
+
+    return (np.array(bin_rmss_mean), np.array(bin_rmse_mean),
+            np.array(bin_rmse_std), np.array(bin_counts))
+
+
 # ── PI vs DD + EnKF ──────────────────────────────────────────────────────────
 
 def _plot_trajectory_summary_compare_enkf(
@@ -1120,46 +1153,75 @@ def _plot_rmse_comparison_dd_pi(
     logging.info(f"RMSE comparison plot (PI vs DD) saved to: {save_path}")
 
 def _plot_calibration_compare(
-    window_idx: np.ndarray,
-    dt_window:  float,
-    spread_pi:  np.ndarray, rmse_pi: np.ndarray,
-    spread_dd:  np.ndarray, rmse_dd: np.ndarray,
-    title:      str,
-    save_path:  str,
+    window_idx:    np.ndarray,
+    dt_window:     float,
+    spread_pi:     np.ndarray, rmse_pi: np.ndarray,
+    spread_dd:     np.ndarray, rmse_dd: np.ndarray,
+    spread_pi_raw: np.ndarray, rmse_pi_raw: np.ndarray,
+    spread_dd_raw: np.ndarray, rmse_dd_raw: np.ndarray,
+    title:         str,
+    save_path:     str,
+    n_bins:        int = 10,
 ) -> None:
     """
-    Calibration comparison (RMS ensemble spread vs EnKF RMSE) for PI vs DD,
-    at window boundaries.  Same log-scale / secondary-time-axis format as
-    the calibration panel that used to live inside `_evaluate_batch_l2_enkf`.
+    Calibration comparison for PI vs DD, one PDF with 3 stacked panels:
+      1. DD  — RMS ensemble spread vs EnKF RMSE at window boundaries.
+      2. PI  — same, directly below, sharing the window-index x-axis.
+      3. Binned spread-skill diagram — raw (RMSS, RMSE) pairs pooled over
+         every (IC, window) in the batch, binned into `n_bins`
+         equal-population bins against the y=x reference.
     """
-    fig, ax = plt.subplots(figsize=(9, 5))
+    fig = plt.figure(figsize=(9, 13))
+    gs  = gridspec.GridSpec(3, 1, height_ratios=[1, 1, 1.3], hspace=0.55)
 
-    ax.plot(window_idx, spread_pi, marker="^", markersize=4, linewidth=1.8,
-            linestyle="-", color="#4CAF50", label="PI RMS ensemble σ")
-    ax.plot(window_idx, rmse_pi, marker="s", markersize=4, linewidth=1.8,
-            linestyle="--", color="#FF5722", label="PI EnKF RMSE")
-    ax.plot(window_idx, spread_dd, marker="^", markersize=4, linewidth=1.8,
-            linestyle="-", color="#8BC34A", label="DD RMS ensemble σ")
-    ax.plot(window_idx, rmse_dd, marker="s", markersize=4, linewidth=1.8,
-            linestyle=":", color="#FF8A65", label="DD EnKF RMSE")
+    def _timeseries_panel(ax, spread, rmse, c_spread, c_rmse, label):
+        ax.plot(window_idx, spread, marker="^", markersize=4, linewidth=1.8,
+                linestyle="-", color=c_spread, label=f"{label} RMS ensemble σ")
+        ax.plot(window_idx, rmse, marker="s", markersize=4, linewidth=1.8,
+                linestyle="--", color=c_rmse, label=f"{label} EnKF RMSE")
+        ax.set_yscale("log")
+        ax.set_xlabel("Window index", fontsize=11)
+        ax.set_ylabel("Log scale", fontsize=11)
+        ax.set_title(f"{label}: ensemble spread vs RMSE", fontsize=12)
+        ax.legend(fontsize=9)
+        ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
 
-    ax.set_yscale("log")
-    ax.set_xlabel("Window index", fontsize=12)
-    ax.set_ylabel("Log scale", fontsize=12)
-    ax.set_title(title, fontsize=13)
-    ax.legend(fontsize=9)
-    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+        ax_time = ax.twiny()
+        ax_time.set_xlim(ax.get_xlim())
+        ax_time.set_xticks(window_idx)
+        ax_time.set_xticklabels([f"{k * dt_window:.3g}" for k in window_idx],
+                                 fontsize=7, rotation=45, ha="left")
+        ax_time.set_xlabel("Simulation time  (window × dt)", fontsize=9)
 
-    ax_time = ax.twiny()
-    ax_time.set_xlim(ax.get_xlim())
-    ax_time.set_xticks(window_idx)
-    ax_time.set_xticklabels(
-        [f"{k * dt_window:.3g}" for k in window_idx],
-        fontsize=8, rotation=45, ha="left",
-    )
-    ax_time.set_xlabel("Simulation time  (window × dt)", fontsize=10)
+    ax_dd = fig.add_subplot(gs[0])
+    _timeseries_panel(ax_dd, spread_dd, rmse_dd, "#8BC34A", "#FF8A65", "DD")
 
-    fig.tight_layout()
+    ax_pi = fig.add_subplot(gs[1])
+    _timeseries_panel(ax_pi, spread_pi, rmse_pi, "#4CAF50", "#FF5722", "PI")
+
+    ax_bin = fig.add_subplot(gs[2])
+    rmss_dd_b, rmse_dd_b, rmse_dd_s, _ = _binned_spread_skill(spread_dd_raw, rmse_dd_raw, n_bins)
+    rmss_pi_b, rmse_pi_b, rmse_pi_s, _ = _binned_spread_skill(spread_pi_raw, rmse_pi_raw, n_bins)
+
+    lim_hi = 1.1 * max(rmss_dd_b.max(), rmse_dd_b.max(), rmss_pi_b.max(), rmse_pi_b.max())
+    ax_bin.plot([0, lim_hi], [0, lim_hi], linestyle="--", linewidth=1.4,
+                color="#37474F", label="1:1 (perfect calibration)")
+    ax_bin.errorbar(rmss_dd_b, rmse_dd_b, yerr=rmse_dd_s, fmt="o", markersize=6,
+                     capsize=3, linewidth=1.4, color="#FF8C00", label=f"DD ({n_bins}-bin)")
+    ax_bin.errorbar(rmss_pi_b, rmse_pi_b, yerr=rmse_pi_s, fmt="o", markersize=6,
+                     capsize=3, linewidth=1.4, color="#2196F3", label=f"PI ({n_bins}-bin)")
+
+    ax_bin.set_xlim(0, lim_hi); ax_bin.set_ylim(0, lim_hi)
+    ax_bin.set_xlabel("RMS ensemble spread (RMSS)", fontsize=11)
+    ax_bin.set_ylabel("RMSE of ensemble mean", fontsize=11)
+    ax_bin.set_title(f"Binned spread-skill  ({n_bins} equal-population bins, "
+                      f"pooled over all ICs × windows)", fontsize=12)
+    ax_bin.legend(fontsize=9)
+    ax_bin.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+    ax_bin.set_aspect("equal", adjustable="box")
+
+    fig.suptitle(title, fontsize=13, y=0.995)
+    fig.tight_layout(rect=[0, 0, 1, 0.98])
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     fig.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
@@ -1272,6 +1334,9 @@ def _evaluate_batch_enkf_dd_vs_pi(
     l2_enkf_pi_dense_sum = jnp.zeros(total_fine_steps_batch)
     l2_enkf_dd_dense_sum = jnp.zeros(total_fine_steps_batch)
 
+    spread_pi_raw_list, rmse_pi_raw_list = [], []
+    spread_dd_raw_list, rmse_dd_raw_list = [], []
+
     for ic in range(B):
         key    = jax.random.PRNGKey(ic + 77777)
         u_true = jnp.array(u0_batch[ic])
@@ -1358,12 +1423,21 @@ def _evaluate_batch_enkf_dd_vs_pi(
         l2_enkf_pi_sum += jnp.linalg.norm(x_hat_pi_windows - x_true_at_windows, axis=1) / den
         l2_enkf_dd_sum += jnp.linalg.norm(x_hat_dd_windows - x_true_at_windows, axis=1) / den
 
-        rmse_enkf_pi_sum += jnp.sqrt(jnp.mean((x_hat_pi_windows - x_true_at_windows) ** 2, axis=1))
-        rmse_enkf_dd_sum += jnp.sqrt(jnp.mean((x_hat_dd_windows - x_true_at_windows) ** 2, axis=1))
+        # Calibration
+        rmse_pi_ic = jnp.sqrt(jnp.mean((x_hat_pi_windows - x_true_at_windows) ** 2, axis=1))
+        rmse_dd_ic = jnp.sqrt(jnp.mean((x_hat_dd_windows - x_true_at_windows) ** 2, axis=1))
+        rmse_enkf_pi_sum += rmse_pi_ic
+        rmse_enkf_dd_sum += rmse_dd_ic
+        rmse_pi_raw_list.append(rmse_pi_ic)
+        rmse_dd_raw_list.append(rmse_dd_ic)
 
-        spread_pi_sum += jnp.sqrt(jnp.mean(jnp.array(x_spreads_pi[window_step_indices, :N]) ** 2, axis=1))
-        spread_dd_sum += jnp.sqrt(jnp.mean(jnp.array(x_spreads_dd[window_step_indices, :N]) ** 2, axis=1))
-        
+        spread_pi_ic = jnp.sqrt(jnp.mean(jnp.array(x_spreads_pi[window_step_indices, :N]) ** 2, axis=1))
+        spread_dd_ic = jnp.sqrt(jnp.mean(jnp.array(x_spreads_dd[window_step_indices, :N]) ** 2, axis=1))
+        spread_pi_sum += spread_pi_ic
+        spread_dd_sum += spread_dd_ic
+        spread_pi_raw_list.append(spread_pi_ic)
+        spread_dd_raw_list.append(spread_dd_ic)
+
         # ── Dense per-timestamp L2 (denser than window-level) ─────────────
         x_true_fine_tail = x_true_fine[1:]   # (total_fine_steps_batch, N)
         den_dense = jnp.linalg.norm(x_true_fine_tail, axis=1) + 1e-12
@@ -1435,6 +1509,12 @@ def _evaluate_batch_enkf_dd_vs_pi(
     l2_enkf_pi_dense = np.array(l2_enkf_pi_dense_sum) / B
     l2_enkf_dd_dense = np.array(l2_enkf_dd_dense_sum) / B
 
+    # Calibration
+    spread_pi_raw = np.array(jnp.concatenate(spread_pi_raw_list))
+    spread_dd_raw = np.array(jnp.concatenate(spread_dd_raw_list))
+    rmse_pi_raw   = np.array(jnp.concatenate(rmse_pi_raw_list))
+    rmse_dd_raw   = np.array(jnp.concatenate(rmse_dd_raw_list))
+
     logging.info(
         f"  [batch] Final-timestep mean L2 -> "
         f"PI open-loop: {float(l2_ol_pi[-1]):.3e} | PI+EnKF: {l2_enkf_pi_dense[-1]:.3e} | "
@@ -1474,9 +1554,9 @@ def _evaluate_batch_enkf_dd_vs_pi(
         dt_window  = dt_window,
         spread_pi  = spread_pi, rmse_pi = rmse_enkf_pi,
         spread_dd  = spread_dd, rmse_dd = rmse_enkf_dd,
-        title      = (
-            f"Calibration: ensemble spread vs RMSE  (PI vs DD, B={B}, N_ens={N_ens})"
-        ),
+        spread_pi_raw = spread_pi_raw, rmse_pi_raw = rmse_pi_raw,
+        spread_dd_raw = spread_dd_raw, rmse_dd_raw = rmse_dd_raw,
+        title      = f"Calibration: ensemble spread vs RMSE  (PI vs DD, B={B}, N_ens={N_ens})",
         save_path  = os.path.join(save_dir, "batch_calibration_enkf_compare.pdf"),
     )
 
@@ -1602,7 +1682,7 @@ def evaluate_enkf_dd_vs_pi(
     predict_fn_dd, update_fn_dd = model_dd.make_enkf_fns(params_dd, N_ens=N_ens)
 
     # Scale multiplicative inflation geometrically for fine timesteps
-    steps_per_window = round(DT_WINDOW / DT_FINE)
+    steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
     alpha_fine       = scale_inflation_for_fine_steps(alpha_coarse, steps_per_window)
 
     if specify_obs_idx and obs_idx_list:
@@ -2070,46 +2150,72 @@ def _plot_rmse_comparison_rb(
 
 
 def _plot_calibration_compare_rb(
-    window_idx:      np.ndarray,
-    dt_window:       float,
-    spread_classic:  np.ndarray, rmse_classic: np.ndarray,
-    spread_rb:       np.ndarray, rmse_rb:      np.ndarray,
-    title:           str,
-    save_path:       str,
+    window_idx:         np.ndarray,
+    dt_window:          float,
+    spread_classic:     np.ndarray, rmse_classic: np.ndarray,
+    spread_rb:          np.ndarray, rmse_rb:      np.ndarray,
+    spread_classic_raw: np.ndarray, rmse_classic_raw: np.ndarray,
+    spread_rb_raw:      np.ndarray, rmse_rb_raw:      np.ndarray,
+    title:              str,
+    save_path:          str,
+    n_bins:             int = 10,
 ) -> None:
     """
-    Calibration comparison (RMS ensemble spread vs EnKF RMSE) for Classic vs
-    Route B, at window boundaries.  Same log-scale / secondary-time-axis
-    format as `_plot_calibration_compare`.
+    Calibration comparison for Classic vs Route B, one PDF, 3 panels:
+    Classic spread/RMSE, Route B spread/RMSE stacked below it, and a
+    combined binned spread-skill diagram. Mirrors _plot_calibration_compare.
     """
-    fig, ax = plt.subplots(figsize=(9, 5))
+    fig = plt.figure(figsize=(9, 13))
+    gs  = gridspec.GridSpec(3, 1, height_ratios=[1, 1, 1.3], hspace=0.55)
 
-    ax.plot(window_idx, spread_classic, marker="^", markersize=4, linewidth=1.8,
-            linestyle="-", color="#4CAF50", label="Classic RMS ensemble σ")
-    ax.plot(window_idx, rmse_classic, marker="s", markersize=4, linewidth=1.8,
-            linestyle="--", color="#FF5722", label="Classic EnKF RMSE")
-    ax.plot(window_idx, spread_rb, marker="^", markersize=4, linewidth=1.8,
-            linestyle="-", color="#AB47BC", label="Route B RMS ensemble σ")
-    ax.plot(window_idx, rmse_rb, marker="s", markersize=4, linewidth=1.8,
-            linestyle=":", color="#EC407A", label="Route B EnKF RMSE")
+    def _timeseries_panel(ax, spread, rmse, c_spread, c_rmse, label):
+        ax.plot(window_idx, spread, marker="^", markersize=4, linewidth=1.8,
+                linestyle="-", color=c_spread, label=f"{label} RMS ensemble σ")
+        ax.plot(window_idx, rmse, marker="s", markersize=4, linewidth=1.8,
+                linestyle="--", color=c_rmse, label=f"{label} EnKF RMSE")
+        ax.set_yscale("log")
+        ax.set_xlabel("Window index", fontsize=11)
+        ax.set_ylabel("Log scale", fontsize=11)
+        ax.set_title(f"{label}: ensemble spread vs RMSE", fontsize=12)
+        ax.legend(fontsize=9)
+        ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
 
-    ax.set_yscale("log")
-    ax.set_xlabel("Window index", fontsize=12)
-    ax.set_ylabel("Log scale", fontsize=12)
-    ax.set_title(title, fontsize=13)
-    ax.legend(fontsize=9)
-    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+        ax_time = ax.twiny()
+        ax_time.set_xlim(ax.get_xlim())
+        ax_time.set_xticks(window_idx)
+        ax_time.set_xticklabels([f"{k * dt_window:.3g}" for k in window_idx],
+                                 fontsize=7, rotation=45, ha="left")
+        ax_time.set_xlabel("Simulation time  (window × dt)", fontsize=9)
 
-    ax_time = ax.twiny()
-    ax_time.set_xlim(ax.get_xlim())
-    ax_time.set_xticks(window_idx)
-    ax_time.set_xticklabels(
-        [f"{k * dt_window:.3g}" for k in window_idx],
-        fontsize=8, rotation=45, ha="left",
-    )
-    ax_time.set_xlabel("Simulation time  (window × dt)", fontsize=10)
+    ax_cl = fig.add_subplot(gs[0])
+    _timeseries_panel(ax_cl, spread_classic, rmse_classic, "#4CAF50", "#FF5722", "Classic")
 
-    fig.tight_layout()
+    ax_rb = fig.add_subplot(gs[1])
+    _timeseries_panel(ax_rb, spread_rb, rmse_rb, "#AB47BC", "#EC407A", "Route B")
+
+    ax_bin = fig.add_subplot(gs[2])
+    rmss_cl_b, rmse_cl_b, rmse_cl_s, _ = _binned_spread_skill(spread_classic_raw, rmse_classic_raw, n_bins)
+    rmss_rb_b, rmse_rb_b, rmse_rb_s, _ = _binned_spread_skill(spread_rb_raw, rmse_rb_raw, n_bins)
+
+    lim_hi = 1.1 * max(rmss_cl_b.max(), rmse_cl_b.max(), rmss_rb_b.max(), rmse_rb_b.max())
+    ax_bin.plot([0, lim_hi], [0, lim_hi], linestyle="--", linewidth=1.4,
+                color="#37474F", label="1:1 (perfect calibration)")
+    ax_bin.errorbar(rmss_cl_b, rmse_cl_b, yerr=rmse_cl_s, fmt="o", markersize=6,
+                     capsize=3, linewidth=1.4, color="#FF5722", label=f"Classic ({n_bins}-bin)")
+    ax_bin.errorbar(rmss_rb_b, rmse_rb_b, yerr=rmse_rb_s, fmt="o", markersize=6,
+                     capsize=3, linewidth=1.4, color="#8E24AA", label=f"Route B ({n_bins}-bin)")
+
+    ax_bin.set_xlim(0, lim_hi); ax_bin.set_ylim(0, lim_hi)
+    ax_bin.set_xlabel("RMS ensemble spread (RMSS)", fontsize=11)
+    ax_bin.set_ylabel("RMSE of ensemble mean", fontsize=11)
+    ax_bin.set_title(f"Binned spread-skill  ({n_bins} equal-population bins, "
+                      f"pooled over all ICs × windows)", fontsize=12)
+    ax_bin.legend(fontsize=9)
+    ax_bin.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+    ax_bin.set_aspect("equal", adjustable="box")
+
+    fig.suptitle(title, fontsize=13, y=0.995)
+    fig.tight_layout(rect=[0, 0, 1, 0.98])
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     fig.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
@@ -2279,6 +2385,10 @@ def _evaluate_batch_enkf_pi_compare(
     q_scale_dense_sum    = jnp.zeros(total_fine_steps_batch)
     q_scale_dense_sq_sum = jnp.zeros(total_fine_steps_batch)
 
+    # Calibration
+    spread_classic_raw_list, rmse_classic_raw_list = [], []
+    spread_rb_raw_list, rmse_rb_raw_list = [], []
+
     for ic in range(B):
         key    = jax.random.PRNGKey(ic + 77777)
         u_true = jnp.array(u0_batch[ic])
@@ -2366,11 +2476,20 @@ def _evaluate_batch_enkf_pi_compare(
         l2_enkf_classic_sum += jnp.linalg.norm(x_hat_classic_windows - x_true_at_windows, axis=1) / den
         l2_enkf_rb_sum      += jnp.linalg.norm(x_hat_rb_windows      - x_true_at_windows, axis=1) / den
 
-        rmse_enkf_classic_sum += jnp.sqrt(jnp.mean((x_hat_classic_windows - x_true_at_windows) ** 2, axis=1))
-        rmse_enkf_rb_sum      += jnp.sqrt(jnp.mean((x_hat_rb_windows      - x_true_at_windows) ** 2, axis=1))
+        # Calibration
+        rmse_classic_ic = jnp.sqrt(jnp.mean((x_hat_classic_windows - x_true_at_windows) ** 2, axis=1))
+        rmse_rb_ic      = jnp.sqrt(jnp.mean((x_hat_rb_windows      - x_true_at_windows) ** 2, axis=1))
+        rmse_enkf_classic_sum += rmse_classic_ic
+        rmse_enkf_rb_sum      += rmse_rb_ic
+        rmse_classic_raw_list.append(rmse_classic_ic)
+        rmse_rb_raw_list.append(rmse_rb_ic)
 
-        spread_classic_sum += jnp.sqrt(jnp.mean(jnp.array(x_spreads_classic[window_step_indices, :N]) ** 2, axis=1))
-        spread_rb_sum      += jnp.sqrt(jnp.mean(jnp.array(x_spreads_rb[window_step_indices, :N]) ** 2, axis=1))
+        spread_classic_ic = jnp.sqrt(jnp.mean(jnp.array(x_spreads_classic[window_step_indices, :N]) ** 2, axis=1))
+        spread_rb_ic      = jnp.sqrt(jnp.mean(jnp.array(x_spreads_rb[window_step_indices, :N]) ** 2, axis=1))
+        spread_classic_sum += spread_classic_ic
+        spread_rb_sum      += spread_rb_ic
+        spread_classic_raw_list.append(spread_classic_ic)
+        spread_rb_raw_list.append(spread_rb_ic)
 
         # ── Dense per-timestamp L2 (denser than window-level) ─────────────
         x_true_fine_tail = x_true_fine[1:]   # (total_fine_steps_batch, N)
@@ -2444,6 +2563,12 @@ def _evaluate_batch_enkf_pi_compare(
     q_scale_mean = np.array(q_scale_dense_sum) / B
     q_scale_std  = np.sqrt(np.maximum(q_scale_dense_sq_sum / B - q_scale_mean ** 2, 0.0))
 
+    # Calibration
+    spread_classic_raw = np.array(jnp.concatenate(spread_classic_raw_list))
+    spread_rb_raw      = np.array(jnp.concatenate(spread_rb_raw_list))
+    rmse_classic_raw    = np.array(jnp.concatenate(rmse_classic_raw_list))
+    rmse_rb_raw         = np.array(jnp.concatenate(rmse_rb_raw_list))
+
     logging.info(
         f"  [batch] Final-timestep mean L2 -> "
         f"PI open-loop: {float(l2_ol_pi[-1]):.3e} | "
@@ -2482,9 +2607,9 @@ def _evaluate_batch_enkf_pi_compare(
         dt_window      = dt_window,
         spread_classic = spread_classic, rmse_classic = rmse_enkf_classic,
         spread_rb      = spread_rb,      rmse_rb      = rmse_enkf_rb,
-        title          = (
-            f"Calibration: ensemble spread vs RMSE  (Classic vs Route B, B={B}, N_ens={N_ens})"
-        ),
+        spread_classic_raw = spread_classic_raw, rmse_classic_raw = rmse_classic_raw,
+        spread_rb_raw      = spread_rb_raw,      rmse_rb_raw      = rmse_rb_raw,
+        title          = f"Calibration: ensemble spread vs RMSE  (Classic vs Route B, B={B}, N_ens={N_ens})",
         save_path      = os.path.join(save_dir, "batch_calibration_enkf_rb_compare.pdf"),
     )
 
@@ -2635,7 +2760,7 @@ def evaluate_enkf_pi_compare(
     predict_fn_rb, update_fn_rb           = model_pi.make_route_b_enkf_fns(params_pi, N_ens=N_ens)
 
     # Scale multiplicative inflation geometrically for fine timesteps (Classic)
-    steps_per_window = round(DT_WINDOW / DT_FINE)
+    steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
     alpha_fine       = scale_inflation_for_fine_steps(alpha_coarse, steps_per_window)
 
     # Scale the Route B base covariance to a per-fine-step value (Q0), the

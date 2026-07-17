@@ -5,6 +5,29 @@ import h5py
 import os
 
 
+def check_divisible(numerator: float, denominator: float, label: str,
+                     tol: float = 1e-9) -> int:
+    ratio = numerator / denominator
+    n     = int(round(ratio))
+    if abs(ratio - n) > tol:
+        raise ValueError(
+            f"{label}: {numerator} is not evenly divisible by {denominator}. "
+            f"Ratio = {ratio:.10f}, nearest integer = {n}, "
+            f"residual = {abs(ratio - n):.2e} > tol={tol}."
+        )
+    return n
+
+
+def steps_per_window_exact(dt_window: float, dt_fine: float,
+                            tol: float = 1e-9) -> int:
+    """
+    Integer number of fine steps per DeepONet training window, raising if
+    dt_window is not an exact multiple of dt_fine (same guarantee
+    build_obs_schedule already gives for dt_obs / total_time).
+    """
+    return check_divisible(dt_window, dt_fine, "dt_window / dt_fine", tol)
+
+
 def build_obs_schedule(
     total_time: float,
     dt_fine:    float,
@@ -49,9 +72,9 @@ def build_obs_schedule(
             )
         return n
 
-    total_fine_steps = _check_divisible(total_time, dt_fine,  "total_time / dt_fine")
-    steps_per_obs    = _check_divisible(dt_obs,     dt_fine,  "dt_obs / dt_fine")
-    n_obs            = _check_divisible(total_time, dt_obs,   "total_time / dt_obs")
+    total_fine_steps = check_divisible(total_time, dt_fine,  "total_time / dt_fine")
+    steps_per_obs    = check_divisible(dt_obs,     dt_fine,  "dt_obs / dt_fine")
+    n_obs            = check_divisible(total_time, dt_obs,   "total_time / dt_obs")
 
     # Observation times: first at dt_obs, last at total_time
     obs_times        = np.array([(k + 1) * dt_obs        for k in range(n_obs)])

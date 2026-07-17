@@ -3,6 +3,7 @@ import jax.numpy as jnp
 from jax import jacfwd, jit, vmap
 from functools import partial
 from typing import NamedTuple, Callable
+from examples.l96_f.utils import steps_per_window_exact
 import numpy as np
 
 
@@ -197,7 +198,7 @@ def run_enkf_smoother(
                         update at each observation step — used to compute the
                         Error Reduction Factor (ERF = prior RMSE / post RMSE).
     """
-    steps_per_window = round(dt_window / dt_fine)
+    steps_per_window = steps_per_window_exact(dt_window, dt_fine)
  
     # O(1) lookup: fine step index -> observation index (-1 = no obs)
     obs_at_step = np.full(total_fine_steps, -1, dtype=int)
@@ -490,7 +491,7 @@ def run_enkf_smoother_route_b(
             and for sanity-checking that inflation tracks known model error
             (e.g. larger near sharp gradients / observation gaps).
     """
-    steps_per_window = round(dt_window / dt_fine)
+    steps_per_window = steps_per_window_exact(dt_window, dt_fine)
 
     obs_at_step = np.full(total_fine_steps, -1, dtype=int)
     for obs_idx, step_idx in enumerate(obs_step_indices):

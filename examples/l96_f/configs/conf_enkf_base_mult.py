@@ -4,16 +4,16 @@ import jax.numpy as jnp
 def get_config():
     # Config 1 but init weights 10:1 and using causal training
     config = ml_collections.ConfigDict()
-    config.mode = "eval_dd_vs_pi"
+    config.mode = "eval_enkf_dd_vs_pi"
 
     # Weights & Biases
-    # rerun of conf 2 8 with the modified l2 computation
+    # Base for inflation tunning
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project       = "PI-UDON-L96-n40-f6-ics-2"
-    wandb.name_pi       = "test_larger_1" 
-    wandb.ckpt_name_pi  = "test_larger_1"
-    wandb.name_dd       = "test_F6_dd_1"
-    wandb.ckpt_name_dd  = "test_F6_dd_1"
+    wandb.project       = "L96-F"
+    wandb.name_pi       = "test_pi_1" 
+    wandb.ckpt_name_pi  = "test_pi_1"
+    wandb.name_dd       = "test_dd_1"
+    wandb.ckpt_name_dd  = "test_dd_1"
     wandb.tag = None
 
     # Arch 
@@ -66,23 +66,25 @@ def get_config():
     kf.specify_obs_idx  = False
     kf.obs_idx_list     = [0,2,4,8,12,14,16,20,24,26,28,32,36]
 
-    # EKF settings
-    config.ekf = ekf = ml_collections.ConfigDict()
-    ekf.obs_every_n  = 4
+    kf.obs_every_n  = 4
 
-    ekf.sigma_obs       = 0.2
-    ekf.P0_sigma        = 0.3
-    ekf.dynamic_vars    = False
-    ekf.batch_l2_size   = 100
+    kf.sigma_obs       = 0.2
+    kf.P0_sigma        = 0.3
+    kf.dynamic_vars    = False 
+    kf.batch_l2_size   = 100
 
-    ekf.dt_fine = 0.005
-    ekf.dt_obs  = 0.25
+    kf.dt_fine = 0.005
+    kf.dt_obs  = 0.5
     # dt_fine must divide dt_obs and dt_window
 
-    # EnKF settings
-    config.enkf = ml_collections.ConfigDict()
-    config.enkf.sigma_model = 1.0
-    config.enkf.N_ens       = 90
+    kf.sigma_model      = 1.0 # window-level 
+    kf.inflation_factor = 1.05 # window-level 
+    kf.N_ens            = 90
+
+    kf.route_b_alpha  = 1.0
+    kf.route_b_beta   = 250.0
+    kf.Q0_sigma       = 0.3
+    kf.route_b_n_quad = 3
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
@@ -100,7 +102,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "test_1/ckpt/udon_model"
-    saving.total_plots = 5
+    saving.total_plots = 3
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
