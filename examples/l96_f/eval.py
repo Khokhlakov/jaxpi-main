@@ -1321,7 +1321,9 @@ def _evaluate_batch_enkf_dd_vs_pi(
 
     # ── 1. Vmapped EnKF Execution ──────────────────────────────────────────
     # Generate B distinct keys dynamically mimicking original behavior
-    keys_batch = jax.vmap(lambda i: jax.random.PRNGKey(i + 77777))(jnp.arange(B))
+    seed = config.training.get("seed", 42)
+    master_key = jax.random.PRNGKey(seed)
+    keys_batch = jax.random.split(master_key, B)
     
     batched_enkf = build_batched_enkf_compare(
         predict_fn_pi, update_fn_pi, predict_fn_dd, update_fn_dd,
@@ -2182,6 +2184,8 @@ def _evaluate_batch_enkf_pi_compare(
     u0_batch = u_test[:B, 0, :]          # (B, N)
     dt_test  = float(t_test[1] - t_test[0])
 
+    seed = config.training.get("seed", 42)
+
     # ── Batch horizon & observation schedule ─────────────────────────────
     total_time_batch = batch_windows * dt_window
     _, obs_step_indices_batch, total_fine_steps_batch = build_obs_schedule(
@@ -2247,7 +2251,7 @@ def _evaluate_batch_enkf_pi_compare(
     spread_rb_raw_list, rmse_rb_raw_list = [], []
 
     for ic in range(B):
-        key    = jax.random.PRNGKey(ic + 77777)
+        key    = jax.random.PRNGKey(ic + seed)
         u_true = jnp.array(u0_batch[ic])
         F_i    = float(F_test[ic])
 
