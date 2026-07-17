@@ -174,7 +174,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
 
     logging.info(f"Loading test dataset from {test_file}...")
     with h5py.File(test_file, 'r') as f:
-        u_test = jnp.array(f['u'][:])     # Shape: (num_ics, num_test_pts, 256)
+        u_test = jnp.array(f['u'][:])[:100, :, :]     # Shape: (num_ics, num_test_pts, 256)
         N = f.attrs['N']
         dt = f.attrs['dt']
         test_windows = f.attrs['test_windows']
