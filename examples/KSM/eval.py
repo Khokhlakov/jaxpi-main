@@ -180,7 +180,6 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         test_windows = f.attrs['test_windows']
         
     num_ics, num_test_pts, N_loaded = u_test.shape
-    num_ics = min(num_ics, 100)
     assert N_loaded == 256, f"Expected state dimension 256, got {N_loaded}"
 
     # Reconstruct time definitions
