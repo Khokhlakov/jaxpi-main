@@ -528,11 +528,12 @@ def run_enkf_smoother_route_b(
     (final_state, _, _), (x_means, x_spreads, prior_means_all, Q_scale_history) = jax.lax.scan(
         step, (EnKFState(ensemble0, ensemble0), 0, key), jnp.arange(total_fine_steps)
     )
+    prior_means_at_obs = prior_means_all[obs_step_indices]
 
     return (
         jnp.stack(x_means),
         jnp.stack(x_spreads),
-        jnp.stack(prior_means_at_obs),
+        jnp.stack(prior_means_at_obs),   # (T_obs, N)
         jnp.stack(Q_scale_history),
     )
 
