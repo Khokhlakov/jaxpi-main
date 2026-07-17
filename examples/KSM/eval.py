@@ -196,7 +196,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     else:
         model = models.KSUDON_DD(config, t_star_window)
         
-    ckpt_path = os.path.join(os.getcwd(), config.wandb.name, "ckpt", "udon_model")
+    ckpt_path = os.path.join(os.getcwd(), config.wandb.name, "ckpt", "ks_udon_model")
     
     logging.info(f"Restoring DeepONet model from: {ckpt_path}")
     model.state = restore_checkpoint(model.state, ckpt_path)
