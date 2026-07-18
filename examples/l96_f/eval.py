@@ -3321,6 +3321,42 @@ def _plot_calibration_compare_3way(
     logging.info(f"Calibration comparison plot (3-way) saved to: {save_path}")
 
 
+def _save_batch_plot_h5(save_path: str, **data) -> None:
+    """
+    Persist every array/scalar/string used to generate a batch-comparison
+    PDF (3-way pipeline only) into a companion HDF5 file, so the plot can
+    be reproduced later without re-running the EnKF batch.
+
+    Each keyword argument becomes a top-level entry:
+      * dict values (e.g. `curves={label: {"t": ..., "y": ...}}`, or
+        `colors={label: "#hex"}`) become an HDF5 group, recursing so each
+        label keeps its own name.
+      * str/int/float (e.g. plot titles, n_traj, sigma_obs) become file
+        attributes.
+      * everything else (numpy/JAX arrays, lists) becomes a dataset.
+    """
+    def _write(group, key, value):
+        key = str(key)
+        if value is None:
+            return
+        if isinstance(value, dict):
+            sub_group = group.create_group(key)
+            for sub_key, sub_value in value.items():
+                _write(sub_group, sub_key, sub_value)
+        elif isinstance(value, str):
+            group.attrs[key] = value
+        elif isinstance(value, (int, float, np.integer, np.floating)):
+            group.attrs[key] = value
+        else:
+            group.create_dataset(key, data=np.asarray(value))
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    with h5py.File(save_path, "w") as f:
+        for key, value in data.items():
+            _write(f, key, value)
+    logging.info(f"Batch plot data (h5) saved to: {save_path}")
+
+
 def _evaluate_batch_enkf_3way(
     model_dd, params_dd, predict_fn_dd, update_fn_dd,
     model_pi, params_pi,
@@ -3361,6 +3397,13 @@ def _evaluate_batch_enkf_3way(
     propagator (only their filter differs), so only two open-loop
     reference rollouts (PI, DD) are needed even though three EnKF curves
     are reported, exactly as in the two pipelines this combines.
+
+    Each of the 5 batch comparison PDFs saved here (`save_dir`) has a
+    companion `.h5` file with the same base name, saved via
+    `_save_batch_plot_h5` into `h5_dir` -- a sibling folder next to
+    `save_dir` -- holding all the arrays/scalars needed to reproduce that
+    plot. This does NOT apply to the per-IC trajectory-summary PDFs, which
+    are produced separately in `evaluate_enkf_3_way`.
     """
     B = min(num_ics_eval, enkf_batch_size, u_test.shape[0])
     N = model_pi.N
@@ -3541,6 +3584,10 @@ def _evaluate_batch_enkf_3way(
  
     # ── Plotting ────────────────────────────────────────────────────────
     save_dir = os.path.join(workdir, "figures", "three_way")
+    # Companion HDF5 folder, next to (not inside) the PDFs folder, holding
+    # the underlying data for every batch comparison plot below so each
+    # PDF can be regenerated later without re-running the EnKF batch.
+    h5_dir = os.path.join(os.path.dirname(save_dir), os.path.basename(save_dir) + "_h5")
  
     # Plot 1 — dense per-timestamp L2: all 3 EnKF strategies + both open-loops,
     #          all on the same graph.
@@ -3558,15 +3605,24 @@ def _evaluate_batch_enkf_3way(
         "PI + Mult. Infl.":    "#2196F3",
         "PI + Route B Infl.":  "#8E24AA",
     }
+    title_l2 = f"EnKF vs open-loop: mean relative L2 per timestep  (3-way, B={B})"
     _plot_l2_per_timestep(
         curves    = curves,
-        title     = f"EnKF vs open-loop: mean relative L2 per timestep  (3-way, B={B})",
+        title     = title_l2,
         save_path = os.path.join(save_dir, "batch_l2_per_timestep_3way.pdf"),
         colors    = colors,
+    )
+    _save_batch_plot_h5(
+        os.path.join(h5_dir, "batch_l2_per_timestep_3way.h5"),
+        curves = {label: {"t": t_axis, "y": y_arr} for label, (t_axis, y_arr) in curves.items()},
+        colors = colors,
+        title  = title_l2,
     )
  
     # Plot 2 — calibration: spread vs RMSE per strategy (simulation time) +
     #          combined binned spread-skill diagram, all 3 strategies.
+    title_calib = f"Calibration: ensemble spread vs RMSE  (3-way, B={B}, N_ens={N_ens})"
+    calib_n_bins = 10
     _plot_calibration_compare_3way(
         window_idx = np.arange(1, batch_windows + 1),
         dt_window  = dt_window,
@@ -3576,26 +3632,55 @@ def _evaluate_batch_enkf_3way(
         spread_dd_raw = spread_dd_raw, rmse_dd_raw = rmse_dd_raw,
         spread_cl_raw = spread_cl_raw, rmse_cl_raw = rmse_cl_raw,
         spread_rb_raw = spread_rb_raw, rmse_rb_raw = rmse_rb_raw,
-        title      = f"Calibration: ensemble spread vs RMSE  (3-way, B={B}, N_ens={N_ens})",
+        title      = title_calib,
         save_path  = os.path.join(save_dir, "batch_calibration_enkf_3way.pdf"),
+        n_bins     = calib_n_bins,
+    )
+    _save_batch_plot_h5(
+        os.path.join(h5_dir, "batch_calibration_enkf_3way.h5"),
+        window_idx = np.arange(1, batch_windows + 1),
+        dt_window  = dt_window,
+        spread_dd = spread_dd, rmse_dd = rmse_enkf_dd,
+        spread_cl = spread_cl, rmse_cl = rmse_enkf_cl,
+        spread_rb = spread_rb, rmse_rb = rmse_enkf_rb,
+        spread_dd_raw = spread_dd_raw, rmse_dd_raw = rmse_dd_raw,
+        spread_cl_raw = spread_cl_raw, rmse_cl_raw = rmse_cl_raw,
+        spread_rb_raw = spread_rb_raw, rmse_rb_raw = rmse_rb_raw,
+        n_bins     = calib_n_bins,
+        title      = title_calib,
     )
  
     # Plot 3 — Error Reduction Factor, all 3 strategies on the same graph.
+    title_erf = (
+        f"EnKF Error Reduction Factor per observation time  (3-way)\n"
+        f"(B={B} trajectories, N_ens={N_ens}, "
+        f"obs every {obs_every_n}th var, σ_obs={sigma_obs}, dt_obs={dt_obs:.3g})"
+    )
     _plot_erf_compare_3way(
         obs_times   = obs_times_batch,
         erf_mean_dd = erf_dd_mean, erf_std_dd = erf_dd_std,
         erf_mean_cl = erf_cl_mean, erf_std_cl = erf_cl_std,
         erf_mean_rb = erf_rb_mean, erf_std_rb = erf_rb_std,
         n_traj      = B,
-        title       = (
-            f"EnKF Error Reduction Factor per observation time  (3-way)\n"
-            f"(B={B} trajectories, N_ens={N_ens}, "
-            f"obs every {obs_every_n}th var, σ_obs={sigma_obs}, dt_obs={dt_obs:.3g})"
-        ),
+        title       = title_erf,
         save_path   = os.path.join(save_dir, "batch_erf_enkf_3way.pdf"),
+    )
+    _save_batch_plot_h5(
+        os.path.join(h5_dir, "batch_erf_enkf_3way.h5"),
+        obs_times   = obs_times_batch,
+        erf_mean_dd = erf_dd_mean, erf_std_dd = erf_dd_std,
+        erf_mean_cl = erf_cl_mean, erf_std_cl = erf_cl_std,
+        erf_mean_rb = erf_rb_mean, erf_std_rb = erf_rb_std,
+        n_traj      = B,
+        title       = title_erf,
     )
  
     # Plot 4 — prior / posterior RMSE, 3 pairwise panels (avoids band clutter).
+    title_rmse = (
+        f"EnKF prior vs posterior RMSE  (3-way, pairwise)\n"
+        f"(B={B} trajectories, N_ens={N_ens}, "
+        f"obs every {obs_every_n}th var, σ_obs={sigma_obs}, dt_obs={dt_obs:.3g})"
+    )
     _plot_rmse_comparison_3way(
         obs_times = obs_times_batch,
         prior_rmse_mean_dd = prior_rmse_dd_mean, prior_rmse_std_dd = prior_rmse_dd_std,
@@ -3605,15 +3690,27 @@ def _evaluate_batch_enkf_3way(
         prior_rmse_mean_rb = prior_rmse_rb_mean, prior_rmse_std_rb = prior_rmse_rb_std,
         post_rmse_mean_rb  = post_rmse_rb_mean,  post_rmse_std_rb  = post_rmse_rb_std,
         sigma_obs = sigma_obs, n_traj = B,
-        title = (
-            f"EnKF prior vs posterior RMSE  (3-way, pairwise)\n"
-            f"(B={B} trajectories, N_ens={N_ens}, "
-            f"obs every {obs_every_n}th var, σ_obs={sigma_obs}, dt_obs={dt_obs:.3g})"
-        ),
+        title = title_rmse,
         save_path = os.path.join(save_dir, "batch_rmse_enkf_3way.pdf"),
+    )
+    _save_batch_plot_h5(
+        os.path.join(h5_dir, "batch_rmse_enkf_3way.h5"),
+        obs_times = obs_times_batch,
+        prior_rmse_mean_dd = prior_rmse_dd_mean, prior_rmse_std_dd = prior_rmse_dd_std,
+        post_rmse_mean_dd  = post_rmse_dd_mean,  post_rmse_std_dd  = post_rmse_dd_std,
+        prior_rmse_mean_cl = prior_rmse_cl_mean, prior_rmse_std_cl = prior_rmse_cl_std,
+        post_rmse_mean_cl  = post_rmse_cl_mean,  post_rmse_std_cl  = post_rmse_cl_std,
+        prior_rmse_mean_rb = prior_rmse_rb_mean, prior_rmse_std_rb = prior_rmse_rb_std,
+        post_rmse_mean_rb  = post_rmse_rb_mean,  post_rmse_std_rb  = post_rmse_rb_std,
+        sigma_obs = sigma_obs, n_traj = B,
+        title = title_rmse,
     )
  
     # Plot 5 (bonus) — Route B inflation-scale diagnostic, unique to strategy 3.
+    title_route_b = (
+        f"Route B inflation scale  s = α + β‖ρ‖²_L2  over time\n"
+        f"(B={B} trajectories, N_ens={N_ens}, α={float(alpha_rb):g}, β={float(beta_rb):g})"
+    )
     _plot_route_b_scale(
         t_ax       = t_dense_fine,
         scale_mean = q_scale_mean,
@@ -3621,11 +3718,18 @@ def _evaluate_batch_enkf_3way(
         alpha      = float(alpha_rb),
         beta       = float(beta_rb),
         n_traj     = B,
-        title      = (
-            f"Route B inflation scale  s = α + β‖ρ‖²_L2  over time\n"
-            f"(B={B} trajectories, N_ens={N_ens}, α={float(alpha_rb):g}, β={float(beta_rb):g})"
-        ),
+        title      = title_route_b,
         save_path  = os.path.join(save_dir, "batch_route_b_scale_3way.pdf"),
+    )
+    _save_batch_plot_h5(
+        os.path.join(h5_dir, "batch_route_b_scale_3way.h5"),
+        t_ax       = t_dense_fine,
+        scale_mean = q_scale_mean,
+        scale_std  = q_scale_std,
+        alpha      = float(alpha_rb),
+        beta       = float(beta_rb),
+        n_traj     = B,
+        title      = title_route_b,
     )
   
 def evaluate_enkf_3_way(
@@ -3687,6 +3791,13 @@ def evaluate_enkf_3_way(
       * ``batch_route_b_scale_3way.pdf``      -- bonus Route B
         inflation-scale diagnostic (no analogue for the other 2
         strategies).
+
+    Additionally, under ``workdir/figures/three_way_h5/`` (a folder next
+    to, i.e. a sibling of, ``three_way/``): one ``.h5`` file per batch
+    comparison PDF above (same base filename, ``.h5`` extension) holding
+    all the arrays/scalars needed to reproduce that plot. The per-IC
+    ``trajectory_summary_enkf_3way_ic_<i>.pdf`` plots do NOT get a
+    companion ``.h5`` file.
     """
     from examples.l96_f.kf import run_enkf_smoother, run_enkf_smoother_route_b, init_ensemble
  
@@ -3882,7 +3993,3 @@ def evaluate_enkf_3_way(
         num_ics_eval, enkf_batch_size, batch_windows,
         config, workdir,
     )
-
-
-
-
