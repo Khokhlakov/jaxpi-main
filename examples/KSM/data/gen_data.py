@@ -209,7 +209,7 @@ def generate_datasets(
         train_data_dd = jnp.concatenate([u_hat_burned[None, ...], train_trajectory_dd], axis=0)
 
         # Sparse train data: slice every interval_steps
-        train_data = train_data_dd[::interval_steps]
+        train_data = train_data_dd[:-1:interval_steps]
 
         # Test Phase: advance 1.0 without saving, then save every step for the last 1.0
         u_test_start = advance_time(u_train_end, interval_steps)
@@ -224,7 +224,7 @@ def generate_datasets(
 
     batched_simulate = jax.jit(jax.vmap(simulate_sample))
 
-    total_train_pts = max_additions + 1
+    total_train_pts = max_additions
     total_test_pts = test_windows * interval_steps + 1
     n_chunks = -(-num_samples // batch_size)  # ceil div
 
