@@ -319,7 +319,7 @@ def train_and_evaluate_dd(config, workdir: str):
             if ((step + 1) % config.saving.save_every_steps == 0
                     or (step + 1) == config.training.max_steps):
                 ckpt_path = os.path.join(
-                    os.getcwd(), config.wandb.name, "ckpt", "ks_udon_dd_model"
+                    os.getcwd(), config.wandb.name, "ckpt", "ks_udon_model"
                 )
                 save_checkpoint(
                     model.state, ckpt_path, keep=config.saving.num_keep_ckpts
