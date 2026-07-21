@@ -79,7 +79,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
-    saving.total_plots = 1
+    saving.total_plots = 10
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
