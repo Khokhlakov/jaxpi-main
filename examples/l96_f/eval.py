@@ -1765,6 +1765,53 @@ def _evaluate_batch_enkf_3way(
         save_path  = os.path.join(save_dir, "batch_route_b_scale_3way.pdf"),
     )
   
+def _plot_route_b_scale(
+    t_ax:        np.ndarray,   # (total_fine_steps,)
+    scale_mean:  np.ndarray,   # (total_fine_steps,) mean over ensemble & ICs
+    scale_std:   np.ndarray,   # (total_fine_steps,) std over ICs of the ensemble-mean
+    alpha:       float,
+    beta:        float,
+    n_traj:      int,
+    title:       str,
+    save_path:   str,
+) -> None:
+    """
+    Bonus diagnostic (not present in the Classic/DD comparison plots, since
+    it has no Classic-EnKF analogue): the Route B inflation scale factor
+    s_i = alpha + beta * ||rho_i||^2_L2 over time, averaged across the
+    ensemble and across trajectories.
+
+    This directly visualises the "physics-driven, flow-dependent additive
+    inflation" Route B is built to produce -- s tracks how much the
+    surrogate's own PDE residual currently pushes the process-noise
+    covariance above the alpha floor, e.g. growing near sharp gradients or
+    while coasting through observation gaps, and relaxing back toward alpha
+    when the surrogate is locally physics-consistent.
+    """
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    ax.plot(t_ax, scale_mean, color="#8E24AA", linewidth=1.6,
+            label=f"Route B scale  s = α + β‖ρ‖²  (n = {n_traj} trajectories)")
+    ax.fill_between(
+        t_ax, scale_mean - scale_std, scale_mean + scale_std,
+        color="#8E24AA", alpha=0.18, linewidth=0, label="±1 std across trajectories",
+    )
+    ax.axhline(y=alpha, color="#37474F", linestyle="--", linewidth=1.4,
+               label=f"α floor = {alpha:g}")
+
+    ax.set_yscale("log")
+    ax.set_xlabel("Time  t", fontsize=12)
+    ax.set_ylabel("Route B scale factor  s_i  (log scale)", fontsize=12)
+    ax.set_title(title, fontsize=13)
+    ax.legend(fontsize=9)
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    logging.info(f"Route B inflation-scale diagnostic plot saved to: {save_path}")
+
 def evaluate_enkf_3_way(
     config: ml_collections.ConfigDict,
     workdir: str,
