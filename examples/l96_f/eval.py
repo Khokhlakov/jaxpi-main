@@ -2810,7 +2810,64 @@ def evaluate_enkf_pi_compare(
 # DD propagator. All three share the same per-IC noisy observation draw and
 # the same initial ensemble, so the comparison isolates propagator choice
 # and inflation strategy rather than differing noise realizations.
- 
+
+# ── Multi-GPU batch execution helper ─────────────────────────────────────────
+#
+# Every EnKF batch computation here is embarrassingly parallel over the IC
+# axis (each trajectory's filter run is independent of every other one).
+# `_device_parallel` is a drop-in replacement for the
+# `jax.jit(jax.vmap(fn, in_axes=...))` pattern used throughout: it splits the
+# batch evenly (zero-padding up to a multiple of `jax.local_device_count()`)
+# across every locally visible device via `jax.pmap`, runs the *same*
+# vmapped closure per device, and reassembles outputs back into the original
+# (B, ...) layout. On a single-device host it falls back to plain
+# jit(vmap(...)), so behaviour/numerics are identical -- only the
+# distribution across devices changes. `fn` itself (filtering, propagation,
+# reconstruction) is passed through untouched.
+
+def _device_parallel(fn, in_axes, static_broadcasted_argnums=()):
+    n_devices = jax.local_device_count()
+    vmapped_fn = jax.vmap(fn, in_axes=in_axes)
+
+    if n_devices <= 1:
+        return jax.jit(vmapped_fn, static_argnums=static_broadcasted_argnums)
+
+    pmapped_fn = jax.pmap(
+        vmapped_fn,
+        in_axes=in_axes,
+        static_broadcasted_argnums=static_broadcasted_argnums,
+    )
+
+    batched_idx = [
+        i for i, ax in enumerate(in_axes)
+        if ax is not None and i not in static_broadcasted_argnums
+    ]
+
+    def _shard(x):
+        B = x.shape[0]
+        per_device = -(-B // n_devices)          # ceil division
+        pad = per_device * n_devices - B
+        if pad > 0:
+            x = jnp.concatenate(
+                [x, jnp.zeros((pad,) + x.shape[1:], dtype=x.dtype)], axis=0
+            )
+        return x.reshape((n_devices, per_device) + x.shape[1:])
+
+    def _unshard(x, B):
+        x = x.reshape((-1,) + x.shape[2:])
+        return x[:B]
+
+    def wrapped(*args):
+        B = args[batched_idx[0]].shape[0]
+        sharded_args = tuple(
+            _shard(a) if i in batched_idx else a
+            for i, a in enumerate(args)
+        )
+        out = pmapped_fn(*sharded_args)
+        return jax.tree_util.tree_map(lambda x: _unshard(x, B), out)
+
+    return wrapped
+
 def build_batched_enkf_3way(
     predict_fn_dd, update_fn_dd,
     predict_fn_cl, update_fn_cl,
@@ -2891,11 +2948,14 @@ def build_batched_enkf_3way(
                 x_means_rb, x_spreads_rb, prior_means_rb, q_scale_rb,
                 y_obs_seq, idx_vars_seq)
  
-    # Vmap across the batch (in_axes mapped to keys, u_true, F_i, x_true_at_obs)
-    vmapped_fn = jax.vmap(process_single_ic, in_axes=(0, 0, 0, 0, None, None))
+    # Distribute the batch of independent ICs across every locally visible
+    # GPU (falls back to single-device jit(vmap(...)) automatically).
     # Freeze the boolean flags at compile time to avoid JAX tracer errors on if/else
-    return jax.jit(vmapped_fn, static_argnums=(4, 5))
- 
+    return _device_parallel(
+        process_single_ic,
+        in_axes=(0, 0, 0, 0, None, None),
+        static_broadcasted_argnums=(4, 5),
+    )
  
 def _plot_trajectory_summary_compare_enkf_3way(
     t_ax:       np.ndarray,        # (T,)   time axis
@@ -3075,7 +3135,6 @@ def _plot_trajectory_summary_compare_enkf_3way(
     fig.savefig(save_path, bbox_inches="tight", dpi=150)
     plt.close(fig)
     logging.info(f"3-way EnKF trajectory summary for IC {ic_idx} saved to: {save_path}")
-
 
 def _plot_erf_compare_3way(
     obs_times:   np.ndarray,   # (T_obs,)
@@ -3320,7 +3379,6 @@ def _plot_calibration_compare_3way(
     plt.close(fig)
     logging.info(f"Calibration comparison plot (3-way) saved to: {save_path}")
 
-
 def _evaluate_batch_enkf_3way(
     model_dd, params_dd, predict_fn_dd, update_fn_dd,
     model_pi, params_pi,
@@ -3495,8 +3553,12 @@ def _evaluate_batch_enkf_3way(
     #    Strategies 2 & 3 share the PI propagator, so only ONE PI open-loop
     #    reference is needed alongside the DD one, even for 3 EnKF curves.
     u0_batch_j = jnp.array(u0_batch)
-    predict_full_pi = jax.jit(jax.vmap(lambda u: model_pi.x_pred_fn(params_pi, u, t_star_window), in_axes=0))
-    predict_full_dd = jax.jit(jax.vmap(lambda u: model_dd.x_pred_fn(params_dd, u, t_star_window), in_axes=0))
+    predict_full_pi = _device_parallel(
+        lambda u: model_pi.x_pred_fn(params_pi, u, t_star_window), in_axes=(0,)
+    )
+    predict_full_dd = _device_parallel(
+        lambda u: model_dd.x_pred_fn(params_dd, u, t_star_window), in_axes=(0,)
+    )
  
     x_pred_dense_pi_list, x_pred_dense_dd_list = [], []
     u_current_pi = u_current_dd = jnp.concatenate([u0_batch_j, F_test[:B, None]], axis=-1)
@@ -3719,6 +3781,8 @@ def evaluate_enkf_3_way(
         u_test = f["u"][:]
         t_test = f["t"][:]
         F_test = f["F"][:]
+
+    logging.info(f"JAX sees {jax.local_device_count()} local device(s): {jax.local_devices()}")
  
     dt_window = float(config.get("dt_window", 0.25))
  
