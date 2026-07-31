@@ -1296,21 +1296,21 @@ def _plot_rmse_comparison_3way(
     ):
         ax.plot(obs_times, prior_a, color=c_prior_a, linewidth=2.0, marker="o",
                 markersize=4, linestyle=ls_a, label=f"{name_a} prior RMSE  (n = {n_traj})")
-        ax.fill_between(obs_times, prior_a - prior_a_s, prior_a + prior_a_s,
-                         color=c_prior_a, alpha=0.15, linewidth=0)
+        #ax.fill_between(obs_times, prior_a - prior_a_s, prior_a + prior_a_s,
+        #                 color=c_prior_a, alpha=0.15, linewidth=0)
         ax.plot(obs_times, post_a, color=c_post_a, linewidth=2.0, marker="s",
                 markersize=4, linestyle=ls_a, label=f"{name_a} posterior RMSE  (n = {n_traj})")
-        ax.fill_between(obs_times, post_a - post_a_s, post_a + post_a_s,
-                         color=c_post_a, alpha=0.15, linewidth=0)
+        #ax.fill_between(obs_times, post_a - post_a_s, post_a + post_a_s,
+        #                 color=c_post_a, alpha=0.15, linewidth=0)
  
         ax.plot(obs_times, prior_b, color=c_prior_b, linewidth=2.0, marker="o",
                 markersize=4, linestyle=ls_b, label=f"{name_b} prior RMSE  (n = {n_traj})")
-        ax.fill_between(obs_times, prior_b - prior_b_s, prior_b + prior_b_s,
-                         color=c_prior_b, alpha=0.08, linewidth=0)
+        #ax.fill_between(obs_times, prior_b - prior_b_s, prior_b + prior_b_s,
+        #                 color=c_prior_b, alpha=0.08, linewidth=0)
         ax.plot(obs_times, post_b, color=c_post_b, linewidth=2.0, marker="s",
                 markersize=4, linestyle=ls_b, label=f"{name_b} posterior RMSE  (n = {n_traj})")
-        ax.fill_between(obs_times, post_b - post_b_s, post_b + post_b_s,
-                         color=c_post_b, alpha=0.08, linewidth=0)
+        #ax.fill_between(obs_times, post_b - post_b_s, post_b + post_b_s,
+        #                 color=c_post_b, alpha=0.08, linewidth=0)
  
         ax.axhline(y=sigma_obs, color="#4CAF50", linestyle=":", linewidth=1.6,
                    label=f"Measurement noise  σ_obs = {sigma_obs}")
