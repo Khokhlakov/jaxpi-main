@@ -95,6 +95,6 @@ def get_config():
     config.dt_window = 1.0
 
     # Integer for PRNG random seed.s
-    config.seed = 42
+    config.seed = 42 
 
     return config
