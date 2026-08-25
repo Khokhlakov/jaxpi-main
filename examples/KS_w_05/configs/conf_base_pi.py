@@ -92,7 +92,7 @@ def get_config():
     config.input_dim = 256 + 1
 
     # Training window size
-    config.dt_window = 1.0
+    config.dt_window = 0.25
 
     # Integer for PRNG random seed.s
     config.seed = 42 

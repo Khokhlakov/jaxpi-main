@@ -186,7 +186,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     # 1 time unit = 1 window
     w_dt = 0.25
     pts_pw = int(round(w_dt / dt))
-    t_ax = np.linspace(0, test_windows, num_test_pts)
+    t_ax = np.arange(num_test_pts) * dt
     
     # Single-window relative time grid required by the surrogate model
     t_star_window = t_ax[:pts_pw + 1]
