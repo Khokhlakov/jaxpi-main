@@ -8,9 +8,9 @@ def get_config():
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project       = "PI-UDON-KS-1S"
-    wandb.name          = "test_base_large_1"
-    wandb.ckpt_name     = "test_base_large_1" 
+    wandb.project       = "KS-W-025"
+    wandb.name          = "test_base_dd"
+    wandb.ckpt_name     = "test_base_dd" 
     wandb.tag = None
 
     # Arch 
@@ -49,13 +49,13 @@ def get_config():
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
-    weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0})#ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
+    weighting.scheme = None
+    weighting.init_weights = ml_collections.ConfigDict({"data_loss": 1.0})
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
     
     weighting.max_weight = 100.0#2_000_000.0
-    weighting.warmup_steps = 500
+    weighting.warmup_steps = 0
 
     # Causal Weighting
     weighting.use_causal = False
@@ -79,7 +79,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
-    saving.total_plots = 1
+    saving.total_plots = 5
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()

@@ -8,9 +8,9 @@ def get_config():
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project       = "PI-UDON-KS-1S"
-    wandb.name          = "test_base_large_3" # Dealiased x_t
-    wandb.ckpt_name     = "test_base_large_3" 
+    wandb.project       = "KS-W-025"
+    wandb.name          = "test_base_pi"
+    wandb.ckpt_name     = "test_base_pi" 
     wandb.tag = None
 
     # Arch 
@@ -79,11 +79,11 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
-    saving.total_plots = 1
+    saving.total_plots = 5
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
-    eval.windows            = 200
+    eval.windows            = 150
     eval.trajectory_windows = 200
     eval.num_ics            = 500
     eval.dt_integration     = 0.005
