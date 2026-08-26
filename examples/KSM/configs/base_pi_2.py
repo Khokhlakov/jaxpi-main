@@ -36,7 +36,7 @@ def get_config():
     optim.beta1 = 0.9
     optim.beta2 = 0.999
     optim.eps = 1e-8
-    optim.learning_rate = 1e-(3.5)
+    optim.learning_rate = 10 ** (-3.5)
     optim.decay_rate = 0.9
     optim.decay_steps = 3_000 
     optim.decay_schedule = "Exponential"
@@ -79,7 +79,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
-    saving.total_plots = 1
+    saving.total_plots = 5
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
