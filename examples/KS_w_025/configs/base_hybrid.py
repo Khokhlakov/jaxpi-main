@@ -9,8 +9,8 @@ def get_config():
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "KS-W-025"
-    wandb.name          = "base_pi"
-    wandb.ckpt_name     = "base_pi" 
+    wandb.name          = "base_hybrid"
+    wandb.ckpt_name     = "base_hybrid" 
     wandb.tag = None
 
     # Arch 
@@ -50,7 +50,7 @@ def get_config():
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0})#ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0, "data": 1.0})
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
     

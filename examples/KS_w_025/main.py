@@ -36,6 +36,9 @@ def main(argv):
     elif FLAGS.config.mode == "train_dd":
         train.train_and_evaluate_dd(FLAGS.config, FLAGS.workdir)
 
+    elif FLAGS.config.mode == "train_hybrid":
+            train.train_and_evaluate_hybrid(FLAGS.config, FLAGS.workdir)
+
     elif FLAGS.config.mode == "eval":
         eval.evaluate(FLAGS.config, FLAGS.workdir)
 

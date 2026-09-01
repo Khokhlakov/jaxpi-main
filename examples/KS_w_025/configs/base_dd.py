@@ -54,7 +54,7 @@ def get_config():
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
     
-    weighting.max_weight = 100.0
+    weighting.max_weight = 1000.0
     weighting.warmup_steps = 0
 
     # Causal Weighting

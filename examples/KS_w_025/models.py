@@ -531,3 +531,244 @@ class KSUDONEvaluator_DD(BaseEvaluator):
             self.log_preds(state.params, u_ref_batch[0])
 
         return self.log_dict
+
+
+# =============================================================================
+# Hybrid: Physics-Informed (PI) + a small Data-Driven (DD) anchor
+# =============================================================================
+# Same branch/trunk architecture and residual machinery as `KSUDON` -- the
+# only thing that changes is `losses`, which now has THREE terms instead of
+# two:
+#
+#   "ics"  -- IC loss             (physics branch, identical to KSUDON)
+#   "res"  -- PDE residual loss   (physics branch, identical to KSUDON)
+#   "data" -- supervised MSE      (data branch, identical in spirit to
+#                                   KSUDON_DD, but drawn from a much smaller
+#                                   pool -- see train_and_evaluate_hybrid)
+#
+# jaxpi.models.PINN.loss combines loss terms via
+#   tree_map(lambda l, w: l * w, losses_dict, state.weights)
+# which requires `state.weights` (built from config.weighting.init_weights)
+# to define the SAME three keys as `losses` returns below. See
+# `train_and_evaluate_hybrid` for how that's ensured.
+class KSUDON_Hybrid(ForwardIVP):
+    """Physics-informed DeepONet for the 1D KS equation, trained on both the
+    PDE residual/IC losses (see KSUDON) and a small supervised anchor drawn
+    from dense simulation windows (see KSUDON_DD).
+
+    Branch input  u : (N,)  initial spatial profile v(xi, tau=0)
+    Trunk  input  t : scalar tau in [t0, t1] (one training window)
+    Output x_net    : (N,)  predicted profile v(xi, tau)
+
+    Expected batch for `losses` / `step` / `update_weights`:
+        (batch_u, batch_t, data_u, data_t, data_x)
+      where (batch_u, batch_t) is the physics collocation batch (batch_u ~
+      sparse IC pool, batch_t ~ Uniform[t0, t1]) and (data_u, data_t, data_x)
+      is the supervised batch (data_u = window IC, data_t = query time,
+      data_x = ground-truth state at data_t), exactly as produced by the
+      fused sampler in `train_and_evaluate_hybrid`.
+    """
+
+    def __init__(self, config, t_star, L: float = 64.0, N: int = 256, dt: float = 0.02):
+        super().__init__(config)
+        self.t_star = t_star
+        self.N = N
+
+        # Reference solver instance, used only for its spectral operators
+        # (L_op, _dealias, _nonlinear_term, k_xi, c_x, c_u) -- see the note
+        # above KSUDON for why the residual is computed this way.
+        self.solver = KuramotoSivashinskyAdvanced(L=L, N=N, dt=dt)
+
+        # Wavenumber-band masks for diagnostic residual logging only.
+        cutoff = self.solver.dealiasing_cutoff
+        idx = jnp.arange(self.solver.k_xi.shape[0])
+        self.mask_low          = (idx < cutoff // 3).astype(jnp.float32)
+        self.mask_mid          = ((idx >= cutoff // 3) & (idx < cutoff)).astype(jnp.float32)
+        self.mask_above_cutoff = (idx >= cutoff).astype(jnp.float32)
+
+        self.t0 = t_star[0]
+        self.t1 = t_star[-1]
+
+        # Predictions over a grid (t partition)
+        self.x_pred_fn = vmap(self.x_net, (None, None, 0))
+        self.r_pred_fn = vmap(self.r_net, (None, None, 0))
+        self.r_grid_fn = vmap(vmap(self.r_net, (None, None, 0)), (None, 0, None))
+
+    # -- identical to KSUDON -------------------------------------------------
+    def x_net(self, params, u, t):
+        t = jnp.atleast_1d(t)
+        return self.state.apply_fn(params, u, t)
+
+    def _x_net_dealiased(self, params, u, t):
+        x = self.x_net(params, u, t).reshape(self.N)
+        x_hat = self.solver._dealias(jnp.fft.rfft(x))
+        return jnp.fft.irfft(x_hat, n=self.N)
+
+    def r_net(self, params, u, t):
+        x_hat = self.solver._dealias(jnp.fft.rfft(self.x_net(params, u, t).reshape(self.N)))
+        x_t = jacfwd(self._x_net_dealiased, argnums=2)(params, u, t).reshape(self.N)
+
+        rhs_hat = self.solver.L_op * x_hat + self.solver._nonlinear_term(x_hat)
+        rhs = jnp.fft.irfft(rhs_hat, n=self.N)
+
+        return x_t - rhs
+
+    @partial(jit, static_argnums=(0,))
+    def r_net_hat(self, params, u, t):
+        """Same residual as r_net, but left in Fourier space for band analysis."""
+        return jnp.fft.rfft(self.r_net(params, u, t))
+
+    @partial(jit, static_argnums=(0,))
+    def band_residuals(self, params, batch_u, batch_t):
+        batch_t_flat = batch_t.reshape(-1)
+
+        r_hat_grid = vmap(vmap(self.r_net_hat, (None, None, 0)), (None, 0, None))(
+            params, batch_u, batch_t_flat
+        )
+        power = jnp.abs(r_hat_grid) ** 2
+
+        def band_mean(mask):
+            return jnp.sum(power * mask) / (jnp.sum(mask) * power.shape[0] * power.shape[1])
+
+        return {
+            "res_band/low_q":        band_mean(self.mask_low),
+            "res_band/mid_q":        band_mean(self.mask_mid),
+            "res_band/above_cutoff": band_mean(self.mask_above_cutoff),
+        }
+
+    @partial(jit, static_argnums=(0,))
+    def res_and_w(self, params, batch):
+        # `batch` here is only the physics slice: (batch_u, batch_t) -- see
+        # `losses` below, which carves this out of the full 5-tuple batch.
+        batch_u, batch_t = batch
+        batch_t_flat = batch_t.flatten()
+
+        idx = jnp.argsort(batch_t_flat)
+        t_sorted = batch_t_flat[idx]
+
+        r_pred = self.r_grid_fn(params, batch_u, t_sorted)
+        r_pred = r_pred.transpose(1, 0, 2)
+        r_chunks = r_pred.reshape(self.num_chunks, -1, batch_u.shape[0], self.N)
+
+        l = jnp.mean(r_chunks ** 2, axis=(1, 2, 3))
+        w = lax.stop_gradient(jnp.exp(-self.tol * (self.M @ l)))
+        return l, w
+
+    # -- the new 3-term loss --------------------------------------------------
+    @partial(jit, static_argnums=(0,))
+    def losses(self, params, batch):
+        """
+        batch = (batch_u, batch_t, data_u, data_t, data_x)
+
+          batch_u, batch_t         : physics collocation batch (as in KSUDON)
+          data_u, data_t, data_x   : supervised anchor batch, drawn from a
+                                      small subsample of the dense DD window
+                                      pool (as in KSUDON_DD)
+        """
+        batch_u, batch_t, data_u, data_t, data_x = batch
+        batch_t = batch_t.reshape(-1)
+
+        # -- IC loss (physics branch) --
+        x_pred_ic = vmap(self.x_net, (None, 0, None))(params, batch_u, self.t0)
+        ics_loss = jnp.mean((batch_u - x_pred_ic) ** 2)
+
+        # -- Residual loss (physics branch) --
+        if self.config.weighting.use_causal == True:
+            l, w = self.res_and_w(params, (batch_u, batch_t))
+            res_loss = jnp.mean(l * w)
+        elif self.config.training.use_cartesian_prod == True:
+            r_pred = self.r_grid_fn(params, batch_u, batch_t)
+            res_loss = jnp.mean(r_pred ** 2)
+        else:
+            r_pred = vmap(self.r_net, (None, 0, 0))(params, batch_u, batch_t)
+            res_loss = jnp.mean(r_pred ** 2)
+
+        # -- Data loss (small dense-sample anchor) --
+        data_t_flat = data_t.reshape(-1)
+        x_pred_data = vmap(self.x_net, (None, 0, 0))(params, data_u, data_t_flat)
+        data_loss = jnp.mean((x_pred_data - data_x) ** 2)
+
+        loss_dict = {"ics": ics_loss, "res": res_loss, "data": data_loss}
+        return loss_dict
+
+    # -- identical to KSUDON: surrogate propagator / EKF / EnKF helpers ------
+    def make_surrogate_propagator(self, params) -> Callable:
+        def propagator(u: jnp.ndarray, t: float) -> jnp.ndarray:
+            t_vec = jnp.array([t])
+            return self.x_net(params, u, t_vec).reshape(self.N)
+
+        return propagator
+
+    def make_ekf_fns(self, params, dt: float):
+        from examples.KS_w_05.kf import make_ekf
+        propagator_vt = self.make_surrogate_propagator(params)
+        propagator    = lambda u: propagator_vt(u, dt)
+        return make_ekf(propagator, self.N)
+
+    def make_enkf_fns(self, params, N_ens: int = 50):
+        from examples.KS_w_05.kf import make_enkf
+        propagator = self.make_surrogate_propagator(params)
+        return make_enkf(propagator, self.N, N_ens)
+
+    @partial(jit, static_argnums=(0,))
+    def compute_l2_error(self, params, u_test_batch, x_test_batch):
+        x_pred_batch_fn = vmap(self.x_pred_fn, (None, 0, None))
+        x_pred_batch = x_pred_batch_fn(params, u_test_batch, self.t_star)
+
+        def single_traj_error(pred, test):
+            return jnp.linalg.norm(pred - test) / jnp.linalg.norm(test)
+
+        batch_errors = vmap(single_traj_error)(x_pred_batch, x_test_batch)
+        return jnp.mean(batch_errors)
+
+
+class KSUDONEvaluator_Hybrid(BaseEvaluator):
+    def __init__(self, config, model):
+        super().__init__(config, model)
+
+    def log_errors(self, params, u_ref, x_ref):
+        l2_error = self.model.compute_l2_error(params, u_ref, x_ref)
+        self.log_dict["l2_error"] = l2_error
+
+    def log_preds(self, params, u_ref):
+        x_pred = self.model.x_pred_fn(params, u_ref, self.model.t_star)
+        t = self.model.t_star
+        x_phys = np.arange(self.model.N) * (self.model.solver.L / self.model.N)
+
+        fig, ax = plt.subplots(figsize=(10, 8))
+
+        c = ax.pcolormesh(x_phys, t, x_pred, cmap='viridis', shading='auto')
+        ax.set_xlabel("x")
+        ax.set_ylabel("Time (t)")
+        ax.set_title("KS UDON (Hybrid PI + DD) Trajectory Heatmap")
+        fig.colorbar(c, ax=ax)
+
+        plt.tight_layout()
+        self.log_dict["x_pred"] = fig
+        plt.close()
+
+    def __call__(self, state, batch, u_ref_batch, x_ref_batch):
+        # BaseEvaluator.log_losses calls self.model.losses(params, batch),
+        # so `batch` here must be the full 5-tuple (batch_u, batch_t,
+        # data_u, data_t, data_x) -- same object passed to model.step().
+        self.log_dict = super().__call__(state, batch)
+
+        # Causal weights only need the physics slice of the batch.
+        if self.config.weighting.use_causal:
+            batch_u, batch_t = batch[0], batch[1]
+            _, causal_weight = self.model.res_and_w(state.params, (batch_u, batch_t))
+            self.log_dict["cas_weight"] = causal_weight.min()
+
+        if self.config.logging.log_errors:
+            self.log_errors(state.params, u_ref_batch, x_ref_batch)
+
+        if self.config.logging.log_preds:
+            self.log_preds(state.params, u_ref_batch[0])
+
+        if self.config.logging.get("log_band_residuals", False):
+            band_dict = self.model.band_residuals(state.params, batch[0], batch[1])
+            self.log_dict.update(band_dict)
+
+        return self.log_dict
+
+
