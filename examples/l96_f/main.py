@@ -52,7 +52,7 @@ def main(argv):
         eval.evaluate_enkf_3_way(FLAGS.config, FLAGS.workdir)
 
     elif FLAGS.config.mode == "evaluate_enkf_4_way":
-            eval.evaluate_enkf_4_way(FLAGS.config, FLAGS.workdir)
+        eval.evaluate_enkf_4_way(FLAGS.config, FLAGS.workdir)
     
     
     
