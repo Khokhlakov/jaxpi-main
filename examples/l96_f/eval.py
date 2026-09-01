@@ -9,6 +9,11 @@ from jax.tree_util import tree_map
 from flax.jax_utils import replicate
 from typing import Callable
 
+import numpy as np
+from scipy.integrate import solve_ivp
+from scipy.io import loadmat
+import h5py
+
 from jaxpi.utils import restore_checkpoint
 import examples.l96_f.models as models
 from examples.l96_f.utils import (
@@ -18,10 +23,13 @@ from examples.l96_f.utils import (
         steps_per_window_exact,
  	)
 
-import numpy as np
-from scipy.integrate import solve_ivp
-from scipy.io import loadmat
-import h5py
+from examples.l96_f.kf import (
+    init_ensemble,
+    run_enkf_smoother,
+    run_enkf_smoother_route_b,
+    run_enkf_smoother_rtpp,
+)
+
 
 
 def _plot_l2_per_timestep(
@@ -2064,4 +2072,270 @@ def evaluate_enkf_3_way(
 
 
 
+def build_batched_enkf_4way(
+    predict_fn_dd, update_fn_dd,
+    predict_fn_cl, update_fn_cl,
+    predict_fn_rb, update_fn_rb,
+    predict_fn_rtpp, update_fn_rtpp,
+    N, m, obs_indices, P0_sigma, P0, N_ens, sigma_obs, R, 
+    alpha_fine, Q0, alpha_rb, beta_rb, n_quad_rb, 
+    alpha_rtpp,
+    dt_fine, dt_window, total_fine_steps_batch, obs_step_indices_batch,
+):
+    """
+    Four-strategy counterpart that includes RTPP evaluation.
+    """
+    from examples.l96_f.kf import init_ensemble, run_enkf_smoother, run_enkf_smoother_route_b, run_enkf_smoother_rtpp
+ 
+    def process_single_ic(key_ic, u_true, F_i, x_true_at_obs, dynamic_vars_static, specify_obs_idx_static):
+        T_obs = x_true_at_obs.shape[0]
+        keys_t = jax.random.split(key_ic, T_obs)
+ 
+        # 1. Shared Observation Generation
+        def single_obs(k, x_t):
+            k1, k2 = jax.random.split(k)
+            if (not specify_obs_idx_static) and dynamic_vars_static:
+                idx_vars = jax.random.choice(k1, N, shape=(m,), replace=False)
+            else:
+                idx_vars = obs_indices
+ 
+            H = jnp.zeros((m, N)).at[jnp.arange(m), idx_vars].set(1.0)
+            H_aug = jnp.pad(H, ((0, 0), (0, 1)), mode='constant')
+            noise = sigma_obs * jax.random.normal(k2, shape=(m,))
+            return H_aug, x_t[idx_vars] + noise, idx_vars
+ 
+        H_seq, y_obs_seq, idx_vars_seq = jax.vmap(single_obs)(keys_t, x_true_at_obs)
+ 
+        # 2. Shared Initial Ensemble
+        k1, k2, k3 = jax.random.split(key_ic, 3)
+        x0_hat_40 = u_true + P0_sigma * jax.random.normal(k2, shape=(N,))
+        x0_hat_aug = jnp.concatenate([x0_hat_40, jnp.array([F_i])])
+        ensemble0 = init_ensemble(x0_hat_aug, P0, N_ens, k3)
+ 
+        # 3. Concurrent Evaluation
+        x_means_dd, x_spreads_dd, prior_means_dd = run_enkf_smoother(
+            predict_fn_dd, update_fn_dd, ensemble0, y_obs_seq, obs_step_indices_batch,
+            H_seq, alpha_fine, R, key_ic, total_fine_steps_batch, dt_fine, dt_window,
+        )
+ 
+        x_means_cl, x_spreads_cl, prior_means_cl = run_enkf_smoother(
+            predict_fn_cl, update_fn_cl, ensemble0, y_obs_seq, obs_step_indices_batch,
+            H_seq, alpha_fine, R, key_ic, total_fine_steps_batch, dt_fine, dt_window,
+        )
+ 
+        x_means_rb, x_spreads_rb, prior_means_rb, q_scale_rb = run_enkf_smoother_route_b(
+            predict_fn_rb, update_fn_rb, ensemble0, y_obs_seq, obs_step_indices_batch,
+            H_seq, Q0=Q0, alpha=alpha_rb, beta=beta_rb, R=R, key=key_ic,
+            total_fine_steps=total_fine_steps_batch, dt_fine=dt_fine, dt_window=dt_window, n_quad=n_quad_rb,
+        )
 
+        # Evaluate RTPP (Supports isolated RTPP or mixed with multiplicative inflation)
+        x_means_rtpp, x_spreads_rtpp, prior_means_rtpp = run_enkf_smoother_rtpp(
+            predict_fn_rtpp, update_fn_rtpp, ensemble0, y_obs_seq, obs_step_indices_batch,
+            H_seq, alpha_fine=alpha_fine, alpha_rtpp=alpha_rtpp, R=R, key=key_ic, 
+            total_fine_steps=total_fine_steps_batch, dt_fine=dt_fine, dt_window=dt_window,
+        )
+ 
+        return (x_means_dd, x_spreads_dd, prior_means_dd,
+                x_means_cl, x_spreads_cl, prior_means_cl,
+                x_means_rb, x_spreads_rb, prior_means_rb, q_scale_rb,
+                x_means_rtpp, x_spreads_rtpp, prior_means_rtpp,
+                y_obs_seq, idx_vars_seq)
+ 
+    return _device_parallel(
+        process_single_ic,
+        in_axes=(0, 0, 0, 0, None, None),
+        static_broadcasted_argnums=(4, 5),
+    )
+
+def build_batched_enkf_4way(
+    model_pi, params_pi,
+    model_dd, params_dd,
+    N_ens: int,
+    total_fine_steps: int,
+    dt_fine: float,
+    dt_window: float,
+    alpha_fine: float,
+    Q0: jnp.ndarray,
+    alpha_rb: float,
+    beta_rb: float,
+    alpha_rtpp: float
+):
+    """
+    Constructs and JIT-compiles batched versions of four EnKF smoothers.
+    The returned functions parallelize the integration over the independent
+    batch of test trajectories.
+    """
+    # 1. PI + Multiplicative (Standard)
+    predict_pi_mult, update_pi_mult = model_pi.make_enkf_fns(params_pi, N_ens)
+    def single_pi_mult(ens0, obs, obs_idx, H_seq, R, key):
+        return run_enkf_smoother(
+            predict_pi_mult, update_pi_mult, ens0, obs, obs_idx, H_seq,
+            alpha_fine, R, key, total_fine_steps, dt_fine, dt_window
+        )
+
+    # 2. PI + Route B
+    predict_pi_rb, update_pi_rb = model_pi.make_route_b_enkf_fns(params_pi, N_ens)
+    def single_pi_rb(ens0, obs, obs_idx, H_seq, R, key):
+        return run_enkf_smoother_route_b(
+            predict_pi_rb, update_pi_rb, ens0, obs, obs_idx, H_seq,
+            Q0, alpha_rb, beta_rb, R, key, total_fine_steps, dt_fine, dt_window
+        )
+
+    # 3. PI + RTPP
+    predict_pi_rtpp, update_pi_rtpp = model_pi.make_rtpp_enkf_fns(params_pi, N_ens)
+    def single_pi_rtpp(ens0, obs, obs_idx, H_seq, R, key):
+        return run_enkf_smoother_rtpp(
+            predict_pi_rtpp, update_pi_rtpp, ens0, obs, obs_idx, H_seq,
+            alpha_fine, alpha_rtpp, R, key, total_fine_steps, dt_fine, dt_window
+        )
+
+    # 4. DD + RTPP
+    predict_dd_rtpp, update_dd_rtpp = model_dd.make_rtpp_enkf_fns(params_dd, N_ens)
+    def single_dd_rtpp(ens0, obs, obs_idx, H_seq, R, key):
+        return run_enkf_smoother_rtpp(
+            predict_dd_rtpp, update_dd_rtpp, ens0, obs, obs_idx, H_seq,
+            alpha_fine, alpha_rtpp, R, key, total_fine_steps, dt_fine, dt_window
+        )
+
+    # Vectorize across the batch dimension (axis 0) for ensemble, observations, H matrices, and keys. 
+    # obs_idx and R matrix remain identical/shared across the batch.
+    in_axes = (0, 0, None, 0, None, 0)
+    
+    return (
+        jax.jit(jax.vmap(single_pi_mult, in_axes=in_axes)),
+        jax.jit(jax.vmap(single_pi_rb,   in_axes=in_axes)),
+        jax.jit(jax.vmap(single_pi_rtpp, in_axes=in_axes)),
+        jax.jit(jax.vmap(single_dd_rtpp, in_axes=in_axes))
+    )
+
+def evaluate_enkf_4_way(
+    model_pi, params_pi,
+    model_dd, params_dd,
+    u_test: np.ndarray,      
+    t_test: np.ndarray,      
+    F_test: np.ndarray,      
+    config,
+    workdir: str
+):
+    """
+    Evaluates and compares PI + Mult, PI + Route B, PI + RTPP, and DD + RTPP.
+    Generates batch-averaged relative L2 error comparisons continuously across fine time stamps.
+    """
+    B = u_test.shape[0]
+    N = model_pi.N
+    
+    # --- 1. Scheduling and Extraction ---
+    dt_window  = float(config.get("dt_window", 0.25))
+    dt_fine    = float(config.eval.get("dt_integration", 0.005))
+    dt_obs     = float(config.eval.get("dt_obs", 0.05))
+    total_time = float(t_test[-1])
+    N_ens      = config.eval.get("n_ens", 50)
+    
+    obs_times, obs_step_indices, total_fine_steps = build_obs_schedule(
+        total_time=total_time, dt_fine=dt_fine, dt_obs=dt_obs
+    )
+    
+    # --- 2. Scale Filter Configurations ---
+    R_var = config.eval.get("R_var", 1.0)
+    R     = R_var * jnp.eye(N)
+    P0    = config.eval.get("P0_var", 1.0) * jnp.eye(N)
+    
+    steps_pw   = steps_per_window_exact(dt_window, dt_fine)
+    alpha_fine = scale_inflation_for_fine_steps(config.eval.get("alpha_mult", 1.05), steps_pw)
+    Q_fine     = scale_Q_for_fine_steps(config.eval.get("Q_var_coarse", 0.01) * jnp.eye(N), steps_pw)
+    
+    alpha_rb   = config.eval.get("alpha_rb", 1e-4)
+    beta_rb    = config.eval.get("beta_rb", 1.0)
+    alpha_rtpp = config.eval.get("alpha_rtpp", 0.5)
+
+    # --- 3. Synchronize Ground Truth & Observations ---
+    # EnKF smoother steps begin strictly after t=0. 
+    x_ref_dense  = jnp.array(u_test[:, 1:total_fine_steps+1, :N])
+    t_eval_long  = t_test[1:total_fine_steps+1]
+    
+    # Synthesize noisy observations strictly at observation steps
+    x_ref_at_obs = x_ref_dense[:, obs_step_indices, :] 
+    
+    key = jax.random.PRNGKey(config.eval.get("seed", 42))
+    key_noise, key_ens, key_run = jax.random.split(key, 3)
+    
+    obs_noise    = jax.random.normal(key_noise, x_ref_at_obs.shape) * jnp.sqrt(R_var)
+    observations = x_ref_at_obs + obs_noise
+    
+    H_seq = jnp.tile(jnp.eye(N), (B, len(obs_step_indices), 1, 1))
+
+    # --- 4. Initialize Ensembles ---
+    u0_batch = jnp.concatenate([jnp.array(u_test[:, 0, :N]), F_test[:B, None]], axis=-1)
+    ens0_batch = jax.vmap(lambda x0, k: init_ensemble(x0, P0, N_ens, k))(u0_batch, jax.random.split(key_ens, B))
+
+    # --- 5. Compile & Run Smoothers ---
+    logging.info("Compiling batched EnKF smoothers for 4-way evaluation...")
+    batch_pi_mult, batch_pi_rb, batch_pi_rtpp, batch_dd_rtpp = build_batched_enkf_4way(
+        model_pi, params_pi, model_dd, params_dd,
+        N_ens, total_fine_steps, dt_fine, dt_window,
+        alpha_fine, Q_fine, alpha_rb, beta_rb, alpha_rtpp
+    )
+    
+    keys_run = jax.random.split(key_run, B)
+    
+    logging.info("Executing Batch: PI + Multiplicative...")
+    x_means_pi_mult, _, _ = batch_pi_mult(ens0_batch, observations, obs_step_indices, H_seq, R, keys_run)
+    
+    logging.info("Executing Batch: PI + Route B...")
+    x_means_pi_rb, _, _, _ = batch_pi_rb(ens0_batch, observations, obs_step_indices, H_seq, R, keys_run)
+    
+    logging.info("Executing Batch: PI + RTPP...")
+    x_means_pi_rtpp, _, _ = batch_pi_rtpp(ens0_batch, observations, obs_step_indices, H_seq, R, keys_run)
+    
+    logging.info("Executing Batch: DD + RTPP...")
+    x_means_dd_rtpp, _, _ = batch_dd_rtpp(ens0_batch, observations, obs_step_indices, H_seq, R, keys_run)
+
+    # --- 6. Compute Dense Relative L2 Errors ---
+    # Strip augmented static forcing prior to computing state-only errors.
+    denom = jnp.linalg.norm(x_ref_dense, axis=2) + 1e-12
+    l2_pi_mult = np.asarray(jnp.mean(jnp.linalg.norm(x_means_pi_mult[:, :, :N] - x_ref_dense, axis=2) / denom, axis=0))
+    l2_pi_rb   = np.asarray(jnp.mean(jnp.linalg.norm(x_means_pi_rb[:, :, :N] - x_ref_dense, axis=2) / denom, axis=0))
+    l2_pi_rtpp = np.asarray(jnp.mean(jnp.linalg.norm(x_means_pi_rtpp[:, :, :N] - x_ref_dense, axis=2) / denom, axis=0))
+    l2_dd_rtpp = np.asarray(jnp.mean(jnp.linalg.norm(x_means_dd_rtpp[:, :, :N] - x_ref_dense, axis=2) / denom, axis=0))
+
+    # --- 7. Plotting the Required Comparisons ---
+    save_dir = os.path.join(workdir, "figures", config.wandb.name)
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Comparison A: DD + RTPP vs. PI + RTPP
+    _plot_l2_per_timestep(
+        curves={
+            "DD + RTPP": (t_eval_long, l2_dd_rtpp),
+            "PI + RTPP": (t_eval_long, l2_pi_rtpp),
+        },
+        title=f"EnKF Calibration: DD vs. PI with RTPP (Batch = {B})",
+        save_path=os.path.join(save_dir, "batch_l2_dd_rtpp_vs_pi_rtpp.pdf"),
+        colors={"DD + RTPP": "#FF8C00", "PI + RTPP": "#9C27B0"}
+    )
+    
+    # Comparison B: PI + Route B vs. PI + RTPP
+    _plot_l2_per_timestep(
+        curves={
+            "PI + Route B": (t_eval_long, l2_pi_rb),
+            "PI + RTPP":    (t_eval_long, l2_pi_rtpp),
+        },
+        title=f"EnKF Physics Integration: PI Route B vs. PI RTPP (Batch = {B})",
+        save_path=os.path.join(save_dir, "batch_l2_pi_rb_vs_pi_rtpp.pdf"),
+        colors={"PI + Route B": "#4CAF50", "PI + RTPP": "#9C27B0"}
+    )
+    
+    # Optional Single Trajectory Plot (DD RTPP vs. PI RTPP) for the first IC
+    _plot_trajectory_summary_compare(
+        t_ax       = np.array(t_eval_long),
+        x_true     = np.array(x_ref_dense[0]),
+        x_est_pi   = np.array(x_means_pi_rtpp[0, :, :N]),
+        x_est_dd   = np.array(x_means_dd_rtpp[0, :, :N]),
+        ic_idx     = 0,
+        F_val      = float(F_test[0]),
+        save_path  = os.path.join(save_dir, "traj_summary_dd_rtpp_vs_pi_rtpp_ic_0.pdf"),
+        N          = N,
+        dt_window  = dt_window,
+    )
+    
+    logging.info("4-way EnKF evaluation and plotting completed successfully.")

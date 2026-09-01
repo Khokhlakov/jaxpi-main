@@ -537,3 +537,134 @@ def run_enkf_smoother_route_b(
         jnp.stack(Q_scale_history),
     )
 
+
+
+
+def make_rtpp_enkf(propagator_fn: Callable, N: int, N_ens: int, N_dyn: int = 40):
+    """
+    Factory that builds JIT-compiled EnKF predict/update steps with 
+    Relaxation-to-Prior Perturbations (RTPP) inflation.
+    """
+    # RTPP can still utilize the standard predict function (which supports 
+    # multiplicative inflation if alpha > 1.0 is passed, or alpha = 1.0 for none).
+    predict, _ = make_enkf(propagator_fn, N, N_ens, N_dyn)
+
+    @jit
+    def update_rtpp(
+        enkf_state: EnKFState,
+        y_obs:      jnp.ndarray,  
+        H:          jnp.ndarray,  
+        R:          jnp.ndarray,  
+        alpha_rtpp: float,        # RTPP relaxation parameter [0, 1]
+        key:        jnp.ndarray,
+    ) -> tuple[EnKFState, jnp.ndarray]:
+        
+        prior_ensemble = enkf_state.ensemble   
+        m = H.shape[0]
+
+        # 1. Compute Prior Anomalies
+        x_mean_prior = jnp.mean(prior_ensemble, axis=0)
+        X_anom_prior = prior_ensemble - x_mean_prior
+
+        # 2. Standard Assimilation
+        y_pred = vmap(lambda x: H @ x)(prior_ensemble)
+        y_mean = jnp.mean(y_pred, axis=0)
+        Y_anom = y_pred - y_mean
+
+        scale = 1.0 / (N_ens - 1)
+        PHT = scale * X_anom_prior.T @ Y_anom
+        S = scale * Y_anom.T @ Y_anom + R
+        K = jax.scipy.linalg.solve(S, PHT.T, assume_a='pos').T
+
+        L_R = jnp.linalg.cholesky(R + 1e-10 * jnp.eye(m))
+        eps = jax.random.normal(key, shape=(N_ens, m)) @ L_R.T
+        y_perturbed = y_obs[None, :] + eps
+
+        innovations = y_perturbed - y_pred
+        ensemble_post = prior_ensemble + innovations @ K.T
+
+        # 3. Compute Posterior Anomalies
+        x_mean_post = jnp.mean(ensemble_post, axis=0)
+        X_anom_post = ensemble_post - x_mean_post
+
+        # 4. Apply RTPP Relaxation strictly to dynamic variables
+        rtpp_mask = jnp.zeros((N,))
+        rtpp_mask = rtpp_mask.at[:N_dyn].set(alpha_rtpp)
+
+        X_anom_rtpp = (1.0 - rtpp_mask) * X_anom_post + rtpp_mask * X_anom_prior
+        ensemble_rtpp = x_mean_post + X_anom_rtpp
+
+        return EnKFState(
+            ensemble=ensemble_rtpp,
+            window_ics=enkf_state.window_ics,
+        ), K
+
+    return predict, update_rtpp
+
+def run_enkf_smoother_rtpp(
+    predict_fn:        Callable,
+    update_fn:         Callable,
+    ensemble0:         jnp.ndarray,   
+    observations:      jnp.ndarray,   
+    obs_step_indices:  np.ndarray,    
+    H_seq:             jnp.ndarray,   
+    alpha_fine:        float,         # Multiplicative inflation factor (Predict)
+    alpha_rtpp:        float,         # RTPP relaxation factor (Update)
+    R:                 jnp.ndarray,   
+    key:               jnp.ndarray,
+    total_fine_steps:  int,
+    dt_fine:           float,         
+    dt_window:         float,         
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Smoother variant for RTPP that passes the alpha_rtpp parameter to the update step.
+    """
+    steps_per_window = steps_per_window_exact(dt_window, dt_fine)
+    obs_at_step = jnp.full((total_fine_steps,), -1, dtype=jnp.int32)
+    obs_at_step = obs_at_step.at[jnp.asarray(obs_step_indices)].set(jnp.arange(len(obs_step_indices)))
+ 
+    state = EnKFState(ensemble=ensemble0, window_ics=ensemble0)
+    
+    def step(carry, fine_t):
+        state, step_in_window, key = carry
+        t_query = (step_in_window + 1) * dt_fine
+        cumulative_alpha = alpha_fine ** (step_in_window + 1)
+        key, key_pred, key_upd = jax.random.split(key, 3)
+        
+        state = predict_fn(state, cumulative_alpha, key_pred, t_query)
+
+        obs_idx   = obs_at_step[fine_t]          
+        has_obs   = obs_idx >= 0
+        safe_idx  = jnp.maximum(obs_idx, 0)
+        prior_mean = jnp.mean(state.ensemble, axis=0)
+
+        # Pass alpha_rtpp to the RTPP-specific update_fn
+        state_upd = jax.lax.cond(
+            has_obs,
+            lambda s: update_fn(s, observations[safe_idx], H_seq[safe_idx], R, alpha_rtpp, key_upd)[0],
+            lambda s: s,
+            state,
+        )
+        
+        step_next = step_in_window + 1
+        reset = has_obs | (step_next >= steps_per_window)
+        new_state = EnKFState(
+            ensemble=state_upd.ensemble,
+            window_ics=jnp.where(reset, state_upd.ensemble, state_upd.window_ics),
+        )
+        return (new_state, jnp.where(reset, 0, step_next), key), \
+            (jnp.mean(new_state.ensemble, 0), jnp.std(new_state.ensemble, 0), prior_mean)
+
+    (final_state, _, _), (x_means, x_spreads, prior_means_all) = jax.lax.scan(
+        step, (EnKFState(ensemble0, ensemble0), 0, key), jnp.arange(total_fine_steps)
+    )
+    prior_means_at_obs = prior_means_all[obs_step_indices] 
+ 
+    return (
+        jnp.stack(x_means),
+        jnp.stack(x_spreads),
+        jnp.stack(prior_means_at_obs),   
+    )
+
+
+

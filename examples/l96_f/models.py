@@ -151,6 +151,12 @@ class L96UDON(ForwardIVP):
             N_ens=N_ens,
         )
 
+    def make_rtpp_enkf_fns(self, params, N_ens: int = 50):
+        from examples.l96_f.kf import make_rtpp_enkf
+        propagator = self.make_surrogate_propagator(params)
+        # Pass augmented state (N+1 = 41) while tracking dynamic limit (N=40)
+        return make_rtpp_enkf(propagator, self.N + 1, N_ens, N_dyn=self.N)
+
     @partial(jit, static_argnums=(0,))
     def compute_l2_error(self, params, u_test_batch, x_test_batch):
         # 1. Vectorize x_pred_fn to handle a batch of initial conditions (axis 0 of u_test_batch)
@@ -251,6 +257,12 @@ class L96UDON_DD(ForwardIVP):
         propagator = self.make_surrogate_propagator(params)
         # Pass the augmented state dimension (self.N + 1 = 41) to the EnKF factory
         return make_enkf(propagator, self.N + 1, N_ens, N_dyn=self.N)
+
+    def make_rtpp_enkf_fns(self, params, N_ens: int = 50):
+        from examples.l96_f.kf import make_rtpp_enkf
+        propagator = self.make_surrogate_propagator(params)
+        # Pass augmented state (N+1 = 41) while tracking dynamic limit (N=40)
+        return make_rtpp_enkf(propagator, self.N + 1, N_ens, N_dyn=self.N)
 
     @partial(jit, static_argnums=(0,))
     def compute_l2_error(self, params, u_test_batch, x_test_batch):
