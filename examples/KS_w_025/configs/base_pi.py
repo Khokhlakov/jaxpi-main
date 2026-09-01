@@ -3,14 +3,14 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    config.mode = "train_dd"
+    config.mode = "train"
 
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "KS-W-025"
-    wandb.name          = "test_base_dd"
-    wandb.ckpt_name     = "test_base_dd" 
+    wandb.name          = "test_base_pi"
+    wandb.ckpt_name     = "test_base_pi" 
     wandb.tag = None
 
     # Arch 
@@ -49,13 +49,13 @@ def get_config():
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
-    weighting.scheme = None
-    weighting.init_weights = ml_collections.ConfigDict({"data_loss": 1.0})
+    weighting.scheme = "grad_norm"
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0})#ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
     
     weighting.max_weight = 100.0#2_000_000.0
-    weighting.warmup_steps = 0
+    weighting.warmup_steps = 500
 
     # Causal Weighting
     weighting.use_causal = False
@@ -68,7 +68,7 @@ def get_config():
     logging.log_errors = True
     logging.log_losses = True
     logging.log_weights = True
-    logging.log_band_residuals = True
+    logging.log_band_residuals = False
     logging.log_preds = False
     logging.log_grads = False
     logging.log_ntk = False
@@ -92,9 +92,9 @@ def get_config():
     config.input_dim = 256 + 1
 
     # Training window size
-    config.dt_window = 1.0
+    config.dt_window = 0.25
 
     # Integer for PRNG random seed.s
-    config.seed = 42
+    config.seed = 42 
 
     return config
