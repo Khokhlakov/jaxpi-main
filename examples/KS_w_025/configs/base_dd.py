@@ -8,9 +8,9 @@ def get_config():
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project       = "UDON-KS"
-    wandb.name          = "test_dd"
-    wandb.ckpt_name     = "test_dd" 
+    wandb.project       = "KS-W-025"
+    wandb.name          = "base_dd"
+    wandb.ckpt_name     = "base_dd" 
     wandb.tag = None
 
     # Arch 
