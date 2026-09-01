@@ -3,14 +3,14 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    config.mode = "train_hybrid"
+    config.mode = "train"
 
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "KS-W-025"
-    wandb.name          = "base_hybrid"
-    wandb.ckpt_name     = "base_hybrid" 
+    wandb.name          = "base_pi"
+    wandb.ckpt_name     = "base_pi" 
     wandb.tag = None
 
     # Arch 

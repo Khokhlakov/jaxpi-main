@@ -18,7 +18,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.io import loadmat
 import h5py
-
+# This is just a comment 
 
 def _plot_l2_per_timestep(
     curves:    dict[str, tuple[np.ndarray, np.ndarray]], # label -> (time_axis, l2_array)

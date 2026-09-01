@@ -3,7 +3,7 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    config.mode = "train"
+    config.mode = "train_hybrid" 
 
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
@@ -98,3 +98,5 @@ def get_config():
     config.seed = 42 
 
     return config
+
+
