@@ -313,7 +313,7 @@ if __name__ == "__main__":
                       N=256,
                       dt=0.005,
                       t_burn=100.0,
-                      max_additions=600,
+                      max_additions=500,
                       test_windows=500,
                       batch_size=25)
 
