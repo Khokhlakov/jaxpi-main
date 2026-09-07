@@ -308,12 +308,12 @@ def generate_datasets(
     print("Saved 'ks_train_data.h5', 'ks_train_data_dd.h5', and 'ks_test_data.h5'.")
 
 if __name__ == "__main__":
-    generate_datasets(num_samples=100,
+    generate_datasets(num_samples=200,
                       L=64,
                       N=256,
                       dt=0.005,
                       t_burn=100.0,
-                      max_additions=1000,
+                      max_additions=700,
                       test_windows=500,
                       batch_size=25)
 
