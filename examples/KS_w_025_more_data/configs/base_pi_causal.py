@@ -9,8 +9,8 @@ def get_config():
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "KS-W-025"
-    wandb.name          = "base_pi"
-    wandb.ckpt_name     = "base_pi" 
+    wandb.name          = "base_pi_causal"
+    wandb.ckpt_name     = "base_pi_causal" 
     wandb.tag = None
 
     # Arch 
@@ -58,7 +58,7 @@ def get_config():
     weighting.warmup_steps = 2000
 
     # Causal Weighting
-    weighting.use_causal = False
+    weighting.use_causal = True
     weighting.causal_tol = 0.02
     weighting.num_chunks = 10
 

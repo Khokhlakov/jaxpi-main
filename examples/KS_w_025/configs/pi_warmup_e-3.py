@@ -9,8 +9,8 @@ def get_config():
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "KS-W-025"
-    wandb.name          = "pi_warmup_500"
-    wandb.ckpt_name     = "pi_warmup_500" 
+    wandb.name          = "pi_warmup_e-3"
+    wandb.ckpt_name     = "pi_warmup_e-3" 
     wandb.tag = None
 
     # Arch 
@@ -38,7 +38,7 @@ def get_config():
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 2_500 
+    optim.decay_steps = 3_000 
     optim.decay_schedule = "Exponential"
 
     # Training (Windowed Logic)

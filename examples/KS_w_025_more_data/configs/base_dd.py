@@ -38,7 +38,7 @@ def get_config():
     optim.eps = 1e-8
     optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 2_500 
+    optim.decay_steps = 3_000 
     optim.decay_schedule = "Exponential"
 
     # Training (Windowed Logic)
