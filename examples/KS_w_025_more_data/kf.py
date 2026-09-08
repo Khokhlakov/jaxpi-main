@@ -1,0 +1,600 @@
+import jax
+import jax.numpy as jnp
+from jax import jacfwd, jit, vmap
+from functools import partial
+from typing import NamedTuple, Callable
+import numpy as np
+
+
+class EKFState(NamedTuple):
+    """Holds the full EKF state at a single time step."""
+    x_hat:     jnp.ndarray  # (N,)   — posterior state estimate
+    P:         jnp.ndarray  # (N, N) — posterior error covariance
+    window_ic: jnp.ndarray  # (N,)   — IC at the start of the current window
+ 
+
+def make_ekf(propagator_fn: Callable, N: int):
+    """
+    Factory that builds JIT-compiled EKF predict/update steps.
+
+    The surrogate propagator is expected to have the signature
+        propagator_fn(u: (N,), t: float) -> (N,)
+    where ``t`` is the query time *within the current window*. Inside
+    the ``predict`` step, ``t`` is marked as a static argument so that
+    JAX can treat ``round(t / dt_fine)`` as a compile-time constant when
+    the propagator is a numerical integrator. For the DeepONet surrogate,
+    ``t`` is simply forwarded to ``x_net``.
+
+    Key differences from the EnKF:
+    • Jacobian-based covariance propagation — the nonlinear surrogate is
+      linearised at ``window_ic`` via jacfwd, giving the first-order
+      covariance update F P F^T + Q.
+    • Window-aware prediction — the mean and Jacobian are both evaluated
+      at ``window_ic`` with query time ``t_query``, not chained from the
+      previous fine-step output.
+    • Deterministic update — no perturbed observations; the standard
+      Kalman gain formula is used.
+
+    Args:
+        propagator_fn: callable (u: (N,), t: float) -> (N,), the surrogate
+                       evaluated at a query time within the window.
+                       Must be pure (no side effects).
+        N: state dimension (40 for L96).
+
+    Returns:
+        predict_fn, update_fn — both JIT-compiled.
+    """
+
+    @partial(jit, static_argnums=(2,))
+    def predict(
+        ekf_state: EKFState,
+        Q:         jnp.ndarray,  # (N, N) process noise covariance
+        t_query:   float,        # STATIC — in-window time offset for this step
+    ) -> EKFState:
+        """
+        EKF prediction step (window-aware).
+
+        Propagates the state estimate forward by querying the surrogate at
+        ``t_query`` relative to the state's own ``window_ic``, i.e.:
+
+            x_hat_pred = propagator_fn(window_ic, t_query)
+
+        The Jacobian is evaluated at the same point via jacfwd, giving the
+        linearisation F used for the covariance update F P F^T + Q.
+
+        ``t_query`` is declared static (``static_argnums=(2,)``) so that
+        any Python-level arithmetic on it inside ``propagator_fn`` (e.g.
+        ``n_steps = round(t / dt_fine)`` for a numerical integrator) is a
+        compile-time constant.  XLA retraces at most ``steps_per_window``
+        distinct values per run, after which the JIT cache is reused.
+
+        Args:
+            ekf_state: current posterior (x_hat, P, window_ic).
+            Q:         (N, N) process noise covariance.
+            t_query:   Python float — query time within the current window.
+                       Must satisfy  0 < t_query <= DT_WINDOW.
+
+        Returns:
+            Prior EKFState (x_hat_pred, P_pred, window_ic unchanged).
+        """
+        # Propagate mean from window IC at t_query
+        x_hat_pred = propagator_fn(ekf_state.window_ic, t_query)       # (N,)
+
+        # Linearise: Jacobian of surrogate w.r.t. window_ic at t_query
+        # F[i, j] = d(output_i) / d(input_j)
+        F = jacfwd(lambda u: propagator_fn(u, t_query))(ekf_state.window_ic)  # (N, N)
+
+        # Propagate covariance
+        P_pred = F @ ekf_state.P @ F.T + Q                             # (N, N)
+
+        # window_ic is left unchanged here; reset by run_ekf_smoother at
+        # window boundaries and after observation updates.
+        return EKFState(x_hat=x_hat_pred, P=P_pred, window_ic=ekf_state.window_ic)
+
+    @jit
+    def update(
+        ekf_state: EKFState,
+        y_obs:     jnp.ndarray,  # (m,)
+        H:         jnp.ndarray,  # (m, N)
+        R:         jnp.ndarray,  # (m, m)
+    ) -> tuple[EKFState, jnp.ndarray]:
+        """
+        EKF update step (measurement assimilation).
+
+        Args:
+            ekf_state: prior (x_hat_pred, P_pred, window_ic) from predict().
+            y_obs: (m,) observation vector.
+            H: (m, N) linear observation matrix.
+            R: (m, m) observation noise covariance.
+
+        Returns:
+            Posterior EKFState and Kalman gain K.
+            window_ic is passed through unchanged; run_ekf_smoother is
+            responsible for resetting it to x_hat_post after every update.
+        """
+        x_hat_pred = ekf_state.x_hat
+        P_pred     = ekf_state.P
+
+        innov = y_obs - H @ x_hat_pred                          # (m,)
+        S     = H @ P_pred @ H.T + R                            # (m, m)
+        K     = P_pred @ H.T @ jnp.linalg.inv(S)               # (N, m)
+
+        x_hat_post = x_hat_pred + K @ innov                     # (N,)
+        I_KH       = jnp.eye(N) - K @ H                        # (N, N)
+        P_post     = I_KH @ P_pred @ I_KH.T + K @ R @ K.T      # (N, N) Joseph form
+
+        # window_ic passed through unchanged; run_ekf_smoother will reset it.
+        return EKFState(x_hat=x_hat_post, P=P_post, window_ic=ekf_state.window_ic), K
+
+    return predict, update
+
+
+def run_ekf_smoother(
+    predict_fn:        Callable,
+    update_fn:         Callable,
+    x0_hat:            jnp.ndarray,    # (N,)
+    P0:                jnp.ndarray,    # (N, N)
+    observations:      jnp.ndarray,    # (T_obs, m)
+    obs_step_indices:  np.ndarray,     # (T_obs,) int — fine step of each obs
+    H_seq:             jnp.ndarray,    # (T_obs, m, N)
+    Q:                 jnp.ndarray,    # (N, N) — per fine step
+    R:                 jnp.ndarray,    # (m, m)
+    total_fine_steps:  int,
+    dt_fine:           float,          # fine integration step
+    dt_window:         float,          # DeepONet training window length
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Fine-step-centric, window-aware EKF smoother.
+
+    Window-aware prediction
+    -----------------------
+    Mirrors the strategy of run_enkf_smoother: rather than chaining
+    f(f(u, dt_fine), dt_fine) … across fine steps, this smoother tracks
+    which fine step we are at *within the current window* and always queries
+    the surrogate as
+
+        x_hat_pred = propagator_fn(window_ic, step_in_window * dt_fine)
+
+    so that all in-window predictions exploit the full training range
+    [t0, t1] and avoid Jacobian-error accumulation across fine steps.
+
+    Window reset policy
+    -------------------
+    ``window_ic`` is reset to the current ``x_hat`` in two situations:
+
+    1. **Observation update**: immediately after assimilation, so that
+       subsequent predictions in the same window start from the corrected
+       state rather than the pre-update IC.  This effectively starts a
+       fresh pseudo-window from the posterior estimate.
+
+    2. **Window boundary**: when ``step_in_window`` reaches
+       ``steps_per_window``, even if no observation was assimilated.
+
+    Both resets also zero ``step_in_window``, so the next call to
+    ``predict_fn`` queries at ``t = dt_fine`` (the first fine step of
+    the new window).
+
+    Args:
+        predict_fn:       JIT-compiled EKF predict (window-aware).
+        update_fn:        JIT-compiled EKF update.
+        x0_hat:           (N,) initial state estimate.
+        P0:               (N, N) initial error covariance.
+        observations:     (T_obs, m) observation vectors.
+        obs_step_indices: (T_obs,) fine-step indices of each observation.
+        H_seq:            (T_obs, m, N) observation matrices.
+        Q:                (N, N) per-fine-step process noise covariance.
+        R:                (m, m) observation noise covariance.
+        total_fine_steps: total number of fine steps to run.
+        dt_fine:          duration of one fine step (Python float).
+        dt_window:        duration of one DeepONet training window (Python float).
+
+    Returns:
+        x_hats:             (total_fine_steps, N) filtered state estimates.
+        Ps:                 (total_fine_steps, N, N) filtered covariance matrices.
+        prior_means_at_obs: (T_obs, N) state estimate *before* the update at
+                            each observation step — used to compute the Error
+                            Reduction Factor (ERF = prior RMSE / post RMSE).
+    """
+    steps_per_window = round(dt_window / dt_fine)
+
+    # O(1) lookup: fine step index -> observation index (-1 = no obs)
+    obs_at_step = np.full(total_fine_steps, -1, dtype=int)
+    for obs_idx, step_idx in enumerate(obs_step_indices):
+        obs_at_step[step_idx] = obs_idx
+
+    # Initialise state: x_hat, P, and window_ic all start from the prior.
+    state  = EKFState(x_hat=x0_hat, P=P0, window_ic=x0_hat)
+    x_hats: list[jnp.ndarray] = []
+    Ps:     list[jnp.ndarray] = []
+    prior_means_at_obs: list[jnp.ndarray] = []
+    step_in_window = 0  # Python int — used to compute t_query
+
+    for fine_t in range(total_fine_steps):
+        # In-window query time: (step_in_window + 1) * dt_fine.
+        # step_in_window = 0 on the first step of every window, so t_query
+        # starts at dt_fine and increases by dt_fine on each subsequent step.
+        t_query = (step_in_window + 1) * dt_fine  # Python float — static for JIT
+
+        # Predict: queries propagator_fn(window_ic, t_query).
+        state = predict_fn(state, Q, t_query)
+
+        # Update only if an observation falls on this fine step.
+        reset_window = False
+        obs_idx = obs_at_step[fine_t]
+        if obs_idx >= 0:
+            # ── Capture prior mean BEFORE assimilation ──────────────────────
+            prior_means_at_obs.append(state.x_hat)
+
+            state, _ = update_fn(
+                state,
+                observations[obs_idx],
+                H_seq[obs_idx],
+                R,
+            )
+            # After assimilation, start a fresh window from the posterior.
+            reset_window = True
+
+        x_hats.append(state.x_hat)
+        Ps.append(state.P)
+
+        # Advance the in-window counter; reset at window boundaries.
+        step_in_window += 1
+        if step_in_window >= steps_per_window:
+            reset_window = True
+
+        if reset_window:
+            # Set window_ic to the current x_hat so that the next predict
+            # call starts a fresh window query from this state.
+            state = EKFState(
+                x_hat=state.x_hat,
+                P=state.P,
+                window_ic=state.x_hat,
+            )
+            step_in_window = 0
+
+    return (
+        jnp.stack(x_hats),
+        jnp.stack(Ps),
+        jnp.stack(prior_means_at_obs),  # (T_obs, N)
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Ensemble Kalman Filter
+# ──────────────────────────────────────────────────────────────────────────────
+ 
+class EnKFState(NamedTuple):
+    """
+    Holds the full EnKF state: an ensemble of N_ens state vectors together
+    with the initial conditions used to anchor DeepONet queries for the
+    current assimilation window.
+ 
+    Fields
+    ------
+    ensemble : (N_ens, N)
+        Current state estimates, including any observation updates and
+        additive process noise accumulated since the last window reset.
+        These are what gets assimilated when observations arrive.
+ 
+    window_ics : (N_ens, N)
+        Per-member initial conditions at the *start* of the current
+        DeepONet window.  All predict calls within the same window query
+        the surrogate as  x(t | window_ic)  for increasing t, rather than
+        chaining  f(f(u, dt), dt) …  This exploits the full [t0, t1]
+        training range and avoids error accumulation within a window.
+ 
+        Reset to the current ensemble at every window boundary and after
+        every observation update (so mid-window observations start a fresh
+        pseudo-window from the assimilated state).
+    """
+    ensemble:   jnp.ndarray  # (N_ens, N)
+    window_ics: jnp.ndarray  # (N_ens, N)
+ 
+ 
+def make_enkf(propagator_fn: Callable, N: int, N_ens: int):
+    """
+    Factory that builds JIT-compiled EnKF predict/update steps.
+ 
+    The surrogate propagator is now expected to have the signature
+        propagator_fn(u: (N,), t: float) -> (N,)
+    where ``t`` is the query time *within the current window*.  Inside
+    the ``predict`` step, ``t`` is marked as a static argument so that
+    JAX can treat ``round(t / dt_fine)`` as a compile-time constant when
+    the propagator is a numerical integrator (see
+    ``_make_l96_rk4_variable_propagator``).  For the DeepONet surrogate,
+    ``t`` is simply forwarded to ``x_net``.
+ 
+    Key differences from the EKF:
+    • No Jacobian — the nonlinear surrogate is applied to every member
+      via vmap, propagating the full nonlinearity.
+    • Window-aware prediction — each member is propagated from its
+      ``window_ic`` at the appropriate in-window offset, not chained from
+      the previous fine-step output.
+    • Stochastic update — each member receives an independently-perturbed
+      observation.
+ 
+    Args:
+        propagator_fn: callable (u: (N,), t: float) -> (N,).
+        N:     state dimension (40 for L96).
+        N_ens: ensemble size.
+ 
+    Returns:
+        predict_fn, update_fn — both JIT-compiled.
+    """
+ 
+    @partial(jit, static_argnums=(3,))
+    def predict(
+        enkf_state: EnKFState,
+        Q:          jnp.ndarray,  # (N, N) process noise covariance
+        key:        jnp.ndarray,  # JAX PRNG key
+        t_query:    float,        # STATIC — in-window time offset for this step
+    ) -> EnKFState:
+        """
+        EnKF prediction step (window-aware).
+ 
+        Each ensemble member is propagated by querying the surrogate at
+        ``t_query`` relative to the member's own ``window_ic``, i.e.:
+ 
+            x_pred_i = propagator_fn(window_ic_i, t_query)
+ 
+        This gives  x(window_ic_i, t_query)  directly, regardless of
+        how many fine steps have elapsed since the window started.  It
+        avoids the cumulative error of chaining  f(f(u, dt), dt) …  when
+        DT_FINE < DT_WINDOW.
+ 
+        ``t_query`` is declared static (``static_argnums=(3,)``) so that
+        any Python-level arithmetic on it inside ``propagator_fn`` (e.g.
+        ``n_steps = round(t / dt_fine)`` for a numerical integrator) is a
+        compile-time constant.  XLA retraces at most ``steps_per_window``
+        distinct values per run, after which the JIT cache is reused.
+ 
+        Process noise is still added at every fine step so that the
+        ensemble spread reflects per-step model uncertainty.  The noise
+        does *not* flow into the next in-window prediction (which always
+        restarts from ``window_ics``); it only affects the observation
+        update at that fine step.
+ 
+        Args:
+            enkf_state: current EnKFState (ensemble + window_ics).
+            Q:          (N, N) per-fine-step process noise covariance.
+            key:        PRNG key for noise sampling.
+            t_query:    Python float — query time within the current window.
+                        Must satisfy  0 < t_query <= DT_WINDOW.
+ 
+        Returns:
+            Updated EnKFState with propagated ensemble; window_ics unchanged.
+        """
+        # ── 1. Propagate every member from its window IC at t_query ──────────
+        # vmap over the N_ens axis; t_query is the same for all members.
+        ensemble_pred = vmap(
+            lambda u: propagator_fn(u, t_query)
+        )(enkf_state.window_ics)                                   # (N_ens, N)
+ 
+        # ── 2. Additive process noise from N(0, Q) ────────────────────────────
+        L_Q   = jnp.linalg.cholesky(Q + 1e-10 * jnp.eye(N))      # (N, N)
+        z     = jax.random.normal(key, shape=(N_ens, N))          # (N_ens, N)
+        noise = z @ L_Q.T                                         # (N_ens, N)
+ 
+        # window_ics are deliberately left unchanged here; they are reset by
+        # run_enkf_smoother at window boundaries and after observation updates.
+        return EnKFState(
+            ensemble=ensemble_pred + noise,
+            window_ics=enkf_state.window_ics,
+        )
+ 
+    @jit
+    def update(
+        enkf_state: EnKFState,
+        y_obs:      jnp.ndarray,  # (m,)
+        H:          jnp.ndarray,  # (m, N)
+        R:          jnp.ndarray,  # (m, m)
+        key:        jnp.ndarray,
+    ) -> tuple[EnKFState, jnp.ndarray]:
+        """
+        EnKF update step — stochastic (perturbed-observation) formulation.
+ 
+        Identical to the original update, but the returned EnKFState carries
+        ``window_ics`` forward unchanged.  run_enkf_smoother is responsible
+        for resetting ``window_ics`` to the posterior ensemble after every
+        update so that the next predict call starts a fresh window from the
+        assimilated state.
+ 
+        Returns:
+            Posterior EnKFState (ensemble updated, window_ics unchanged), K.
+        """
+        ensemble = enkf_state.ensemble   # (N_ens, N)
+        m        = H.shape[0]
+ 
+        # Ensemble anomalies
+        x_mean = jnp.mean(ensemble, axis=0)
+        X_anom = ensemble - x_mean                               # (N_ens, N)
+ 
+        # Predicted observations and anomalies
+        y_pred = vmap(lambda x: H @ x)(ensemble)                 # (N_ens, m)
+        y_mean = jnp.mean(y_pred, axis=0)
+        Y_anom = y_pred - y_mean                                 # (N_ens, m)
+ 
+        # Ensemble-based Kalman gain
+        scale = 1.0 / (N_ens - 1)
+        PHT   = scale * X_anom.T @ Y_anom                       # (N, m)
+        S     = scale * Y_anom.T @ Y_anom + R                   # (m, m)
+        K     = PHT @ jnp.linalg.inv(S)                        # (N, m)
+ 
+        # Perturbed observations
+        L_R         = jnp.linalg.cholesky(R + 1e-10 * jnp.eye(m))
+        eps         = jax.random.normal(key, shape=(N_ens, m)) @ L_R.T
+        y_perturbed = y_obs[None, :] + eps                      # (N_ens, m)
+ 
+        # Per-member update
+        innovations   = y_perturbed - y_pred
+        ensemble_post = ensemble + innovations @ K.T             # (N_ens, N)
+ 
+        # window_ics passed through unchanged; run_enkf_smoother will reset them.
+        return EnKFState(
+            ensemble=ensemble_post,
+            window_ics=enkf_state.window_ics,
+        ), K
+ 
+    return predict, update
+ 
+
+def run_enkf_smoother(
+    predict_fn:        Callable,
+    update_fn:         Callable,
+    ensemble0:         jnp.ndarray,   # (N_ens, N)
+    observations:      jnp.ndarray,   # (T_obs, m)
+    obs_step_indices:  np.ndarray,    # (T_obs,) int — fine step of each obs
+    H_seq:             jnp.ndarray,   # (T_obs, m, N)
+    Q:                 jnp.ndarray,   # (N, N) — per fine step
+    R:                 jnp.ndarray,   # (m, m)
+    key:               jnp.ndarray,
+    total_fine_steps:  int,
+    dt_fine:           float,         # fine integration step
+    dt_window:         float,         # DeepONet training window length
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Fine-step-centric, window-aware EnKF smoother.
+ 
+    Window-aware prediction
+    -----------------------
+    The DeepONet was trained on windows of length ``dt_window``.  Rather
+    than chaining  f(f(u, dt_fine), dt_fine) …  across fine steps, this
+    smoother tracks which fine step we are at *within the current window*
+    and always queries the surrogate as
+ 
+        x_pred = propagator_fn(window_ic, step_in_window * dt_fine)
+ 
+    so that all in-window predictions exploit the full training range
+    [t0, t1].  This avoids error accumulation that arises when the
+    window is subdivided into many fine steps.
+ 
+    Window reset policy
+    -------------------
+    ``window_ics`` (the per-member ICs used for DeepONet queries) are
+    reset to the current ensemble in two situations:
+ 
+    1. **Observation update**: immediately after assimilation, so that
+       subsequent predictions in the same window start from the
+       corrected state rather than the pre-update IC.  This effectively
+       starts a fresh pseudo-window from the posterior mean.
+ 
+    2. **Window boundary**: when ``step_in_window`` reaches
+       ``steps_per_window``, even if no observation was assimilated.
+ 
+    Both resets also zero ``step_in_window``, so the next call to
+    ``predict_fn`` queries at ``t = dt_fine`` (the first fine step of
+    the new window).
+ 
+    Args:
+        predict_fn:       JIT-compiled EnKF predict (window-aware).
+        update_fn:        JIT-compiled EnKF update.
+        ensemble0:        (N_ens, N) initial ensemble.
+        observations:     (T_obs, m) observation vectors.
+        obs_step_indices: (T_obs,) fine-step indices of each observation.
+        H_seq:            (T_obs, m, N) observation matrices.
+        Q:                (N, N) per-fine-step process noise covariance.
+        R:                (m, m) observation noise covariance.
+        key:              JAX PRNG key.
+        total_fine_steps: total number of fine steps to run.
+        dt_fine:          duration of one fine step (Python float).
+        dt_window:        duration of one DeepONet training window (Python float).
+ 
+    Returns:
+        x_means:   (total_fine_steps, N) ensemble-mean state estimates.
+        x_spreads: (total_fine_steps, N) per-variable ensemble std.
+        prior_means_at_obs: (T_obs, N)            ensemble mean *before* the
+                        update at each observation step — used to compute the
+                        Error Reduction Factor (ERF = prior RMSE / post RMSE).
+    """
+    steps_per_window = round(dt_window / dt_fine)
+ 
+    # O(1) lookup: fine step index -> observation index (-1 = no obs)
+    obs_at_step = np.full(total_fine_steps, -1, dtype=int)
+    for obs_idx, step_idx in enumerate(obs_step_indices):
+        obs_at_step[step_idx] = obs_idx
+ 
+    # Initialise state: ensemble and window_ics both start from ensemble0.
+    state         = EnKFState(ensemble=ensemble0, window_ics=ensemble0)
+    x_means:  list[jnp.ndarray] = []
+    x_spreads: list[jnp.ndarray] = []
+    prior_means_at_obs: list[jnp.ndarray] = []
+    step_in_window = 0  # Python int — used to compute t_query
+ 
+    for fine_t in range(total_fine_steps):
+        # In-window query time: (step_in_window + 1) * dt_fine.
+        # step_in_window = 0 on the first step of every window, so t_query
+        # starts at dt_fine and increases by dt_fine on each subsequent step.
+        t_query = (step_in_window + 1) * dt_fine  # Python float — static for JIT
+ 
+        key, key_pred, key_upd = jax.random.split(key, 3)
+ 
+        # Predict: queries propagator_fn(window_ic_i, t_query) for each member.
+        state = predict_fn(state, Q, key_pred, t_query)
+ 
+        # Conditionally update if an observation falls on this fine step.
+        reset_window = False
+        obs_idx = obs_at_step[fine_t]
+        if obs_idx >= 0:
+            # ── Capture prior mean BEFORE assimilation ──────────────────────
+            prior_means_at_obs.append(jnp.mean(state.ensemble, axis=0))
+
+            state, _ = update_fn(
+                state,
+                observations[obs_idx],
+                H_seq[obs_idx],
+                R,
+                key_upd,
+            )
+            # After assimilation, start a fresh window from the posterior.
+            reset_window = True
+ 
+        x_means.append(jnp.mean(state.ensemble, axis=0))
+        x_spreads.append(jnp.std(state.ensemble, axis=0))
+ 
+        # Advance the in-window counter; reset at window boundaries.
+        step_in_window += 1
+        if step_in_window >= steps_per_window:
+            reset_window = True
+ 
+        if reset_window:
+            # Set window_ics to the current ensemble so that the next predict
+            # call starts a fresh window query from this state.
+            state = EnKFState(
+                ensemble=state.ensemble,
+                window_ics=state.ensemble,
+            )
+            step_in_window = 0
+ 
+    return (
+        jnp.stack(x_means),
+        jnp.stack(x_spreads),
+        jnp.stack(prior_means_at_obs),   # (T_obs, N)
+    )
+
+
+def init_ensemble(
+    x0_hat:  jnp.ndarray,   # (N,) prior mean
+    P0:      jnp.ndarray,   # (N, N) prior covariance
+    N_ens:   int,
+    key:     jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Draw the initial ensemble from the prior distribution N(x0_hat, P0).
+ 
+    Uses the Cholesky factorisation of P0 so that the full covariance
+    structure (not just the diagonal) is respected during initialisation.
+ 
+    Args:
+        x0_hat: (N,) prior mean state estimate.
+        P0:     (N, N) prior error covariance.
+        N_ens:  number of ensemble members.
+        key:    JAX PRNG key.
+ 
+    Returns:
+        ensemble: (N_ens, N) initial ensemble.
+    """
+    N   = x0_hat.shape[0]
+    L   = jnp.linalg.cholesky(P0 + 1e-10 * jnp.eye(N))
+    z   = jax.random.normal(key, shape=(N_ens, N))
+    return x0_hat[None, :] + z @ L.T              # (N_ens, N)
+
