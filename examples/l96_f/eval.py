@@ -92,6 +92,7 @@ from examples.l96_f.kf import (
     init_ensemble,
     run_enkf_smoother,
     run_enkf_smoother_route_b,
+    run_enkf_smoother_rtpp,
 )
 
 
@@ -152,8 +153,9 @@ def _device_parallel(fn, in_axes, static_broadcasted_argnums=()):
 #   {
 #     "key":        unique short id, used as the HDF5 group name,
 #     "label":      human-readable label for legends / titles,
-#     "kind":       "standard" (run_enkf_smoother) or
-#                   "route_b"  (run_enkf_smoother_route_b),
+#     "kind":       "standard" (run_enkf_smoother),
+#                   "route_b"  (run_enkf_smoother_route_b), or
+#                   "rtpp"     (run_enkf_smoother_rtpp),
 #     "propagator": name of the propagator it uses -- strategies sharing a
 #                   propagator name share ONE open-loop rollout,
 #     "predict_fn", "update_fn": the EnKF predict/update closures,
@@ -161,6 +163,14 @@ def _device_parallel(fn, in_axes, static_broadcasted_argnums=()):
 #     "alpha_fine": scaled multiplicative inflation factor,
 #     # kind == "route_b":
 #     "Q0", "alpha", "beta", "n_quad": Route-B hyperparameters,
+#     #   (plain additive inflation is just Route B with "alpha": 0.0,
+#     #    i.e. the constant floor term zeroed out, leaving only the
+#     #    flow-dependent beta * ||rho||^2 term)
+#     # kind == "rtpp":
+#     "alpha_fine": multiplicative inflation applied in the (shared)
+#                   predict step -- set to 1.0 to isolate RTPP's own
+#                   relaxation as the only inflation mechanism,
+#     "alpha_rtpp": RTPP relaxation-to-prior factor in [0, 1],
 #   }
 #
 # `propagators` is a dict: propagator_name -> (model, params), used only
@@ -219,6 +229,17 @@ def build_batched_filters(
                 outputs[key] = dict(
                     x_means=x_means, x_spreads=x_spreads,
                     prior_means=prior_means, q_scale=q_scale,
+                )
+            elif spec["kind"] == "rtpp":
+                x_means, x_spreads, prior_means = run_enkf_smoother_rtpp(
+                    spec["predict_fn"], spec["update_fn"],
+                    ensemble0, y_obs_seq, obs_step_indices_batch,
+                    H_seq, spec["alpha_fine"], spec["alpha_rtpp"],
+                    R, key_ic, total_fine_steps_batch,
+                    dt_fine=dt_fine, dt_window=dt_window,
+                )
+                outputs[key] = dict(
+                    x_means=x_means, x_spreads=x_spreads, prior_means=prior_means,
                 )
             else:
                 x_means, x_spreads, prior_means = run_enkf_smoother(
@@ -288,6 +309,92 @@ def build_default_3way_strategies(config, N_ens, alpha_fine, Q_fine, alpha_rb, b
     ]
     propagators = {
         "dd": (model_dd, params_dd),
+        "pi": (model_pi, params_pi),
+    }
+    return strategies, propagators, N, t_star_window
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Default 4-way strategy set: same PI (physics-informed) propagator
+# throughout, varying only the EnKF covariance-inflation scheme, so
+# differences between strategies isolate the inflation choice rather than
+# conflating it with propagator quality (unlike the 3-way set above, which
+# also swaps DD vs PI).
+# ─────────────────────────────────────────────────────────────────────────
+
+def build_default_4way_strategies(
+    config, N_ens, alpha_fine, alpha_rb, beta_rb, n_quad_rb, alpha_rtpp,
+    alpha_fine_rtpp: float = 1.0,
+):
+    """
+    Builds the 4-way inflation-strategy comparison set, all sharing the
+    single PI checkpoint named in `config.wandb.name_pi`:
+
+        1. pi_mult     -- standard multiplicative inflation (`make_enkf`).
+        2. pi_route_b  -- Route B: residual-scaled additive inflation,
+                          scale = alpha_rb + beta_rb * ||rho||^2
+                          (`make_route_b_enkf`).
+        3. pi_additive -- plain additive inflation, obtained from the SAME
+                          Route B machinery with the constant floor term
+                          zeroed out (alpha=0.0), leaving only the
+                          flow-dependent beta_rb * ||rho||^2 term.
+        4. pi_rtpp     -- Relaxation-to-Prior Perturbations (`make_rtpp_enkf`).
+                          `alpha_fine_rtpp` controls the (optional, shared)
+                          multiplicative inflation in RTPP's predict step;
+                          it defaults to 1.0 so `alpha_rtpp` (the relaxation
+                          factor, in [0, 1]) is the only active inflation
+                          mechanism for this strategy.
+
+    Note: RTPP's plumbing through `evaluate_filters` (via `build_batched_filters`
+    and `run_enkf_smoother_rtpp`) is newer than the multiplicative/Route-B
+    paths, so this is the strategy most likely to need tuning of
+    `alpha_rtpp` / `alpha_fine_rtpp` if results look off.
+
+    Returns (strategies, propagators, N, t_star_window).
+    """
+    dt_window = float(config.get("dt_window", 0.25))
+    dt_integration = config.eval.get("dt_integration", 0.005)
+    time_steps = int(round(dt_window / dt_integration)) + 1
+    t_star_window = jnp.linspace(0.0, dt_window, time_steps)
+
+    logging.info("Loading PI model...")
+    model_pi = models.L96UDON(config, t_star_window)
+    ckpt_path_pi = os.path.join(os.getcwd(), config.wandb.name_pi, "ckpt", "udon_model")
+    model_pi.state = restore_checkpoint(model_pi.state, ckpt_path_pi)
+    params_pi = model_pi.state.params
+    N = model_pi.N
+
+    # Route B / additive both need Q_fine. N (=40, the dynamic-variable
+    # count) is fixed at model-construction time rather than only known
+    # after loading the checkpoint, so -- unlike `evaluate_filters`'s
+    # strategies=None fallback, which has to defer this and re-inject it
+    # afterward -- it can just be built here directly.
+    P0_sigma = config.kf.get("P0_sigma", 1.0)
+    Q0_sigma = config.kf.get("Q0_sigma", P0_sigma)
+    DT_FINE = float(config.kf.get("dt_fine", dt_window))
+    steps_per_window = steps_per_window_exact(dt_window, DT_FINE)
+    Q_coarse = jnp.eye(N) * Q0_sigma ** 2
+    Q_fine = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
+
+    predict_fn_mult, update_fn_mult = model_pi.make_enkf_fns(params_pi, N_ens=N_ens)
+    predict_fn_rb, update_fn_rb = model_pi.make_route_b_enkf_fns(params_pi, N_ens=N_ens)
+    predict_fn_rtpp, update_fn_rtpp = model_pi.make_rtpp_enkf_fns(params_pi, N_ens=N_ens)
+
+    strategies = [
+        dict(key="pi_mult", label="PI + Mult. Infl.", kind="standard",
+             propagator="pi", predict_fn=predict_fn_mult, update_fn=update_fn_mult,
+             alpha_fine=alpha_fine),
+        dict(key="pi_route_b", label="PI + Route B Infl.", kind="route_b",
+             propagator="pi", predict_fn=predict_fn_rb, update_fn=update_fn_rb,
+             Q0=Q_fine, alpha=alpha_rb, beta=beta_rb, n_quad=n_quad_rb),
+        dict(key="pi_additive", label="PI + Additive Infl.", kind="route_b",
+             propagator="pi", predict_fn=predict_fn_rb, update_fn=update_fn_rb,
+             Q0=Q_fine, alpha=0.0, beta=beta_rb, n_quad=n_quad_rb),
+        dict(key="pi_rtpp", label="PI + RTPP", kind="rtpp",
+             propagator="pi", predict_fn=predict_fn_rtpp, update_fn=update_fn_rtpp,
+             alpha_fine=alpha_fine_rtpp, alpha_rtpp=alpha_rtpp),
+    ]
+    propagators = {
         "pi": (model_pi, params_pi),
     }
     return strategies, propagators, N, t_star_window
@@ -1366,4 +1473,124 @@ def run_3way_comparison(config, workdir: str, test_h5_path: str | None = None, n
     logging.info(f"  wrote figures to {save_dir}")
  
     return save_dir
- 
+
+
+"""
+Run a 4-way EnKF covariance-inflation comparison
+
+    1. PI propagator + Multiplicative inflation
+    2. PI propagator + Route B (residual-scaled additive) inflation
+    3. PI propagator + plain Additive inflation (Route B with the
+       constant floor term zeroed out, i.e. alpha=0)
+    4. PI propagator + Relaxation-to-Prior Perturbations (RTPP)
+
+using the same two-stage modular pipeline (`evaluate_filters` +
+`plot_comparisons`) as `run_3way_comparison`. Unlike the 3-way run, the
+propagator is held fixed at the PI (physics-informed) checkpoint across
+all four strategies, so the comparison isolates the effect of the
+inflation scheme rather than mixing it with the DD-vs-PI propagator
+choice.
+
+`evaluate_filters`'s `strategies=None` fallback only knows how to build
+the historical DD-mult / PI-mult / PI-RouteB 3-way set, so this function
+builds its own strategy/propagator set via `build_default_4way_strategies`
+and passes them in explicitly (along with the `t_star_window` that set
+was built against, since `evaluate_filters` only computes that itself on
+the None/None fallback path).
+
+RTPP caveat
+-----------
+The RTPP strategy's wiring through `evaluate_filters` (`run_enkf_smoother_rtpp`,
+invoked here through the new "rtpp" branch in `build_batched_filters`) is
+newer and less exercised than the multiplicative and Route B paths. Two
+knobs control it, both read from `config.kf`:
+
+    rtpp_alpha       -- RTPP relaxation-to-prior factor, in [0, 1].
+                         0 = no relaxation (reduces to plain multiplicative
+                         inflation at `rtpp_alpha_fine`); typical tuned
+                         values are in the 0.5-0.9 range.
+    rtpp_alpha_fine  -- multiplicative inflation applied in RTPP's (shared)
+                         predict step. Defaults to 1.0 so that `rtpp_alpha`
+                         is the only active inflation mechanism for this
+                         strategy, isolating RTPP's relaxation from
+                         multiplicative inflation for a fair comparison
+                         against the other three. Raise it only if RTPP
+                         alone is not enough to prevent ensemble collapse.
+
+If RTPP's numbers look degenerate (e.g. the ensemble collapsing or
+blowing up), start by sweeping `rtpp_alpha` before suspecting the
+smoother wiring itself.
+
+CLI usage
+---------
+    python run_4way_comparison.py \\
+        --config=configs/your_config.py \\
+        --workdir=./results/my_run
+
+Programmatic usage
+-------------------
+    from run_4way_comparison import run_4way_comparison
+    save_dir = run_4way_comparison(config, workdir)
+
+Outputs
+-------
+    <workdir>/<config.wandb.name>.h5                      -- evaluate_filters
+    <workdir>/figures/comparisons/individual_trajectories/ -- per-(IC, strategy) PDFs
+    <workdir>/figures/comparisons/calibration_*_vs_*.pdf   -- 6 pairs: every
+    <workdir>/figures/comparisons/erf_*_vs_*.pdf              combination of
+    <workdir>/figures/comparisons/l2_*_vs_*.pdf                {mult, route_b,
+    <workdir>/figures/comparisons/rmse_*_vs_*.pdf               additive, rtpp}
+"""
+
+def run_4way_comparison(config, workdir: str, test_h5_path: str | None = None, n_bins: int = 10) -> str:
+    """
+    Runs the PI-only Mult / Route-B / Additive / RTPP 4-way EnKF
+    inflation-strategy evaluation and writes every comparison figure.
+
+    Returns the path of the `figures/comparisons` directory written by
+    `plot_comparisons`.
+    """
+    os.makedirs(workdir, exist_ok=True)
+
+    # ── EnKF / inflation configuration (mirrors evaluate_filters' own
+    #    reads of config.kf, since we build the strategy set ourselves) ──
+    N_ens = config.kf.get("N_ens", 50)
+    alpha_coarse = config.kf.get("inflation_factor", 1.05)
+    alpha_rb = config.kf.get("route_b_alpha", 1.0)
+    beta_rb = config.kf.get("route_b_beta", 5.0)
+    n_quad_rb = config.kf.get("route_b_n_quad", 3)
+    alpha_rtpp = config.kf.get("rtpp_alpha", 0.5)
+    alpha_fine_rtpp = config.kf.get("rtpp_alpha_fine", 1.0)
+
+    DT_WINDOW = float(config.get("dt_window", 0.25))
+    DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
+    steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
+    alpha_fine = scale_inflation_for_fine_steps(alpha_coarse, steps_per_window)
+
+    logging.info(
+        "Building 4-way strategy set: PI+Mult / PI+RouteB / PI+Additive / PI+RTPP ..."
+    )
+    strategies, propagators, N, t_star_window = build_default_4way_strategies(
+        config, N_ens, alpha_fine, alpha_rb, beta_rb, n_quad_rb, alpha_rtpp,
+        alpha_fine_rtpp=alpha_fine_rtpp,
+    )
+
+    logging.info(
+        "Stage 1/2: evaluate_filters — running Mult / RouteB / Additive / "
+        "RTPP on shared data and writing the results HDF5 ..."
+    )
+    h5_path = evaluate_filters(
+        config=config,
+        workdir=workdir,
+        strategies=strategies,
+        propagators=propagators,
+        t_star_window=t_star_window,
+        test_h5_path=test_h5_path,
+    )
+    logging.info(f"  wrote {h5_path}")
+
+    logging.info(f"Stage 2/2: plot_comparisons — reading {h5_path} and writing figures ...")
+    save_dir = plot_comparisons(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
+    logging.info(f"  wrote figures to {save_dir}")
+
+    return save_dir
