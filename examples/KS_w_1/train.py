@@ -51,7 +51,7 @@ def train_and_evaluate(config, workdir: str):
     # windows file, so we rebuild it from dt -- test data was saved every
     # single fine step, starting at t=0.)
 
-    t_dt           = 0.25
+    t_dt           = 1.0
     interval_steps = int(round(t_dt / dt))
     time_steps     = interval_steps + 1  # points per window, including the IC
 
@@ -376,7 +376,7 @@ def train_and_evaluate_hybrid(config, workdir: str):
     # gen_data.py defines a single training window as `w_dt` = 0.25
     # (normalized) time units -> interval_steps = round(0.25 / dt) fine
     # steps. This window also defines the trunk's [t0, t1] domain.
-    t_dt           = 0.25
+    t_dt           = 1.0
     interval_steps = int(round(t_dt / dt))
     time_steps     = interval_steps + 1  # points per window, including the IC
     t_star         = jnp.arange(time_steps, dtype=jnp.float32) * dt

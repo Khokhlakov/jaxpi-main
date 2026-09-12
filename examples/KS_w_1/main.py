@@ -13,8 +13,8 @@ from ml_collections import config_flags
 import jax
 jax.config.update("jax_default_matmul_precision", "highest")
 
-import examples.KS_w_025_more_data.train as train
-import examples.KS_w_025_more_data.eval as eval
+import examples.KS_w_1.train as train
+import examples.KS_w_1.eval as eval
 
 
 FLAGS = flags.FLAGS

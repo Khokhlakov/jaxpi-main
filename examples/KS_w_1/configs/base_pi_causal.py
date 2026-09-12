@@ -3,14 +3,14 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    config.mode = "train_hybrid" 
+    config.mode = "train"
 
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "KS-W-025"
-    wandb.name          = "base_hybrid_more_ic"
-    wandb.ckpt_name     = "base_hybrid_more_ic" 
+    wandb.name          = "base_pi_causal_more_ic"
+    wandb.ckpt_name     = "base_pi_causal_more_ic" 
     wandb.tag = None
 
     # Arch 
@@ -50,7 +50,7 @@ def get_config():
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0, "data": 1.0})
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0})#ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
     
@@ -58,7 +58,7 @@ def get_config():
     weighting.warmup_steps = 2000
 
     # Causal Weighting
-    weighting.use_causal = False
+    weighting.use_causal = True
     weighting.causal_tol = 0.02
     weighting.num_chunks = 10
 
@@ -92,11 +92,9 @@ def get_config():
     config.input_dim = 256 + 1
 
     # Training window size
-    config.dt_window = 0.25
+    config.dt_window = 1.0
 
     # Integer for PRNG random seed.s
     config.seed = 42 
 
     return config
-
-

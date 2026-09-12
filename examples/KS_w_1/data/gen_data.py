@@ -190,7 +190,7 @@ def generate_datasets(
     # Pre-compute steps as pure Python integers
     # ==========================================
     burn_steps = int(t_burn / dt)
-    w_dt = 0.25
+    w_dt = 1.0
     interval_steps = int(w_dt / dt)
 
     # 2. Define Scanning Functions
@@ -358,7 +358,7 @@ if __name__ == "__main__":
     generate_datasets(num_samples=1000,
                       L=64,
                       N=256,
-                      dt=0.005,
+                      dt=0.02,
                       t_burn=500.0,
                       max_additions=100,
                       test_windows=500,

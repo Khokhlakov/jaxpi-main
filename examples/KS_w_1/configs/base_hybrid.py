@@ -3,14 +3,14 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    config.mode = "train"
+    config.mode = "train_hybrid" 
 
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "KS-W-025"
-    wandb.name          = "pi_warmup_e-4_more_data"
-    wandb.ckpt_name     = "pi_warmup_e-4_more_data" 
+    wandb.name          = "base_hybrid_more_ic"
+    wandb.ckpt_name     = "base_hybrid_more_ic" 
     wandb.tag = None
 
     # Arch 
@@ -22,7 +22,7 @@ def get_config():
     arch.branch_input_dim = 256
     # trunk_input_dim = config.input_dim - branch_input_dim
     arch.out_dim = 256
-    arch.activation = "sin"
+    arch.activation = "tanh"
     arch.periodicity = None
     arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 2, "embed_dim": 1024})
     arch.reparam = ml_collections.ConfigDict(
@@ -36,9 +36,9 @@ def get_config():
     optim.beta1 = 0.9
     optim.beta2 = 0.999
     optim.eps = 1e-8
-    optim.learning_rate = 1e-4
+    optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 5_300 
+    optim.decay_steps = 3_000 
     optim.decay_schedule = "Exponential"
 
     # Training (Windowed Logic)
@@ -50,12 +50,12 @@ def get_config():
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0})#ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0, "data": 1.0})
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
     
-    weighting.max_weight = 10_000.0#2_000_000.0
-    weighting.warmup_steps = 500
+    weighting.max_weight = 1000.0#2_000_000.0
+    weighting.warmup_steps = 2000
 
     # Causal Weighting
     weighting.use_causal = False
@@ -79,7 +79,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
-    saving.total_plots = 5
+    saving.total_plots = 10
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
@@ -92,9 +92,11 @@ def get_config():
     config.input_dim = 256 + 1
 
     # Training window size
-    config.dt_window = 0.25
+    config.dt_window = 1.0
 
     # Integer for PRNG random seed.s
     config.seed = 42 
 
     return config
+
+

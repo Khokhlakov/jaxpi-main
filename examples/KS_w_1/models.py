@@ -257,7 +257,7 @@ class KSUDON(ForwardIVP):
             ekf_state = predict(ekf_state, Q)
             ekf_state, K = update(ekf_state, y_obs, H, R)
         """
-        from examples.KS_w_025_more_data.kf import make_ekf
+        from examples.KS_w_1.kf import make_ekf
         propagator_vt = self.make_surrogate_propagator(params)  # (u, t) -> u
         # Fix t=dt so the EKF always linearises over exactly one fine step.
         propagator    = lambda u: propagator_vt(u, dt)          # (u,) -> (N,)
@@ -296,7 +296,7 @@ class KSUDON(ForwardIVP):
             predict, update = model.make_enkf_fns(params, N_ens=50)
             # Then call run_enkf_smoother with dt_fine and dt_window.
         """
-        from examples.KS_w_025_more_data.kf import make_enkf
+        from examples.KS_w_1.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)  # (u, t) -> u
         return make_enkf(propagator, self.N, N_ens)
 
@@ -440,7 +440,7 @@ class KSUDON_DD(ForwardIVP):
             ekf_state = predict(ekf_state, Q)
             ekf_state, K = update(ekf_state, y_obs, H, R)
         """
-        from examples.KS_w_025_more_data.kf import make_ekf
+        from examples.KS_w_1.kf import make_ekf
         propagator_vt = self.make_surrogate_propagator(params)  # (u, t) -> u
         # Fix t=dt so the EKF always linearises over exactly one fine step.
         propagator    = lambda u: propagator_vt(u, dt)          # (u,) -> (N,)
@@ -477,7 +477,7 @@ class KSUDON_DD(ForwardIVP):
             predict, update = model.make_enkf_fns(params, N_ens=50)
             # Then call run_enkf_smoother with dt_fine and dt_window.
         """
-        from examples.KS_w_025_more_data.kf import make_enkf
+        from examples.KS_w_1.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)  # (u, t) -> u
         return make_enkf(propagator, self.N, N_ens)
 

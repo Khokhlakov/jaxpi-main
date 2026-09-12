@@ -10,8 +10,8 @@ from flax.jax_utils import replicate
 from typing import Callable
 
 from jaxpi.utils import restore_checkpoint
-import examples.KS_w_025_more_data.models as models
-from examples.KS_w_025_more_data.utils import build_obs_schedule, scale_Q_for_fine_steps
+import examples.KS_w_1.models as models
+from examples.KS_w_1.utils import build_obs_schedule, scale_Q_for_fine_steps
 
 import numpy as np
 from scipy.integrate import solve_ivp
@@ -184,7 +184,7 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
 
     # Reconstruct time definitions
     # 1 time unit = 1 window
-    w_dt = 0.25
+    w_dt = 1.0
     pts_pw = int(round(w_dt / dt))
     t_ax = np.arange(num_test_pts) * dt
     

@@ -3,18 +3,18 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    config.mode = "train_dd"
+    config.mode = "train"
 
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "KS-W-025"
-    wandb.name          = "base_dd_more_ic"
-    wandb.ckpt_name     = "base_dd_more_ic" 
+    wandb.name          = "base_pi_more_ic"
+    wandb.ckpt_name     = "base_pi_more_ic" 
     wandb.tag = None
 
     # Arch 
-    config.arch = arch = ml_collections.ConfigDict() 
+    config.arch = arch = ml_collections.ConfigDict()
     arch.arch_name = "DeepONet"
     arch.num_branch_layers = 5
     arch.num_trunk_layers = 5
@@ -49,13 +49,13 @@ def get_config():
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
-    weighting.scheme = None
-    weighting.init_weights = ml_collections.ConfigDict({"data_loss": 1.0})
+    weighting.scheme = "grad_norm"
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0})#ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
     
-    weighting.max_weight = 1000.0
-    weighting.warmup_steps = 0
+    weighting.max_weight = 1000.0#2_000_000.0
+    weighting.warmup_steps = 2000
 
     # Causal Weighting
     weighting.use_causal = False
@@ -92,9 +92,9 @@ def get_config():
     config.input_dim = 256 + 1
 
     # Training window size
-    config.dt_window = 0.25
+    config.dt_window = 1.0
 
     # Integer for PRNG random seed.s
-    config.seed = 42
+    config.seed = 42 
 
     return config
