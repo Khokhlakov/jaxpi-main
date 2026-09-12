@@ -8,7 +8,7 @@ def get_config():
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project       = "KS-W-025"
+    wandb.project       = "KS-W-1-new-train"
     wandb.name          = "base_pi_more_ic"
     wandb.ckpt_name     = "base_pi_more_ic" 
     wandb.tag = None
@@ -36,9 +36,9 @@ def get_config():
     optim.beta1 = 0.9
     optim.beta2 = 0.999
     optim.eps = 1e-8
-    optim.learning_rate = 1e-3
+    optim.learning_rate = 10**(-3.5)
     optim.decay_rate = 0.9
-    optim.decay_steps = 3_000 
+    optim.decay_steps = 4_000 
     optim.decay_schedule = "Exponential"
 
     # Training (Windowed Logic)
@@ -54,8 +54,8 @@ def get_config():
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
     
-    weighting.max_weight = 1000.0#2_000_000.0
-    weighting.warmup_steps = 2000
+    weighting.max_weight = 100.0#2_000_000.0
+    weighting.warmup_steps = 500
 
     # Causal Weighting
     weighting.use_causal = False
