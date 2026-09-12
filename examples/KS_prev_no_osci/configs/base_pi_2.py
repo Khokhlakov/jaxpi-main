@@ -9,8 +9,8 @@ def get_config():
     # 
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "KS-W1"
-    wandb.name          = "base_pi_1"
-    wandb.ckpt_name     = "base_pi_1" 
+    wandb.name          = "base_pi_2"
+    wandb.ckpt_name     = "base_pi_2" 
     wandb.tag = None
 
     # Arch 
@@ -36,9 +36,9 @@ def get_config():
     optim.beta1 = 0.9
     optim.beta2 = 0.999
     optim.eps = 1e-8
-    optim.learning_rate = 1e-3
+    optim.learning_rate = 1e-4
     optim.decay_rate = 0.9
-    optim.decay_steps = 2_500 
+    optim.decay_steps = 5_000 
     optim.decay_schedule = "Exponential"
 
     # Training (Windowed Logic)

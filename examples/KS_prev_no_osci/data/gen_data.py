@@ -212,7 +212,7 @@ def generate_datasets(
         train_data = train_data_dd[::interval_steps]
 
         # Test Phase: advance 1.0 without saving, then save every step for the last 1.0
-        u_test_start = advance_time(u_train_end, interval_steps)
+        u_test_start = advance_time(u_train_end, int(500.0 / dt))
 
         # Compute total steps needed for test_windows windows
         total_test_steps = test_windows * interval_steps
@@ -311,7 +311,7 @@ if __name__ == "__main__":
                       L=64,
                       N=256,
                       dt=0.02,
-                      t_burn=100.0,
+                      t_burn=500.0,
                       max_additions=500,
                       test_windows=500,
                       batch_size=25)
