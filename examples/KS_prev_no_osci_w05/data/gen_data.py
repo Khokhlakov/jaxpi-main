@@ -168,7 +168,7 @@ def generate_datasets(
     # Pre-compute steps as pure Python integers
     # ==========================================
     burn_steps = int(t_burn / dt)
-    interval_steps = int(1.0 / dt)
+    interval_steps = int(0.5 / dt)
 
     # 2. Define Scanning Functions
     def advance_time(u_hat, steps):
@@ -212,7 +212,7 @@ def generate_datasets(
         train_data = train_data_dd[::interval_steps]
 
         # Test Phase: advance 1.0 without saving, then save every step for the last 1.0
-        u_test_start = advance_time(u_train_end, int(500.0 / dt))
+        u_test_start = advance_time(u_train_end, int(1000.0 / dt))
 
         # Compute total steps needed for test_windows windows
         total_test_steps = test_windows * interval_steps
@@ -310,8 +310,8 @@ if __name__ == "__main__":
     generate_datasets(num_samples=300,
                       L=64,
                       N=256,
-                      dt=0.02,
-                      t_burn=500.0,
+                      dt=0.01,
+                      t_burn=1000.0,
                       max_additions=500,
                       test_windows=500,
                       batch_size=25)

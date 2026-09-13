@@ -111,7 +111,6 @@ def generate_datasets(
     test_windows: int = 50,
     batch_size: int = 25,
     out_dir: str = ".",
-    test_fraction: float = 0.1,
 ):
     """
     Generates the PI (sparse) train set, the DD (windowed) train set, and the
@@ -141,28 +140,12 @@ def generate_datasets(
     Tuning `batch_size`: start around 20-25. If you still see
     RESOURCE_EXHAUSTED, lower it; if chunks finish comfortably with memory to
     spare (check `nvidia-smi` while it runs), raise it to speed things up.
-
-    Train/test independence
-    ------------------------
-    The test set is generated from its own pool of `num_test_samples =
-    round(test_fraction * num_samples)` initial conditions, drawn from a
-    PRNG key stream disjoint from the one used for the training ICs. Each
-    test trajectory is burned in for the same `t_burn` used for training and
-    then integrated for `test_windows` windows, with every step saved. It is
-    NOT a continuation of any training trajectory -- train and test chunks
-    are simulated in two separate loops below.
     """
     solver = KuramotoSivashinskyAdvanced(L=L, N=N, dt=dt)
 
-    num_test_samples = max(1, int(round(num_samples * test_fraction)))
-
     # 1. Generate Smooth Initial Noise (cheap -- only N_freq values/sample --
     #    fine to do for all samples at once, then move to host).
-    # Train and test ICs are drawn from disjoint PRNG key streams (split from
-    # a common master key) so the test trajectories are statistically
-    # independent of the training trajectories, not a continuation of them.
-    master_key = jax.random.PRNGKey(42)
-    key_train, key_test = jax.random.split(master_key)
+    key = jax.random.PRNGKey(42)
     k_array = solver.k_xi
 
     def create_single_ic(k):
@@ -176,22 +159,16 @@ def generate_datasets(
         u_hat = solver._dealias(amp * jnp.exp(1j * phase))
         return u_hat
 
-    keys_train = jax.random.split(key_train, num_samples)
-    u_hat_initial_train = jax.vmap(create_single_ic)(keys_train)
-    u_hat_initial_train = np.array(u_hat_initial_train)  # host copy; re-sliced per chunk below
-
-    keys_test = jax.random.split(key_test, num_test_samples)
-    u_hat_initial_test = jax.vmap(create_single_ic)(keys_test)
-    u_hat_initial_test = np.array(u_hat_initial_test)  # host copy; re-sliced per chunk below
-
-    N_freq = u_hat_initial_train.shape[-1]
+    keys = jax.random.split(key, num_samples)
+    u_hat_initial = jax.vmap(create_single_ic)(keys)
+    u_hat_initial = np.array(u_hat_initial)  # host copy; re-sliced per chunk below
+    N_freq = u_hat_initial.shape[-1]
 
     # ==========================================
     # Pre-compute steps as pure Python integers
     # ==========================================
     burn_steps = int(t_burn / dt)
-    w_dt = 1.0
-    interval_steps = int(w_dt / dt)
+    interval_steps = int(1.0 / dt)
 
     # 2. Define Scanning Functions
     def advance_time(u_hat, steps):
@@ -218,7 +195,7 @@ def generate_datasets(
         return u_hat_final, trajectory
 
     # 3. Per-sample simulation (vmapped over a CHUNK of samples, not all of them)
-    def simulate_train_sample(u_hat_0):
+    def simulate_sample(u_hat_0):
         # Burn-in Phase
         u_hat_burned = advance_time(u_hat_0, burn_steps)
 
@@ -226,48 +203,39 @@ def generate_datasets(
         total_train_steps = max_additions * interval_steps
 
         # Advance and save ALL steps to generate the dense dataset
-        _, train_trajectory_dd = advance_save_all(u_hat_burned, total_train_steps)
+        u_train_end, train_trajectory_dd = advance_save_all(u_hat_burned, total_train_steps)
 
         # Dense train data: prepend the IC (yields total_train_steps + 1 states)
         train_data_dd = jnp.concatenate([u_hat_burned[None, ...], train_trajectory_dd], axis=0)
 
         # Sparse train data: slice every interval_steps
-        train_data = train_data_dd[:-1:interval_steps]
+        train_data = train_data_dd[::interval_steps]
 
-        return train_data, train_data_dd
+        # Test Phase: advance 1.0 without saving, then save every step for the last 1.0
+        u_test_start = advance_time(u_train_end, int(500.0 / dt))
 
-    def simulate_test_sample(u_hat_0):
-        # Burn-in Phase -- same t_burn as training, but starting from an
-        # independent initial condition. This is NOT a continuation of any
-        # training trajectory.
-        u_hat_burned = advance_time(u_hat_0, burn_steps)
-
-        # Compute total steps needed for test_windows windows, save every step
+        # Compute total steps needed for test_windows windows
         total_test_steps = test_windows * interval_steps
-        _, test_trajectory = advance_save_all(u_hat_burned, total_test_steps)
-        test_data = jnp.concatenate([u_hat_burned[None, ...], test_trajectory], axis=0)
+        # Advance and save every step
+        _, test_trajectory = advance_save_all(u_test_start, total_test_steps)
+        test_data = jnp.concatenate([u_test_start[None, ...], test_trajectory], axis=0)
 
-        return test_data
+        return train_data, train_data_dd, test_data
 
-    batched_simulate_train = jax.jit(jax.vmap(simulate_train_sample))
-    batched_simulate_test = jax.jit(jax.vmap(simulate_test_sample))
+    batched_simulate = jax.jit(jax.vmap(simulate_sample))
 
-    total_train_pts = max_additions
+    total_train_pts = max_additions + 1
     total_test_pts = test_windows * interval_steps + 1
-    n_train_chunks = -(-num_samples // batch_size)       # ceil div
-    n_test_chunks = -(-num_test_samples // batch_size)   # ceil div
+    n_chunks = -(-num_samples // batch_size)  # ceil div
 
     print(f"PI  train data shape : {(num_samples * total_train_pts, N)}  →  (samples, N)")
     print(f"DD  train data shape : {(num_samples * max_additions, interval_steps + 1, N)}"
           f"  →  (windows, time_pts_per_window, N)")
     print(f"    = {num_samples} trajectories × {max_additions} windows"
           f" × {interval_steps + 1} time pts × {N} spatial pts")
-    print(f"Test dataset shape:  {(num_test_samples, total_test_pts, N)}"
-          f"  (from {num_test_samples} independent ICs, "
-          f"{100 * test_fraction:.0f}% of {num_samples})")
-    print(f"Simulating train in {n_train_chunks} chunk(s) and test in {n_test_chunks} "
-          f"chunk(s) of up to {batch_size} trajectories each "
-          f"(JIT compiling on first chunk of each)...")
+    print(f"Test dataset shape:  {(num_samples, total_test_pts, N)}")
+    print(f"Simulating in {n_chunks} chunk(s) of up to {batch_size} trajectories each "
+          f"(JIT compiling on first chunk)...")
 
     out_dir = Path(out_dir)
 
@@ -301,22 +269,18 @@ def generate_datasets(
         # total pool size = num_samples * num_windows
 
         dset_test = f_test.create_dataset(
-            "u", shape=(num_test_samples, total_test_pts, N), dtype=np.float32
+            "u", shape=(num_samples, total_test_pts, N), dtype=np.float32
         )
         f_test.attrs["L"] = L
         f_test.attrs["N"] = N
         f_test.attrs["dt"] = dt
-        f_test.attrs["t_burn"] = t_burn
         f_test.attrs["test_windows"] = test_windows
-        f_test.attrs["num_test_samples"] = num_test_samples  # independent test IC count
-        f_test.attrs["test_fraction"] = test_fraction
 
-        # ---- Train chunks: PI (sparse) + DD (windowed) datasets ----
         for start in range(0, num_samples, batch_size):
             end = min(start + batch_size, num_samples)
-            chunk = jnp.asarray(u_hat_initial_train[start:end])
+            chunk = jnp.asarray(u_hat_initial[start:end])
 
-            train_hat, train_dd_hat = batched_simulate_train(chunk)
+            train_hat, train_dd_hat, test_hat = batched_simulate(chunk)
             del chunk
 
             # Convert one array at a time and drop the Fourier-space version
@@ -325,6 +289,8 @@ def generate_datasets(
             del train_hat
             train_dd_real = np.asarray(jnp.fft.irfft(train_dd_hat, n=N, axis=-1))
             del train_dd_hat
+            test_real = np.asarray(jnp.fft.irfft(test_hat, n=N, axis=-1))
+            del test_hat
             gc.collect()
 
             dset_train[start * total_train_pts:end * total_train_pts] = train_real.reshape(-1, N)
@@ -334,32 +300,18 @@ def generate_datasets(
             windowed = windowed.reshape(-1, interval_steps + 1, N)
             dset_dd[start * max_additions:end * max_additions] = windowed
 
-            print(f"  train chunk {start:4d}-{end:4d} / {num_samples} done")
-
-        # ---- Test chunks: independent ICs, own burn-in, no link to train ----
-        for start in range(0, num_test_samples, batch_size):
-            end = min(start + batch_size, num_test_samples)
-            chunk = jnp.asarray(u_hat_initial_test[start:end])
-
-            test_hat = batched_simulate_test(chunk)
-            del chunk
-
-            test_real = np.asarray(jnp.fft.irfft(test_hat, n=N, axis=-1))
-            del test_hat
-            gc.collect()
-
             dset_test[start:end] = test_real
 
-            print(f"  test  chunk {start:4d}-{end:4d} / {num_test_samples} done")
+            print(f"  chunk {start:4d}-{end:4d} / {num_samples} done")
 
     print("Saved 'ks_train_data.h5', 'ks_train_data_dd.h5', and 'ks_test_data.h5'.")
 
 if __name__ == "__main__":
-    generate_datasets(num_samples=1000,
+    generate_datasets(num_samples=300,
                       L=64,
                       N=256,
                       dt=0.02,
                       t_burn=500.0,
-                      max_additions=100,
+                      max_additions=500,
                       test_windows=500,
                       batch_size=25)
