@@ -4,7 +4,7 @@ import jax.numpy as jnp
 def get_config():
     # Config 1 but init weights 10:1 and using causal training
     config = ml_collections.ConfigDict()
-    config.mode = "run_rtpp_inflation_sweep"
+    config.mode = "run_route_b_inflation_sweep"
 
     # Weights & Biases
     # Base for inflation tunning
@@ -86,7 +86,7 @@ def get_config():
     kf.inflation_factor_list = [1.00, 1.02, 1.04, 1.06, 1.08, 1.10, 1.15, 1.20, 1.30]
 
     # Route B & Additive Inflation
-    kf.route_b_alpha        = 1.0
+    kf.route_b_alpha        = 0.0
     kf.route_b_beta         = 250.0
     kf.Q0_sigma             = 0.3
     kf.route_b_n_quad       = 3

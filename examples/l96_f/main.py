@@ -61,9 +61,11 @@ def main(argv):
             eval.run_add_inflation_sweep(FLAGS.config, FLAGS.workdir)
 
     elif FLAGS.config.mode == "run_rtpp_inflation_sweep":
-                eval.run_rtpp_inflation_sweep(FLAGS.config, FLAGS.workdir)
+            eval.run_rtpp_inflation_sweep(FLAGS.config, FLAGS.workdir)
 
-    
+    elif FLAGS.config.mode == "run_route_b_inflation_sweep":
+            eval.run_route_b_inflation_sweep(FLAGS.config, FLAGS.workdir)
+
     
     
     

@@ -122,25 +122,54 @@ from examples.l96_f.kf import (
 # Multi-GPU batch execution helper (unchanged from eval_modular.py)
 # ─────────────────────────────────────────────────────────────────────────
 
-def _device_parallel(fn, in_axes, static_broadcasted_argnums=()):
+def _device_parallel(fn, in_axes, static_broadcasted_argnums=(), to_host=True):
+    """
+    Same contract as before, except results come back as host numpy
+    arrays when `to_host` (the default).
+ 
+    Returning host arrays is what keeps the dense per-strategy outputs
+    off the GPU: every consumer of these arrays in `evaluate_filters`
+    either writes them to HDF5 or reduces them, so there is no reason for
+    them to stay resident on the device.
+    """
     n_devices = jax.local_device_count()
     vmapped_fn = jax.vmap(fn, in_axes=in_axes)
-
+ 
+    def _leaf_to_host(x):
+        """Copy one leaf to host and release its device buffer."""
+        h = np.asarray(jax.device_get(x))
+        try:
+            x.delete()          # the leaf is a fresh output, safe to free
+        except Exception:       # noqa: BLE001 - not all leaf types support it
+            pass
+        return h
+ 
     if n_devices <= 1:
-        return jax.jit(vmapped_fn, static_argnums=static_broadcasted_argnums)
-
+        jitted = jax.jit(vmapped_fn, static_argnums=static_broadcasted_argnums)
+        if not to_host:
+            return jitted
+ 
+        def wrapped_single(*args):
+            out = jitted(*args)
+            res = jax.tree_util.tree_map(_leaf_to_host, out)
+            del out
+            return res
+ 
+        return wrapped_single
+ 
     pmapped_fn = jax.pmap(
         vmapped_fn,
         in_axes=in_axes,
         static_broadcasted_argnums=static_broadcasted_argnums,
     )
-
+ 
     batched_idx = [
         i for i, ax in enumerate(in_axes)
         if ax is not None and i not in static_broadcasted_argnums
     ]
-
+ 
     def _shard(x):
+        x = jnp.asarray(x)
         B = x.shape[0]
         per_device = -(-B // n_devices)
         pad = per_device * n_devices - B
@@ -149,11 +178,18 @@ def _device_parallel(fn, in_axes, static_broadcasted_argnums=()):
                 [x, jnp.zeros((pad,) + x.shape[1:], dtype=x.dtype)], axis=0
             )
         return x.reshape((n_devices, per_device) + x.shape[1:])
-
-    def _unshard(x, B):
+ 
+    def _unshard_host(x, B):
+        # Host-side: the reshape is a view, and no single device ever has
+        # to hold the full un-sharded array.
+        h = _leaf_to_host(x)
+        h = h.reshape((-1,) + h.shape[2:])
+        return h[:B]
+ 
+    def _unshard_device(x, B):
         x = x.reshape((-1,) + x.shape[2:])
         return x[:B]
-
+ 
     def wrapped(*args):
         B = args[batched_idx[0]].shape[0]
         sharded_args = tuple(
@@ -161,9 +197,44 @@ def _device_parallel(fn, in_axes, static_broadcasted_argnums=()):
             for i, a in enumerate(args)
         )
         out = pmapped_fn(*sharded_args)
-        return jax.tree_util.tree_map(lambda x: _unshard(x, B), out)
-
+        del sharded_args
+        unshard = _unshard_host if to_host else _unshard_device
+        res = jax.tree_util.tree_map(lambda x: unshard(x, B), out)
+        del out
+        return res
+ 
     return wrapped
+
+# ─────────────────────────────────────────────────────────────────────────
+# Chunking helpers
+# ─────────────────────────────────────────────────────────────────────────
+ 
+def _strategy_groups(strategies, group_size):
+    if not group_size or group_size >= len(strategies):
+        return [list(strategies)]
+    return [
+        list(strategies[i:i + group_size])
+        for i in range(0, len(strategies), group_size)
+    ]
+ 
+ 
+def _dense_leaves_per_strategy(group):
+    """
+    Dense (T_fine-long) output arrays each strategy returns:
+    x_means + x_spreads for every kind, plus q_scale for Route B
+    (`prior_means` is only T_obs long, so it is negligible here).
+    """
+    return sum(3 if spec["kind"] == "route_b" else 2 for spec in group)
+ 
+ 
+def _auto_ic_chunk(B, n_devices, bytes_per_ic, budget_bytes):
+    if bytes_per_ic <= 0:
+        return B
+    chunk = int(budget_bytes // bytes_per_ic)
+    chunk = min(max(chunk, n_devices), B)
+    if chunk > n_devices:
+        chunk = (chunk // n_devices) * n_devices   # avoid pmap padding waste
+    return max(chunk, 1)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -434,27 +505,7 @@ def evaluate_filters(
     test_h5_path: str = None,
 ) -> str:
     """
-    Runs every strategy in `strategies` on the same data (same ICs, same
-    noisy-observation draws, same initial ensembles) and stores every
-    number needed to later reproduce:
-
-      * individual trajectories + time-avg error over the 40 variables
-        (title carries F),
-      * RMSE with spread,
-      * calibration plots (timeseries + binned spread-skill scatter),
-      * Error Reduction Factor,
-      * batch time-mean L2 error,
-      * prior vs posterior RMSE with the observation error level,
-
-    into a single HDF5 file at
-    ``os.path.join(workdir, f"{config.wandb.name}.h5")``.
-
-    If `strategies`/`propagators` are not supplied, falls back to the
-    original DD-mult / PI-mult / PI-RouteB 3-way set (see
-    `build_default_3way_strategies`), so this is a drop-in replacement
-    for the evaluation half of `evaluate_enkf_3_way`.
-
-    Returns the path of the HDF5 file written.
+    Memory-chunked version of the original. Same inputs, same HDF5 output.
     """
     # ── EnKF / observation configuration ───────────────────────────────
     obs_every_n = config.kf.get("obs_every_n", 4)
@@ -463,124 +514,159 @@ def evaluate_filters(
     dynamic_vars = config.kf.get("dynamic_vars", False)
     N_ens = config.kf.get("N_ens", 50)
     alpha_coarse = config.kf.get("inflation_factor", 1.05)
-
+ 
     alpha_rb = config.kf.get("route_b_alpha", 1.0)
     beta_rb = config.kf.get("route_b_beta", 5.0)
     Q0_sigma = config.kf.get("Q0_sigma", P0_sigma)
     n_quad_rb = config.kf.get("route_b_n_quad", 3)
-
+ 
     specify_obs_idx = config.kf.get("specify_obs_idx", False)
     obs_idx_list = config.kf.get("obs_idx_list", None)
-
+ 
     DT_WINDOW = float(config.get("dt_window", 0.25))
     DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
     DT_OBS = float(config.kf.get("dt_obs", DT_WINDOW))
-
+ 
+    n_devices = jax.local_device_count()
+    strategy_chunk = int(config.eval.get("strategy_chunk", 0))
+    ic_chunk_cfg = int(config.eval.get("ic_chunk", 0))
+    budget_bytes = float(config.eval.get("device_budget_gb", 1.5)) * (1024 ** 3)
+ 
     # ── 1. Load the long test trajectories and forcing parameters ──────
     if test_h5_path is None:
         test_h5_path = "data/l96_forcing_test.h5"
-
+ 
     with h5py.File(test_h5_path, "r") as f:
         u_test = f["u"][:]
         t_test = f["t"][:]
         F_test = f["F"][:]
-
-    logging.info(f"JAX sees {jax.local_device_count()} local device(s): {jax.local_devices()}")
-
+ 
+    logging.info(f"JAX sees {n_devices} local device(s): {jax.local_devices()}")
+ 
     trajectory_windows = config.eval.get("trajectory_windows", 200)
     batch_windows = config.eval.get("windows", 200)
     num_ics_eval = config.eval.get("num_ics", u_test.shape[0])
     enkf_batch_size = config.kf.get("batch_l2_size", 200)
-    # Fraction of each dense trajectory's time axis discarded as transient
-    # spin-up before estimating equilibrium (climatological) variance.
     eqvar_burn_in_frac = config.eval.get("eqvar_burn_in_frac", 0.5)
-
-    # Shared inflation / process-noise scaling (used by the default
-    # 3-way set; custom strategy lists already carry their own).
+ 
     steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
     alpha_fine = scale_inflation_for_fine_steps(alpha_coarse, steps_per_window)
     Q_coarse = None
     Q_fine = None
-
+ 
     if strategies is None or propagators is None:
-        Q_coarse = jnp.eye(40) * Q0_sigma ** 2  # N filled in once model loads; recomputed below
-        strategies, propagators, N, t_star_window = build_default_3way_strategies(
+        strategies, propagators, N, t_star_window = build_default_3way_strategies(  # noqa: F821
             config, N_ens, alpha_fine, None, alpha_rb, beta_rb, n_quad_rb,
         )
         Q_coarse = jnp.eye(N) * Q0_sigma ** 2
         Q_fine = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
-        # Re-inject the correctly-sized Q_fine into the route_b strategy.
         for spec in strategies:
             if spec["kind"] == "route_b":
                 spec["Q0"] = Q_fine
     else:
         N = next(iter(propagators.values()))[0].N
-
+ 
     if specify_obs_idx and obs_idx_list:
         obs_indices = jnp.array(obs_idx_list)
     else:
         obs_indices = jnp.arange(0, N, obs_every_n)
-
+ 
     m = len(obs_indices)
     R = jnp.eye(m) * sigma_obs ** 2
     P0 = jnp.eye(N) * P0_sigma ** 2
-
-    # ── 2. Per-IC single-trajectory data (for individual-trajectory plots) ──
+ 
+    groups = _strategy_groups(strategies, strategy_chunk)
+ 
+    # ── 2. Per-IC single-trajectory data (individual-trajectory plots) ──
     num_plots = min(config.saving.total_plots, u_test.shape[0])
     total_time_traj = trajectory_windows * DT_WINDOW
-
+ 
     obs_times, obs_step_indices, total_fine_steps = build_obs_schedule(
         total_time=total_time_traj, dt_fine=DT_FINE, dt_obs=DT_OBS,
     )
     obs_step_indices = jnp.array(obs_step_indices)
-
-    # PASS 1: sequential SciPy ground-truth solves — exact gen_data.py solver
+ 
+    # PASS 1: sequential SciPy ground-truth solves
     x_true_fine_list, x_true_at_obs_list = [], []
     t_eval_fine = np.linspace(0.0, total_time_traj, total_fine_steps + 1)
-
+ 
     for ic_idx in range(num_plots):
         F_i = float(F_test[ic_idx])
-
+ 
         def lorenz_96(t, state, F=F_i):
             x_plus_1 = np.roll(state, -1)
             x_minus_1 = np.roll(state, 1)
             x_minus_2 = np.roll(state, 2)
             return (x_plus_1 - x_minus_2) * x_minus_1 - state + F
-
+ 
         sol = solve_ivp(
             lorenz_96, t_span=[0.0, total_time_traj], y0=np.array(u_test[ic_idx, 0, :]),
             t_eval=t_eval_fine, method='LSODA', rtol=1e-13, atol=1e-14,
         )
         x_true_fine_list.append(sol.y.T)
         x_true_at_obs_list.append(sol.y.T[obs_step_indices + 1])
-
-    # PASS 2: batched, concurrent GPU execution for every strategy at once
-    x_true_fine_batch = jnp.stack(x_true_fine_list)
+ 
+    # PASS 2: batched GPU execution, one compiled program per strategy group
+    x_true_fine_batch = np.stack(x_true_fine_list)          # host
     x_true_at_obs_batch = jnp.stack(x_true_at_obs_list)
     u0_batch_plots = jnp.array(u_test[:num_plots, 0, :])
     F_batch_plots = jnp.array(F_test[:num_plots])
     keys_batch_plots = jax.vmap(lambda i: jax.random.PRNGKey(i))(jnp.arange(num_plots))
-
-    batched_traj_fn = build_batched_filters(
-        strategies, N, m, obs_indices, P0_sigma, P0, N_ens, sigma_obs, R,
-        DT_FINE, DT_WINDOW, total_fine_steps, obs_step_indices,
+ 
+    traj_bytes_per_ic = (
+        total_fine_steps * (N + 1) * 4
+        * _dense_leaves_per_strategy(groups[0]) * 2
     )
-    outputs_traj, y_obs_traj, idx_vars_traj = batched_traj_fn(
-        keys_batch_plots, u0_batch_plots, F_batch_plots,
-        x_true_at_obs_batch, dynamic_vars, specify_obs_idx,
+    traj_chunk = ic_chunk_cfg or _auto_ic_chunk(
+        num_plots, n_devices, traj_bytes_per_ic, budget_bytes
     )
-
+    logging.info(
+        f"evaluate_filters: trajectory pass -- {num_plots} IC(s) in chunks of "
+        f"{traj_chunk}, {len(groups)} strategy group(s)."
+    )
+ 
+    outputs_traj = {}
+    y_obs_traj = np.zeros((num_plots, len(obs_step_indices), m), dtype=np.float32)
+    idx_vars_traj = np.zeros((num_plots, len(obs_step_indices), m), dtype=np.int32)
+ 
+    for g_i, group in enumerate(groups):
+        batched_traj_fn = build_batched_filters(  # noqa: F821
+            group, N, m, obs_indices, P0_sigma, P0, N_ens, sigma_obs, R,
+            DT_FINE, DT_WINDOW, total_fine_steps, obs_step_indices,
+        )
+        for i0 in range(0, num_plots, traj_chunk):
+            i1 = min(i0 + traj_chunk, num_plots)
+            out_c, y_c, idx_c = batched_traj_fn(
+                keys_batch_plots[i0:i1], u0_batch_plots[i0:i1],
+                F_batch_plots[i0:i1], x_true_at_obs_batch[i0:i1],
+                dynamic_vars, specify_obs_idx,
+            )
+            if g_i == 0:
+                y_obs_traj[i0:i1] = np.asarray(y_c)
+                idx_vars_traj[i0:i1] = np.asarray(idx_c)
+            for key, d in out_c.items():
+                dst = outputs_traj.setdefault(key, {})
+                for field, arr in d.items():
+                    if field not in dst:
+                        dst[field] = np.zeros(
+                            (num_plots,) + arr.shape[1:], dtype=arr.dtype
+                        )
+                    dst[field][i0:i1] = arr
+            del out_c, y_c, idx_c
+        del batched_traj_fn
+        jax.clear_caches()
+ 
     window_step_indices = np.array(
         [round((w + 1) * DT_WINDOW / DT_FINE) - 1 for w in range(trajectory_windows)]
     )
     t_fine_axis = t_eval_fine[1:]
-
+ 
     per_ic_records = []
     for ic_idx in range(num_plots):
         F_i = float(F_test[ic_idx])
         x_true_fine = np.array(x_true_fine_batch[ic_idx][1:])
         x_true_at_windows = x_true_fine[window_step_indices]
-
+ 
         idx_vars_seq = idx_vars_traj[ic_idx]
         y_obs_seq = y_obs_traj[ic_idx]
         obs_coords = []
@@ -588,7 +674,7 @@ def evaluate_filters(
             for j, vi in enumerate(idx_vars_seq[obs_idx]):
                 obs_coords.append((int(vi), float(t_obs), float(y_obs_seq[obs_idx, j])))
         obs_coords = np.array(obs_coords, dtype=np.float64) if obs_coords else np.zeros((0, 3))
-
+ 
         strat_records = {}
         for spec in strategies:
             key = spec["key"]
@@ -599,72 +685,56 @@ def evaluate_filters(
                 / (np.linalg.norm(x_true_at_windows) + 1e-12)
             )
             strat_records[key] = dict(x_est=x_means, x_std=x_spreads, l2_time_avg=l2_time_avg)
-
+ 
         per_ic_records.append(dict(
             F=F_i, x_true=x_true_fine, obs_coords=obs_coords, strategies=strat_records,
         ))
-
-    # ── 3. Batch-averaged metrics (for RMSE/spread, calibration, ERF, L2, prior/post) ──
+ 
+    # Everything the trajectory pass produced is now in `per_ic_records`
+    # (host numpy). Drop the originals and the compilation cache before the
+    # batch pass allocates anything, otherwise both passes are live at once.
+    del outputs_traj, y_obs_traj, idx_vars_traj
+    del x_true_at_obs_batch, u0_batch_plots, F_batch_plots, keys_batch_plots
+    jax.clear_caches()
+ 
+    # ── 3. Batch-averaged metrics ──────────────────────────────────────
     B = min(num_ics_eval, enkf_batch_size, u_test.shape[0])
     u0_batch = u_test[:B, 0, :]
     dt_test = float(t_test[1] - t_test[0])
-
+ 
     total_time_batch = batch_windows * DT_WINDOW
     _, obs_step_indices_batch, total_fine_steps_batch = build_obs_schedule(
         total_time=total_time_batch, dt_fine=DT_FINE, dt_obs=DT_OBS,
     )
+    obs_step_indices_batch_np = np.asarray(obs_step_indices_batch)
     obs_step_indices_batch = jnp.array(obs_step_indices_batch)
-
-    T_obs = len(obs_step_indices_batch)
+ 
+    T_obs = len(obs_step_indices_batch_np)
     obs_times_batch = np.array([(k + 1) * DT_OBS for k in range(T_obs)])
-
+ 
     fine_stride = int(round(DT_FINE / dt_test))
     n_fine_pts = total_fine_steps_batch * fine_stride + 1
-
-    x_true_fine_batch2 = u_test[:B, 0:n_fine_pts:fine_stride, :]
-    x_true_at_obs_batch2 = x_true_fine_batch2[:, obs_step_indices_batch + 1, :]
+ 
+    # Kept on the host; only the current chunk is ever touched.
+    x_true_fine_batch2 = np.asarray(
+        u_test[:B, 0:n_fine_pts:fine_stride, :], dtype=np.float32
+    )
+    x_true_at_obs_batch2 = x_true_fine_batch2[:, obs_step_indices_batch_np + 1, :]
     window_step_indices_b = np.array(
         [round((k + 1) * DT_WINDOW / DT_FINE) - 1 for k in range(batch_windows)]
     )
-
+ 
     seed = config.training.get("seed", 42)
     master_key = jax.random.PRNGKey(seed)
     keys_batch = jax.random.split(master_key, B)
-
-    batched_batch_fn = build_batched_filters(
-        strategies, N, m, obs_indices, P0_sigma, P0, N_ens, sigma_obs, R,
-        DT_FINE, DT_WINDOW, total_fine_steps_batch, obs_step_indices_batch,
-    )
-    outputs_batch, _, _ = batched_batch_fn(
-        keys_batch, jnp.array(u0_batch), F_test[:B], x_true_at_obs_batch2,
-        dynamic_vars, specify_obs_idx,
-    )
-
+ 
     def _rmse(a, b):
-        return jnp.sqrt(jnp.mean((a - b) ** 2, axis=2))
-
+        return np.sqrt(np.mean((a - b) ** 2, axis=2))
+ 
     def _mean_std(a):
-        return np.array(jnp.mean(a, axis=0)), np.array(jnp.std(a, axis=0))
-
+        return np.mean(a, axis=0), np.std(a, axis=0)
+ 
     def _equilibrium_variance_per_ic(x_dense, burn_in_frac: float = 0.5):
-        """
-        Per-IC, per-variable equilibrium (climatological/attractor)
-        variance: the long-term temporal variance of a dense state
-        trajectory once transient initial conditions have decayed.
-
-        `x_dense` is (B, T, N) -- B dense state trajectories, T time
-        steps, N state variables (any dt / time grid; the different
-        strategies, the open-loop rollouts, and the truth are each on
-        their own grid, but variance of a stationary process doesn't
-        depend on sampling density). The leading `burn_in_frac` fraction
-        of the time axis is discarded before the variance is computed,
-        so an assimilation spin-up (filtered strategies) or an
-        off-attractor start (open-loop rollout) doesn't bias the
-        estimate of the intrinsic, unforced/unfiltered variability.
-
-        Returns (B, N): temporal variance of each variable, for each IC,
-        over the retained (post-burn-in) tail of the trajectory.
-        """
         T = x_dense.shape[1]
         if T < 4:
             raise ValueError(
@@ -672,79 +742,129 @@ def evaluate_filters(
                 f"discard a burn-in and still estimate a variance, got T={T}."
             )
         t0 = min(int(round(burn_in_frac * T)), T - 2)
-        return jnp.var(x_dense[:, t0:, :], axis=1)
-
+        return np.var(x_dense[:, t0:, :], axis=1)
+ 
     x_true_at_windows_b = x_true_fine_batch2[:, window_step_indices_b + 1, :]
     x_true_fine_tail = x_true_fine_batch2[:, 1:, :]
-    den_dense = jnp.linalg.norm(x_true_fine_tail, axis=2) + 1e-12
+    den_dense = np.linalg.norm(x_true_fine_tail, axis=2) + 1e-12
     t_dense_fine = np.arange(1, total_fine_steps_batch + 1) * DT_FINE
-
-    # Reference equilibrium (climatological/attractor) variance: the
-    # intrinsic, long-term variability of the true, unforced/unfiltered
-    # system state, once transients have decayed. Every open-loop
-    # ("static physics") and filtered-strategy equilibrium variance
-    # below is compared against this by `plot_equilibrium_variance`.
+ 
     ref_eqvar_ic = _equilibrium_variance_per_ic(x_true_fine_tail, eqvar_burn_in_frac)
     ref_eqvar_mean, ref_eqvar_std = _mean_std(ref_eqvar_ic)
-
+ 
+    batch_bytes_per_ic = (
+        total_fine_steps_batch * (N + 1) * 4
+        * max(_dense_leaves_per_strategy(g) for g in groups) * 2
+    )
+    batch_chunk = ic_chunk_cfg or _auto_ic_chunk(
+        B, n_devices, batch_bytes_per_ic, budget_bytes
+    )
+    logging.info(
+        f"evaluate_filters: batch pass -- B={B} IC(s) in chunks of {batch_chunk}, "
+        f"{len(strategies)} strategies in {len(groups)} group(s), "
+        f"~{batch_bytes_per_ic * batch_chunk / 1024**3:.2f} GiB of dense "
+        "outputs per call."
+    )
+ 
+    # Per-IC metric accumulators: (B, T)-shaped, i.e. a factor N smaller
+    # than the dense (B, T, N) outputs they are computed from.
+    acc = {spec["key"]: {} for spec in strategies}
+ 
+    def _push(key, field, value):
+        acc[key].setdefault(field, []).append(value)
+ 
+    for group in groups:
+        batched_batch_fn = build_batched_filters(  # noqa: F821
+            group, N, m, obs_indices, P0_sigma, P0, N_ens, sigma_obs, R,
+            DT_FINE, DT_WINDOW, total_fine_steps_batch, obs_step_indices_batch,
+        )
+ 
+        for i0 in range(0, B, batch_chunk):
+            i1 = min(i0 + batch_chunk, B)
+            outputs_c, _, _ = batched_batch_fn(
+                keys_batch[i0:i1], jnp.array(u0_batch[i0:i1]), F_test[i0:i1],
+                jnp.array(x_true_at_obs_batch2[i0:i1]),
+                dynamic_vars, specify_obs_idx,
+            )
+ 
+            truth_obs_c = x_true_at_obs_batch2[i0:i1]
+            truth_win_c = x_true_at_windows_b[i0:i1]
+            truth_tail_c = x_true_fine_tail[i0:i1]
+            den_c = den_dense[i0:i1]
+ 
+            for spec in group:
+                key = spec["key"]
+                out = outputs_c[key]
+ 
+                post_means_obs = out["x_means"][:, obs_step_indices_batch_np, :N]
+                prior_means_obs = out["prior_means"][:, :, :N]
+ 
+                prior_rmse_ic = _rmse(prior_means_obs, truth_obs_c)
+                post_rmse_ic = _rmse(post_means_obs, truth_obs_c)
+                _push(key, "prior_rmse", prior_rmse_ic)
+                _push(key, "post_rmse", post_rmse_ic)
+                _push(key, "erf", prior_rmse_ic / (post_rmse_ic + 1e-12))
+ 
+                x_hat_windows = out["x_means"][:, window_step_indices_b, :N]
+                _push(key, "rmse", _rmse(x_hat_windows, truth_win_c))
+                _push(key, "spread", np.sqrt(np.mean(
+                    out["x_spreads"][:, window_step_indices_b, :N] ** 2, axis=2
+                )))
+ 
+                _push(key, "l2_dense", np.linalg.norm(
+                    out["x_means"][:, :, :N] - truth_tail_c, axis=2
+                ) / den_c)
+ 
+                _push(key, "eqvar", _equilibrium_variance_per_ic(
+                    out["x_means"][:, :, :N], eqvar_burn_in_frac
+                ))
+ 
+                if spec["kind"] == "route_b":
+                    _push(key, "q_scale", np.mean(out["q_scale"], axis=2))
+ 
+                del out
+                outputs_c[key] = None
+ 
+            del outputs_c, truth_obs_c, truth_win_c, truth_tail_c, den_c
+ 
+        del batched_batch_fn
+        jax.clear_caches()
+ 
     batch_strat_records = {}
     for spec in strategies:
         key = spec["key"]
-        out = outputs_batch[key]
-
-        post_means_obs = out["x_means"][:, obs_step_indices_batch, :N]
-        prior_means_obs = out["prior_means"][:, :, :N]
-
-        prior_rmse_ic = _rmse(prior_means_obs, x_true_at_obs_batch2)
-        post_rmse_ic = _rmse(post_means_obs, x_true_at_obs_batch2)
-        erf_ic = prior_rmse_ic / (post_rmse_ic + 1e-12)
-
-        erf_mean, erf_std = _mean_std(erf_ic)
-        prior_rmse_mean, prior_rmse_std = _mean_std(prior_rmse_ic)
-        post_rmse_mean, post_rmse_std = _mean_std(post_rmse_ic)
-
-        x_hat_windows = out["x_means"][:, window_step_indices_b, :N]
-        rmse_ic = _rmse(x_hat_windows, x_true_at_windows_b)
-        rmse_window_mean = np.array(jnp.mean(rmse_ic, axis=0))
-
-        spread_ic = jnp.sqrt(jnp.mean(out["x_spreads"][:, window_step_indices_b, :N] ** 2, axis=2))
-        spread_window_mean = np.array(jnp.mean(spread_ic, axis=0))
-
-        rmse_raw = np.array(rmse_ic.flatten())
-        spread_raw = np.array(spread_ic.flatten())
-
-        l2_dense_mean = np.array(
-            jnp.mean(jnp.linalg.norm(out["x_means"][:, :, :N] - x_true_fine_tail, axis=2) / den_dense, axis=0)
-        )
-
-        # Equilibrium variance of this strategy's own filtered (posterior
-        # mean) trajectory -- compare against `ref_eqvar_mean` to check
-        # whether filtering preserves the system's intrinsic variability
-        # (collapsing well below the reference signals ensemble/variance
-        # collapse; sitting well above it signals over-inflation).
-        eqvar_ic = _equilibrium_variance_per_ic(out["x_means"][:, :, :N], eqvar_burn_in_frac)
-        eqvar_mean, eqvar_std = _mean_std(eqvar_ic)
-
+        a = {f: np.concatenate(v, axis=0) for f, v in acc[key].items()}
+        acc[key] = None
+ 
+        prior_rmse_mean, prior_rmse_std = _mean_std(a["prior_rmse"])
+        post_rmse_mean, post_rmse_std = _mean_std(a["post_rmse"])
+        erf_mean, erf_std = _mean_std(a["erf"])
+        eqvar_mean, eqvar_std = _mean_std(a["eqvar"])
+ 
         rec = dict(
             label=spec["label"], kind=spec["kind"], propagator=spec["propagator"],
             prior_rmse_mean=prior_rmse_mean, prior_rmse_std=prior_rmse_std,
             post_rmse_mean=post_rmse_mean, post_rmse_std=post_rmse_std,
             erf_mean=erf_mean, erf_std=erf_std,
-            rmse_window_mean=rmse_window_mean, spread_window_mean=spread_window_mean,
-            rmse_raw=rmse_raw, spread_raw=spread_raw,
-            l2_dense_mean=l2_dense_mean,
+            rmse_window_mean=np.mean(a["rmse"], axis=0),
+            spread_window_mean=np.mean(a["spread"], axis=0),
+            rmse_raw=a["rmse"].flatten(),
+            spread_raw=a["spread"].flatten(),
+            l2_dense_mean=np.mean(a["l2_dense"], axis=0),
             eqvar_mean=eqvar_mean, eqvar_std=eqvar_std,
         )
-
+ 
         if spec["kind"] == "route_b":
-            q_scale_step_mean = jnp.mean(out["q_scale"], axis=2)  # (B, total_fine_steps_batch)
-            rec["route_b_scale_mean"] = np.array(jnp.mean(q_scale_step_mean, axis=0))
-            rec["route_b_scale_std"] = np.array(jnp.std(q_scale_step_mean, axis=0))
+            rec["route_b_scale_mean"] = np.mean(a["q_scale"], axis=0)
+            rec["route_b_scale_std"] = np.std(a["q_scale"], axis=0)
             rec["route_b_alpha"] = float(spec["alpha"])
             rec["route_b_beta"] = float(spec["beta"])
-
+ 
         batch_strat_records[key] = rec
-
+        del a
+ 
+    del acc
+ 
     # ── 4. Open-loop reference rollouts (one per unique propagator) ────
     used_propagators = sorted({spec["propagator"] for spec in strategies})
     open_loop_records = {}
@@ -756,35 +876,55 @@ def evaluate_filters(
             predict_full = _device_parallel(
                 lambda u: model.x_pred_fn(params, u, t_star_window), in_axes=(0,)
             )
-            u_current = jnp.concatenate([jnp.array(u0_batch), F_test[:B, None]], axis=-1)
-            x_pred_list = []
-            for k in range(batch_windows):
-                x_win = predict_full(u_current)
-                x_pred_list.append(x_win if k == 0 else x_win[:, 1:, :])
-                u_current = jnp.concatenate([x_win[:, -1, :], F_test[:B, None]], axis=-1)
-            x_pred_dense = jnp.concatenate(x_pred_list, axis=1)
-            total_steps_ol = x_pred_dense.shape[1]
-            x_ref_dense_ol = jnp.array(u_test[:B, :total_steps_ol, :])
-            denom_ol = jnp.linalg.norm(x_ref_dense_ol, axis=2) + 1e-12
-            l2_ol = np.array(
-                jnp.mean(jnp.linalg.norm(x_pred_dense - x_ref_dense_ol, axis=2) / denom_ol, axis=0)
+ 
+            l2_ol_chunks, eqvar_ol_chunks = [], []
+            total_steps_ol = None
+            for i0 in range(0, B, batch_chunk):
+                i1 = min(i0 + batch_chunk, B)
+                u_current = jnp.concatenate(
+                    [jnp.array(u0_batch[i0:i1]), jnp.array(F_test[i0:i1])[:, None]],
+                    axis=-1,
+                )
+                x_pred_list = []
+                for k in range(batch_windows):
+                    x_win = predict_full(u_current)            # host numpy
+                    x_pred_list.append(x_win if k == 0 else x_win[:, 1:, :])
+                    u_current = jnp.concatenate(
+                        [jnp.array(x_win[:, -1, :]),
+                         jnp.array(F_test[i0:i1])[:, None]], axis=-1,
+                    )
+                x_pred_dense = np.concatenate(x_pred_list, axis=1)
+                del x_pred_list
+                total_steps_ol = x_pred_dense.shape[1]
+ 
+                x_ref_dense_ol = np.asarray(
+                    u_test[i0:i1, :total_steps_ol, :], dtype=np.float32
+                )
+                denom_ol = np.linalg.norm(x_ref_dense_ol, axis=2) + 1e-12
+                l2_ol_chunks.append(
+                    np.linalg.norm(x_pred_dense[..., :N] - x_ref_dense_ol, axis=2) / denom_ol
+                )
+                eqvar_ol_chunks.append(
+                    _equilibrium_variance_per_ic(x_pred_dense[..., :N], eqvar_burn_in_frac)
+                )
+                del x_pred_dense, x_ref_dense_ol, denom_ol
+ 
+            l2_ol = np.mean(np.concatenate(l2_ol_chunks, axis=0), axis=0)
+            eqvar_mean_ol, eqvar_std_ol = _mean_std(
+                np.concatenate(eqvar_ol_chunks, axis=0)
             )
-
-            # Equilibrium variance of the "static" (open-loop, unfiltered)
-            # physics rollout -- this is the propagator's own free-running
-            # climatology, with no observation updates ever applied.
-            eqvar_ic_ol = _equilibrium_variance_per_ic(x_pred_dense, eqvar_burn_in_frac)
-            eqvar_mean_ol, eqvar_std_ol = _mean_std(eqvar_ic_ol)
-
+            del l2_ol_chunks, eqvar_ol_chunks, predict_full
+            jax.clear_caches()
+ 
             open_loop_records[prop_key] = dict(
                 t=np.array(t_test[:total_steps_ol]), l2_dense_mean=l2_ol,
                 eqvar_mean=eqvar_mean_ol, eqvar_std=eqvar_std_ol,
             )
-
-    # ── 5. Write everything to HDF5 ─────────────────────────────────────
+ 
+    # ── 5. Write everything to HDF5 ────────────────────────────────────
     out_path = os.path.join(workdir, f"{config.wandb.name}.h5")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-
+ 
     with h5py.File(out_path, "w") as f:
         meta = f.create_group("meta")
         meta.attrs["N"] = N
@@ -818,7 +958,7 @@ def evaluate_filters(
             "strategy_propagator",
             data=np.array([s["propagator"] for s in strategies], dtype=h5py.string_dtype()),
         )
-
+ 
         traj_grp = f.create_group("trajectories")
         traj_grp.create_dataset("t_fine", data=t_fine_axis)
         for ic_idx, rec in enumerate(per_ic_records):
@@ -832,18 +972,18 @@ def evaluate_filters(
                 sg.attrs["l2_time_avg"] = srec["l2_time_avg"]
                 sg.create_dataset("x_est", data=srec["x_est"], compression="gzip")
                 sg.create_dataset("x_std", data=srec["x_std"], compression="gzip")
-
+ 
         batch_grp = f.create_group("batch")
         batch_grp.attrs["B"] = B
         batch_grp.attrs["eqvar_burn_in_frac"] = eqvar_burn_in_frac
         batch_grp.create_dataset("obs_times", data=obs_times_batch)
         batch_grp.create_dataset("window_idx", data=np.arange(1, batch_windows + 1))
         batch_grp.create_dataset("t_dense_fine", data=t_dense_fine)
-
+ 
         ref_grp = batch_grp.create_group("reference")
         ref_grp.create_dataset("eqvar_mean", data=ref_eqvar_mean)
         ref_grp.create_dataset("eqvar_std", data=ref_eqvar_std)
-
+ 
         strat_grp_b = batch_grp.create_group("strategies")
         for key, rec in batch_strat_records.items():
             sg = strat_grp_b.create_group(key)
@@ -862,7 +1002,7 @@ def evaluate_filters(
                 sg.create_dataset("route_b_scale_std", data=rec["route_b_scale_std"])
                 sg.attrs["route_b_alpha"] = rec["route_b_alpha"]
                 sg.attrs["route_b_beta"] = rec["route_b_beta"]
-
+ 
         ol_grp = batch_grp.create_group("open_loop")
         for prop_key, rec in open_loop_records.items():
             og = ol_grp.create_group(prop_key)
@@ -870,11 +1010,9 @@ def evaluate_filters(
             og.create_dataset("l2_dense_mean", data=rec["l2_dense_mean"])
             og.create_dataset("eqvar_mean", data=rec["eqvar_mean"])
             og.create_dataset("eqvar_std", data=rec["eqvar_std"])
-
+ 
     logging.info(f"evaluate_filters: wrote all evaluation data to {out_path}")
     return out_path
-
-
 
 
 """
@@ -3190,3 +3328,289 @@ def run_rtpp_inflation_sweep(config, workdir: str, test_h5_path: str | None = No
     return save_dir
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Route B (modified additive) beta sweep: PI propagator only
+# ─────────────────────────────────────────────────────────────────────────
+
+def build_route_b_sweep_strategies(config, N_ens, beta_list, alpha_rb_fixed, steps_per_window):
+    """
+    Builds a PI + Route B beta-sweep strategy set, reusing the single PI
+    checkpoint named in `config.wandb.name_pi` and ONE
+    `make_route_b_enkf_fns` closure pair -- with one strategy per value
+    in `beta_list`, all sharing the SAME fixed `alpha_rb_fixed` constant-
+    floor term:
+
+        pi_route_b_b<tag> -- PI propagator + Route B inflation, scale =
+                              alpha_rb_fixed + beta * ||rho||^2, with
+                              beta_list[i] as the flow-dependent
+                              residual-scaling strength and
+                              `alpha_rb_fixed` held fixed across the
+                              whole sweep.
+
+    This is the mirror image of `build_add_sweep_strategies`, which pins
+    `beta=0.0` and sweeps the constant floor `alpha`: here `alpha` is
+    pinned (to whatever `alpha_rb_fixed` the caller passes in) and
+    `beta` -- the coefficient on the flow-dependent `||rho||^2` term --
+    is swept instead. See `run_route_b_inflation_sweep`'s docstring for
+    how to choose `alpha_rb_fixed` (0.0 to isolate the residual-scaled
+    term alone, or the best alpha found by `run_add_inflation_sweep` to
+    layer Route B's flow-dependent term on top of an already-calibrated
+    floor -- both are worth running).
+
+    As with the additive sweep, Route B is only ever exercised against
+    the PI checkpoint elsewhere in this file (`build_default_3way_strategies`,
+    `build_default_4way_strategies` both only call
+    `model_pi.make_route_b_enkf_fns`), so this sweep is PI-only -- see
+    the equivalent DD-extension caveat in `build_add_sweep_strategies`'s
+    docstring.
+
+    Like `build_add_sweep_strategies`, `predict_fn`/`update_fn` are built
+    ONCE and reused across every beta -- Route B's `alpha`/`beta` are
+    runtime scalars passed into `run_enkf_smoother_route_b` per strategy
+    dict, not baked into the closure -- so the sweep is cheap: no extra
+    model calls or checkpoint loads per beta.
+
+    Returns (strategies, propagators, N, t_star_window).
+    """
+    dt_window = float(config.get("dt_window", 0.25))
+    dt_integration = config.eval.get("dt_integration", 0.005)
+    time_steps = int(round(dt_window / dt_integration)) + 1
+    t_star_window = jnp.linspace(0.0, dt_window, time_steps)
+
+    logging.info("Loading PI model...")
+    model_pi = models.L96UDON(config, t_star_window)
+    ckpt_path_pi = os.path.join(os.getcwd(), config.wandb.name_pi, "ckpt", "udon_model")
+    model_pi.state = restore_checkpoint(model_pi.state, ckpt_path_pi)
+    params_pi = model_pi.state.params
+    N = model_pi.N
+
+    P0_sigma = config.kf.get("P0_sigma", 1.0)
+    Q0_sigma = config.kf.get("Q0_sigma", P0_sigma)
+    n_quad_rb = config.kf.get("route_b_n_quad", 3)
+    Q_coarse = jnp.eye(N) * Q0_sigma ** 2
+    Q_fine = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
+
+    predict_fn_rb, update_fn_rb = model_pi.make_route_b_enkf_fns(params_pi, N_ens=N_ens)
+
+    strategies = []
+    for beta in beta_list:
+        tag = f"{beta:g}".replace(".", "p")
+        strategies.append(dict(
+            key=f"pi_route_b_b{tag}",
+            label=f"PI + Route B (\u03b1={alpha_rb_fixed:g}, \u03b2={beta:g})",
+            kind="route_b", propagator="pi",
+            predict_fn=predict_fn_rb, update_fn=update_fn_rb,
+            Q0=Q_fine, alpha=float(alpha_rb_fixed), beta=float(beta), n_quad=n_quad_rb,
+        ))
+
+    propagators = {
+        "pi": (model_pi, params_pi),
+    }
+    return strategies, propagators, N, t_star_window
+
+
+"""
+Run a Route B (modified additive) beta sweep: PI propagator only
+
+    For every value `beta` in `config.kf.route_b_beta_list`, with the
+    constant floor pinned at `alpha_rb_fixed`, evaluate:
+
+        PI propagator + Route B inflation @ (alpha_rb_fixed, beta)
+            (scale = alpha_rb_fixed + beta * ||rho||^2, injected as
+            process noise `scale * Q0` every fine step)
+
+    using the same two-stage modular pipeline (`evaluate_filters` +
+    `plot_comparisons_bulk` + `plot_equilibrium_variance`) as
+    `run_mult_inflation_sweep` / `run_add_inflation_sweep` /
+    `run_rtpp_inflation_sweep`. As with those, Route B is only ever
+    exercised against the PI checkpoint elsewhere in this file, so this
+    sweep is PI-only -- see `build_route_b_sweep_strategies`.
+
+    `evaluate_filters`'s `strategies=None` fallback only knows how to
+    build the historical DD-mult / PI-mult / PI-RouteB 3-way set, so
+    this function builds its own strategy/propagator set via
+    `build_route_b_sweep_strategies` and passes it in explicitly (along
+    with the `t_star_window` that set was built against).
+
+Choosing `alpha_rb_fixed`
+--------------------------------------------
+    Route B's scale is `alpha + beta * ||rho||^2`: `alpha` is a constant
+    floor, `beta` scales an additional flow-dependent term that grows
+    with the current residual norm. Two different, complementary
+    experiments are worth running here, both supported by the same
+    `alpha_rb_fixed` argument:
+
+    1. `alpha_rb_fixed = 0.0` -- isolates the flow-dependent term in
+       pure form: no constant floor at all, inflation comes ENTIRELY
+       from `beta * ||rho||^2`. Useful to see whether residual-scaling
+       alone can substitute for a floor, but be aware it means zero
+       inflation whenever the residual is small (calm periods), which
+       risks under-dispersion / eventual filter divergence in exactly
+       those windows -- treat this as a diagnostic sweep, not
+       necessarily a deployable operating point.
+
+    2. `alpha_rb_fixed = <best alpha from run_add_inflation_sweep>` --
+       holds the constant floor at whatever `run_add_inflation_sweep`
+       already found to work well in the beta=0 (pure additive) setting,
+       and asks whether layering Route B's flow-dependent term ON TOP of
+       that calibrated floor further improves things. This is the more
+       practically relevant question, and the reason Route B exists as a
+       *modification* of plain additive inflation rather than a
+       standalone scheme. If you haven't run the additive sweep yet, the
+       codebase's own default `route_b_alpha = 1.0` is a reasonable
+       stand-in floor to start from.
+
+    Recommendation: run this function twice, once at each of the above,
+    rather than trying to fold both into a single 2-D alpha x beta grid
+    -- a joint grid multiplies strategy count fast (n_alpha x n_beta) and
+    clutters the `plot_comparisons_bulk` overlays; two clean 1-D sweeps
+    are much easier to read and compare against the additive-only
+    baseline.
+
+    Leave `alpha_rb_fixed=None` (the default) to fall back to whatever
+    `config.kf.route_b_alpha` currently holds -- set that to 0.0 or to
+    your best additive-sweep alpha before each call, or pass
+    `alpha_rb_fixed` explicitly to override the config without mutating
+    it.
+
+Choosing `config.kf.route_b_beta_list`
+--------------------------------------------
+    The codebase's own default `route_b_beta` is 250.0 -- ||rho||^2 (a
+    squared residual norm over N=40 state variables) is typically a
+    small-to-moderate number, so a coefficient in the hundreds is needed
+    for the flow-dependent term to compete with an O(1) alpha floor
+    scaling an O(Q0_sigma^2) = O(0.09) base covariance. A first-pass grid
+    bracketing that default, with a 0.0 control (recovering whatever
+    `alpha_rb_fixed` alone gives -- directly comparable to the additive
+    sweep's own point at that alpha) and headroom both below and above:
+
+        config.kf.route_b_beta_list = [
+            0.0, 50.0, 100.0, 150.0, 250.0, 400.0, 600.0, 1000.0,
+        ]
+
+    Once this coarse sweep identifies an approximate optimum (e.g. by
+    RMSE / calibration on the held-out window), re-run a finer sweep
+    bracketing that value, e.g. `np.linspace(best * 0.5, best * 1.5, 7)`
+    (clipped at 0).
+
+CLI usage
+---------
+    python run_route_b_inflation_sweep.py \\
+        --config=configs/your_config.py \\
+        --workdir=./results/my_run
+
+Programmatic usage
+-------------------
+    from run_route_b_inflation_sweep import run_route_b_inflation_sweep
+    # 1) isolate the flow-dependent term alone:
+    save_dir_a = run_route_b_inflation_sweep(config, workdir_a, alpha_rb_fixed=0.0)
+    # 2) layer it on top of the best additive-sweep alpha:
+    save_dir_b = run_route_b_inflation_sweep(config, workdir_b, alpha_rb_fixed=best_add_alpha)
+
+Outputs
+-------
+    <workdir>/<config.wandb.name>.h5                            -- evaluate_filters
+    <workdir>/figures/comparisons_bulk/individual_trajectories/ -- per-(IC, strategy) PDFs
+    <workdir>/figures/comparisons_bulk/calibration_all.pdf      -- plot_comparisons_bulk:
+    <workdir>/figures/comparisons_bulk/erf_all.pdf                  every strategy overlaid
+    <workdir>/figures/comparisons_bulk/l2_all.pdf                   on one PDF per category
+    <workdir>/figures/comparisons_bulk/rmse_all.pdf
+    <workdir>/figures/comparisons_bulk/equilibrium_variance_all.pdf -- plot_equilibrium_variance:
+                                                                     reference (unfiltered truth)
+                                                                     + PI's static open-loop
+                                                                     physics vs every Route-B-beta
+                                                                     strategy's steady-state
+                                                                     variance, per variable
+"""
+
+
+def run_route_b_inflation_sweep(
+    config, workdir: str, alpha_rb_fixed: float | None = None,
+    test_h5_path: str | None = None, n_bins: int = 10,
+) -> str:
+    """
+    Runs the PI-only Route B beta sweep -- one calibration pass per value
+    in `config.kf.route_b_beta_list`, with the constant floor pinned at
+    `alpha_rb_fixed` (falls back to `config.kf.route_b_alpha` if left
+    `None`) -- and writes every comparison figure, including the
+    steady-state equilibrium-variance diagnostic (static open-loop
+    physics + reference truth vs every filtered strategy; see
+    `plot_equilibrium_variance`).
+
+    See the module docstring above for why you'll typically want to call
+    this twice -- once with `alpha_rb_fixed=0.0` to isolate the flow-
+    dependent term, once with `alpha_rb_fixed` set to the best alpha
+    found by `run_add_inflation_sweep` to layer Route B on top of an
+    already-calibrated additive floor.
+
+    Returns the path of the `figures/comparisons_bulk` directory written
+    by `plot_comparisons_bulk` (and also used by `plot_equilibrium_variance`).
+    """
+    os.makedirs(workdir, exist_ok=True)
+
+    # ── EnKF / inflation configuration ──
+    N_ens = config.kf.get("N_ens", 50)
+    if alpha_rb_fixed is None:
+        alpha_rb_fixed = config.kf.get("route_b_alpha", 0.0) # Default: pure amplified residual error
+    beta_list = list(config.kf.get(
+        "route_b_beta_list",
+        [0.0, 50.0, 100.0, 150.0, 250.0, 400.0, 600.0, 1000.0],  # see module docstring
+    ))
+    if len(beta_list) == 0:
+        raise ValueError("config.kf.route_b_beta_list is empty.")
+    if not all(b >= 0 for b in beta_list):
+        raise ValueError(
+            f"config.kf.route_b_beta_list must be non-negative, got {beta_list}"
+        )
+
+    DT_WINDOW = float(config.get("dt_window", 0.25))
+    DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
+    steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
+
+    n_strategies = len(beta_list)
+    logging.info(
+        f"Building Route B beta sweep strategy set: PI + Route B "
+        f"(alpha fixed at {alpha_rb_fixed:g}) x {n_strategies} beta "
+        f"value(s) ({beta_list}) -> {n_strategies} strategies ..."
+    )
+    if n_strategies > 12:
+        logging.warning(
+            f"{n_strategies} strategies overlaid on one plot_comparisons_bulk "
+            "figure may get crowded. Consider a shorter route_b_beta_list "
+            "for a first pass (see module docstring)."
+        )
+
+    strategies, propagators, N, t_star_window = build_route_b_sweep_strategies(
+        config, N_ens, beta_list, alpha_rb_fixed, steps_per_window,
+    )
+
+    logging.info(
+        f"Stage 1/3: evaluate_filters — running {len(strategies)} PI + "
+        "Route B beta strategies on shared data and writing the results "
+        "HDF5 (including the steady-state / equilibrium-variance data) ..."
+    )
+    h5_path = evaluate_filters(
+        config=config,
+        workdir=workdir,
+        strategies=strategies,
+        propagators=propagators,
+        t_star_window=t_star_window,
+        test_h5_path=test_h5_path,
+    )
+    logging.info(f"  wrote {h5_path}")
+
+    logging.info(f"Stage 2/3: plot_comparisons_bulk — reading {h5_path} and writing figures ...")
+    save_dir = plot_comparisons_bulk(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
+    logging.info(f"  wrote figures to {save_dir}")
+
+    logging.info(
+        f"Stage 3/3: plot_equilibrium_variance — reading {h5_path} and writing "
+        "the static-physics-vs-filtered-strategies equilibrium-variance PDF ..."
+    )
+    plot_equilibrium_variance(h5_path=h5_path, workdir=workdir)
+    logging.info(f"  wrote {os.path.join(save_dir, 'equilibrium_variance_all.pdf')}")
+
+    return save_dir
+
+
+ 
