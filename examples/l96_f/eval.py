@@ -2462,8 +2462,10 @@ def build_mult_sweep_strategies(config, N_ens, alpha_coarse_list, steps_per_wind
     t_star_window = jnp.linspace(0.0, dt_window, time_steps)
 
     logging.info("Loading DD model...")
-    model_dd = models.L96UDON(config, t_star_window)
+    model_dd = models.L96UDON_DD(config, t_star_window)
     ckpt_path_dd = os.path.join(os.getcwd(), config.wandb.name_dd, "ckpt", "udon_model")
+    if not os.path.exists(ckpt_path_dd):
+        ckpt_path_dd = os.path.join(os.getcwd(), config.wandb.name_dd, "ckpt", "udon_dd_model")
     model_dd.state = restore_checkpoint(model_dd.state, ckpt_path_dd)
     params_dd = model_dd.state.params
 
