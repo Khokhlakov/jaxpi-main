@@ -95,9 +95,12 @@ from scipy.integrate import solve_ivp
 import h5py
 
 import itertools
+import colorsys
 
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.backends.backend_pdf import PdfPages
 
 from jaxpi.utils import restore_checkpoint
 import examples.l96_f.models as models
@@ -954,6 +957,16 @@ def _save(fig, save_path, dpi=300):
     fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
     plt.close(fig)
 
+def _save_pdf_pages(figs, save_path, dpi=300):
+    """Save a list of already-built figures as successive pages of ONE
+    PDF file, then close them. Used wherever a single logical plot needs
+    a companion page (e.g. the same curves with some series omitted)."""
+    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+    with PdfPages(save_path) as pdf:
+        for fig in figs:
+            pdf.savefig(fig, bbox_inches="tight", dpi=dpi)
+            plt.close(fig)
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 1. Individual-trajectory plot (single strategy vs ground truth)
@@ -1017,7 +1030,7 @@ def _plot_trajectory_individual(
 
     # ── Top panel: mean absolute error vs time ─────────────────────────
     ax_top = fig.add_subplot(gs[0, :])
-    ax_top.plot(t_ax, mean_abs_err, color="#2196F3", linewidth=1.6,
+    ax_top.plot(t_ax, mean_abs_err, color="#2196F3", linewidth=1.1,
                 label=f"{strategy_label}: Mean |error|")
 
     for wb in window_boundaries:
@@ -1050,8 +1063,8 @@ def _plot_trajectory_individual(
         for wb in window_boundaries:
             ax.axvline(x=wb, color="#78909C", linestyle="--", linewidth=0.6, alpha=0.45)
 
-        ax.plot(t_ax, x_true[:, i], color=TRUTH_COLOR, linewidth=1.0, label="Truth")
-        ax.plot(t_ax, x_est[:, i], color=EST_COLOR, linewidth=1.0, linestyle="--",
+        ax.plot(t_ax, x_true[:, i], color=TRUTH_COLOR, linewidth=0.8, label="Truth")
+        ax.plot(t_ax, x_est[:, i], color=EST_COLOR, linewidth=0.8, linestyle="--",
                 label=strategy_label)
         if x_std is not None:
             ax.fill_between(
@@ -1061,7 +1074,7 @@ def _plot_trajectory_individual(
 
         if i in obs_by_var:
             obs_times_i, obs_vals_i = zip(*obs_by_var[i])
-            ax.scatter(obs_times_i, obs_vals_i, marker="x", s=25, linewidths=0.9,
+            ax.scatter(obs_times_i, obs_vals_i, marker="x", s=14, linewidths=0.6,
                        color=OBS_COLOR, zorder=5,
                        label="Observation" if i == min(obs_by_var) else None)
 
@@ -1141,13 +1154,13 @@ def _plot_calibration_pair(
 
     # -- Panel 1: simulation-time spread/RMSE timeseries, both strategies --
     ax_ts = fig.add_subplot(gs[0])
-    ax_ts.plot(window_idx, spread_a, marker="^", markersize=4, linewidth=1.8,
+    ax_ts.plot(window_idx, spread_a, marker="^", markersize=2.5, linewidth=1.1,
                linestyle="-", color="#8BC34A", label=f"{label_a} RMS ensemble σ")
-    ax_ts.plot(window_idx, rmse_a, marker="s", markersize=4, linewidth=1.8,
+    ax_ts.plot(window_idx, rmse_a, marker="s", markersize=2.5, linewidth=1.1,
                linestyle="--", color="#FF8A65", label=f"{label_a} EnKF RMSE")
-    ax_ts.plot(window_idx, spread_b, marker="^", markersize=4, linewidth=1.8,
+    ax_ts.plot(window_idx, spread_b, marker="^", markersize=2.5, linewidth=1.1,
                linestyle="-", color="#4CAF50", label=f"{label_b} RMS ensemble σ")
-    ax_ts.plot(window_idx, rmse_b, marker="s", markersize=4, linewidth=1.8,
+    ax_ts.plot(window_idx, rmse_b, marker="s", markersize=2.5, linewidth=1.1,
                linestyle="--", color="#EC407A", label=f"{label_b} EnKF RMSE")
     ax_ts.set_yscale("log")
     ax_ts.set_xlabel("Window index", fontsize=11)
@@ -1170,13 +1183,13 @@ def _plot_calibration_pair(
     rmss_b_b, rmse_b_b, rmse_b_s, _ = _binned_spread_skill(spread_b_raw, rmse_b_raw, n_bins)
 
     lim_hi = 1.1 * max(rmss_a_b.max(), rmse_a_b.max(), rmss_b_b.max(), rmse_b_b.max())
-    ax_bin.plot([0, lim_hi], [0, lim_hi], linestyle="--", linewidth=1.4,
+    ax_bin.plot([0, lim_hi], [0, lim_hi], linestyle="--", linewidth=1.0,
                 color="#37474F", label="1:1 (perfect calibration)")
-    ax_bin.errorbar(rmss_a_b, rmse_a_b, yerr=rmse_a_s, fmt="o", markersize=6,
-                     capsize=3, linewidth=1.4, color="#FF8C00",
+    ax_bin.errorbar(rmss_a_b, rmse_a_b, yerr=rmse_a_s, fmt="o", markersize=3.5,
+                     capsize=2, linewidth=1.0, color="#FF8C00",
                      label=f"{label_a} ({n_bins}-bin)")
-    ax_bin.errorbar(rmss_b_b, rmse_b_b, yerr=rmse_b_s, fmt="o", markersize=6,
-                     capsize=3, linewidth=1.4, color="#2196F3",
+    ax_bin.errorbar(rmss_b_b, rmse_b_b, yerr=rmse_b_s, fmt="o", markersize=3.5,
+                     capsize=2, linewidth=1.0, color="#2196F3",
                      label=f"{label_b} ({n_bins}-bin)")
 
     ax_bin.set_xlim(0, lim_hi)
@@ -1218,13 +1231,13 @@ def _plot_erf_pair(
         (label_b, erf_mean_b, erf_std_b, "#2196F3", "s"),
     ]
     for label, mean, std, color, marker in series:
-        ax.plot(obs_times, mean, color=color, linewidth=2.0, marker=marker,
-                markersize=4, label=f"{label}  (n = {n_traj} trajectories)")
+        ax.plot(obs_times, mean, color=color, linewidth=1.2, marker=marker,
+                markersize=2.5, label=f"{label}  (n = {n_traj} trajectories)")
         ax.fill_between(obs_times, mean - std, mean + std, color=color,
                          alpha=0.15, linewidth=0)
 
     ax.set_yscale("log")
-    ax.axhline(y=1.0, color="#37474F", linestyle="--", linewidth=1.4,
+    ax.axhline(y=1.0, color="#37474F", linestyle="--", linewidth=1.1,
                label="ERF = 1  (no reduction)")
 
     ax.set_xlabel("Observation time  t", fontsize=12)
@@ -1255,16 +1268,16 @@ def _plot_rmse_pair(
     no spread bands), plus the sigma_obs measurement-noise reference line."""
     fig, ax = plt.subplots(figsize=(9, 5.5))
 
-    ax.plot(obs_times, prior_mean_a, color="#0A36C7", linewidth=2.0, marker="o",
-            markersize=4, linestyle="-", label=f"{label_a} prior RMSE  (n = {n_traj})")
-    ax.plot(obs_times, post_mean_a, color="#A30005", linewidth=2.0, marker="s",
-            markersize=4, linestyle="-", label=f"{label_a} posterior RMSE  (n = {n_traj})")
-    ax.plot(obs_times, prior_mean_b, color="#8E24AA", linewidth=2.0, marker="o",
-            markersize=4, linestyle="--", label=f"{label_b} prior RMSE  (n = {n_traj})")
-    ax.plot(obs_times, post_mean_b, color="#EC407A", linewidth=2.0, marker="s",
-            markersize=4, linestyle="--", label=f"{label_b} posterior RMSE  (n = {n_traj})")
+    ax.plot(obs_times, prior_mean_a, color="#0A36C7", linewidth=1.2, marker="o",
+            markersize=2.5, linestyle="-", label=f"{label_a} prior RMSE  (n = {n_traj})")
+    ax.plot(obs_times, post_mean_a, color="#A30005", linewidth=1.2, marker="s",
+            markersize=2.5, linestyle="-", label=f"{label_a} posterior RMSE  (n = {n_traj})")
+    ax.plot(obs_times, prior_mean_b, color="#8E24AA", linewidth=1.2, marker="o",
+            markersize=2.5, linestyle="--", label=f"{label_b} prior RMSE  (n = {n_traj})")
+    ax.plot(obs_times, post_mean_b, color="#EC407A", linewidth=1.2, marker="s",
+            markersize=2.5, linestyle="--", label=f"{label_b} posterior RMSE  (n = {n_traj})")
 
-    ax.axhline(y=sigma_obs, color="#4CAF50", linestyle=":", linewidth=1.6,
+    ax.axhline(y=sigma_obs, color="#4CAF50", linestyle=":", linewidth=1.2,
                label=f"Measurement noise  σ_obs = {sigma_obs}")
 
     ax.set_yscale("log")
@@ -1501,40 +1514,74 @@ Naively overlaying S strategies * 2 metrics (e.g. spread AND RMSE, or
 prior AND posterior RMSE) on one axes gives 2*S lines, which gets messy
 fast. Instead:
 
-  * Calibration and prior/posterior-RMSE panels are split into two
+  * Calibration's spread/RMSE timeseries uses small multiples: one row
+    per strategy, stacked vertically, each pairing that strategy's own
+    RMS ensemble spread and EnKF RMSE on a single (small) axes, rather
+    than two crowded all-strategies-at-once panels. This scales cleanly
+    to large S (e.g. the 16-line multiplicative-inflation sweep) without
+    the per-window "simulation time" tick strip, which just overcrowds
+    the axes once there are many windows/strategies.
+  * The prior/posterior-RMSE panels are still split into two
     side-by-side subplots (one metric each), so each subplot only ever
     has S lines, all sharing one color-per-strategy legend.
-  * Every strategy gets a single, STABLE color (`_STRATEGY_PALETTE`) that
-    is reused across every panel and every bulk plot, so the reader only
-    has to learn the strategy -> color mapping once.
+  * Every strategy gets a single, STABLE color, assigned by
+    `_strategy_colors` (backed by `_distinct_colors`, which draws from
+    matplotlib's tab20/tab20b/tab20c qualitative colormaps -- 60
+    distinguishable swatches before any hue repeats) and reused across
+    every panel and every bulk plot, so the reader only has to learn
+    the strategy -> color mapping once.
   * Legends switch to two columns once there are more than ~4-5
     strategies, and error-bar / spread-band decorations are progressively
     faded (or dropped, for ERF bands beyond 4 strategies) as S grows, so
     the trend lines stay the visually dominant element.
-  * The EnKF-vs-open-loop L2 plot was already curve-count-agnostic in the
-    original code, so it's reused as-is.
+  * The EnKF-vs-open-loop L2 plot is curve-count-agnostic and writes a
+    two-page PDF: all curves, then a second page with the pure-
+    propagator open-loop curves dropped so the (usually much smaller)
+    filtered-strategy errors aren't squashed against the bottom of the
+    axes by the open-loop curves' larger scale.
 
-This is tuned for up to roughly 8-10 strategies; well beyond that, a
-small-multiples (one mini-panel per strategy) layout would likely read
-better than any single overlaid axes.
+Markers and line widths are kept small/thin throughout so S-way overlays
+stay legible well beyond the ~8-10 strategies the original side-by-side
+panels were tuned for.
 """
 
 
-# Stable, deterministic strategy -> color mapping shared by every bulk
-# plot, so the same strategy always gets the same color everywhere.
-_STRATEGY_PALETTE = [
-    "#1f77b4", "#FF8C00", "#2ca02c", "#d62728", "#9467bd",
-    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-]
+def _distinct_colors(n: int) -> list[str]:
+    """
+    Generate `n` hex colors that stay visually distinguishable well past
+    the old fixed 10-color palette, which started repeating once plots
+    like the 16-line (DD/PI x alpha) multiplicative-inflation sweep
+    overlaid more strategies than it had colors for. Draws first from
+    matplotlib's qualitative tab20/tab20b/tab20c colormaps (60 swatches
+    designed to be pairwise distinguishable); if more than 60 strategies
+    are ever plotted at once, falls back to additional evenly spaced HSV
+    hues rather than repeating a color.
+    """
+    swatches = []
+    for cmap_name in ("tab20", "tab20b", "tab20c"):
+        swatches.extend(plt.get_cmap(cmap_name).colors)
+    if n > len(swatches):
+        n_extra = n - len(swatches)
+        swatches = swatches + [
+            colorsys.hsv_to_rgb(h, 0.65, 0.85)
+            for h in np.linspace(0.0, 1.0, n_extra, endpoint=False)
+        ]
+    return [mcolors.to_hex(c) for c in swatches[:n]]
+
 
 def _strategy_colors(strategy_keys):
-    return {k: _STRATEGY_PALETTE[i % len(_STRATEGY_PALETTE)]
-            for i, k in enumerate(strategy_keys)}
+    """Stable, deterministic strategy -> color mapping shared by every
+    bulk plot, so the same strategy always gets the same color
+    everywhere, with no repeats up to `_distinct_colors`'s 60-swatch
+    palette (see above)."""
+    palette = _distinct_colors(len(strategy_keys))
+    return {k: palette[i] for i, k in enumerate(strategy_keys)}
 
 
 # ─────────────────────────────────────────────────────────────────────────
 # 2a. EnKF vs open-loop, time-mean relative L2 (already curve-count-
-#     agnostic -- called with S curves)
+#     agnostic -- called with S curves). Shared by both the pairwise
+#     (`plot_comparisons`) and bulk (`plot_comparisons_bulk`) modules.
 # ─────────────────────────────────────────────────────────────────────────
 def _plot_l2_per_timestep(
     curves: dict[str, tuple[np.ndarray, np.ndarray]],  # label -> (t_axis, l2_array)
@@ -1542,24 +1589,47 @@ def _plot_l2_per_timestep(
     save_path: str,
     colors: dict[str, str] | None = None,
 ) -> None:
-    """Plot average L2 error continuously across fine time stamps."""
+    """
+    Plot average L2 error continuously across fine time stamps, as a
+    two-page PDF:
+
+      page 1 -- every curve in `curves` (matches the original behavior).
+      page 2 -- the same plot with the pure-propagator open-loop curves
+        (any label ending in "open-loop", e.g. "dd open-loop") omitted,
+        so the filtered-strategy curves aren't dwarfed by the open-loop
+        curves' much larger error scale. Skipped if there are no
+        open-loop curves to drop.
+    """
     default_colors = ["#2196F3", "#FF5722", "#4CAF50", "#9C27B0"]
-    fig, ax = plt.subplots(figsize=(9, 5.5))
+    open_loop_labels = {label for label in curves if label.endswith("open-loop")}
+    filtered_curves = {k: v for k, v in curves.items() if k not in open_loop_labels}
 
-    for i, (label, (t_axis, l2_arr)) in enumerate(curves.items()):
-        color = (colors or {}).get(label, default_colors[i % len(default_colors)])
-        ax.plot(t_axis, l2_arr, linewidth=1.8, label=label, color=color)
+    def _draw(curve_subset, subtitle):
+        fig, ax = plt.subplots(figsize=(9, 5.5))
+        for i, (label, (t_axis, l2_arr)) in enumerate(curve_subset.items()):
+            color = (colors or {}).get(label, default_colors[i % len(default_colors)])
+            ax.plot(t_axis, l2_arr, linewidth=1.1, label=label, color=color)
 
-    ax.set_yscale("log")
-    ax.set_xlabel("Time (t)", fontsize=12)
-    ax.set_ylabel("Mean relative L2 error (log scale)", fontsize=12)
-    ax.set_title(title, fontsize=13)
-    ax.legend(fontsize=9, ncol=(2 if len(curves) > 5 else 1))
-    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+        ax.set_yscale("log")
+        ax.set_xlabel("Time (t)", fontsize=12)
+        ax.set_ylabel("Mean relative L2 error (log scale)", fontsize=12)
+        ax.set_title(subtitle, fontsize=13)
+        ax.legend(fontsize=9, ncol=(2 if len(curve_subset) > 5 else 1))
+        ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+        fig.tight_layout()
+        return fig
 
-    fig.tight_layout()
-    _save(fig, save_path)
-    logging.info(f"Bulk L2-vs-open-loop comparison plot saved to: {save_path}")
+    figs = [_draw(curves, title)]
+    if open_loop_labels and filtered_curves:
+        figs.append(_draw(
+            filtered_curves,
+            title + "\n(pure-propagator open-loop curves omitted)",
+        ))
+
+    _save_pdf_pages(figs, save_path)
+    logging.info(
+        f"L2-vs-open-loop comparison plot ({len(figs)}-page PDF) saved to: {save_path}"
+    )
 
 # ─────────────────────────────────────────────────────────────────────────
 # 2b. Calibration, ALL strategies on one PDF
@@ -1580,97 +1650,116 @@ def _plot_calibration_bulk(
 ) -> None:
     """
     Single calibration PDF covering every strategy at once:
-      * top-left:  RMS ensemble spread vs window index, all strategies
-      * top-right: EnKF RMSE vs window index, all strategies (shares the
-        y-axis with top-left so the two panels are directly comparable)
-      * bottom:    binned spread-skill scatter, all strategies, pooled
-        over every (IC, window) in the batch
 
-    Splitting spread and RMSE into side-by-side panels (rather than
-    overlaying 2*S lines on one axes, as the pairwise version does)
-    keeps the figure legible as the strategy count grows; every strategy
-    only needs one legend entry since color is shared across both panels.
+      * one small row per strategy, stacked vertically, each pairing
+        that strategy's own RMS ensemble spread and EnKF RMSE
+        (simulation time) on the SAME axes -- S small line plots
+        instead of two "every strategy overlaid" panels, so a given
+        strategy's own spread/RMSE relationship stays legible even when
+        S is large (e.g. the 16-line multiplicative-inflation sweep).
+      * a final row with the pooled binned spread-skill scatter, shown
+        in both linear and log/log axes, side by side.
+
+    The old secondary "simulation time (window x dt)" tick strip is
+    dropped -- with many strategies/windows it just overcrowded the
+    axes; the window-to-time conversion (`dt_window`) is instead
+    reported once, in the figure title.
     """
     S = len(strategy_keys)
-    fig = plt.figure(figsize=(13, 11))
-    gs = gridspec.GridSpec(2, 2, height_ratios=[1, 1.3], hspace=0.42, wspace=0.28)
+    row_h = 1.15
+    bin_row_h = 4.4
+    fig_h = row_h * S + bin_row_h + 1.0
+    fig = plt.figure(figsize=(9.5, fig_h))
+    gs = gridspec.GridSpec(
+        S + 1, 2, height_ratios=[row_h] * S + [bin_row_h], hspace=0.65, wspace=0.3,
+    )
 
-    # -- Top row: spread panel + RMSE panel, side by side ----------------
-    ax_spread = fig.add_subplot(gs[0, 0])
-    ax_rmse = fig.add_subplot(gs[0, 1], sharey=ax_spread)
-
-    for key in strategy_keys:
+    # -- One row per strategy: spread + RMSE paired on the same axes ----
+    ax_prev = None
+    for i, key in enumerate(strategy_keys):
+        ax = fig.add_subplot(gs[i, :], sharex=ax_prev)
+        ax_prev = ax
         c = colors[key]
-        ax_spread.plot(window_idx, spread_window_of[key], marker="^", markersize=4,
-                        linewidth=1.6, color=c, label=label_of[key])
-        ax_rmse.plot(window_idx, rmse_window_of[key], marker="s", markersize=4,
-                      linewidth=1.6, color=c, label=label_of[key])
-
-    for ax, panel_title in ((ax_spread, "RMS ensemble spread"), (ax_rmse, "EnKF RMSE")):
+        ax.plot(window_idx, spread_window_of[key], marker="^", markersize=2.5,
+                 linewidth=1.0, linestyle="-", color=c, label="RMS ensemble σ")
+        ax.plot(window_idx, rmse_window_of[key], marker="o", markersize=2.5,
+                 linewidth=1.0, linestyle="--", color=c, label="EnKF RMSE")
         ax.set_yscale("log")
-        ax.set_xlabel("Window index", fontsize=10)
-        ax.set_title(panel_title, fontsize=11)
-        ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
-    ax_spread.set_ylabel("Log scale", fontsize=10)
-    plt.setp(ax_rmse.get_yticklabels(), visible=False)
+        ax.set_title(label_of[key], fontsize=8, loc="left", pad=2)
+        ax.tick_params(labelsize=7)
+        ax.grid(True, which="both", linestyle="--", linewidth=0.4, alpha=0.5)
+        if i == 0:
+            ax.legend(fontsize=7, ncol=2, loc="upper right", framealpha=0.7)
+            ax.set_ylabel("Spread / RMSE\n(log)", fontsize=6.5)
+        if i < S - 1:
+            plt.setp(ax.get_xticklabels(), visible=False)
+        else:
+            ax.set_xlabel("Window index", fontsize=9)
 
-    # Secondary simulation-time axis, kept on the right panel only so the
-    # top row doesn't carry two redundant tick strips.
-    ax_time = ax_rmse.twiny()
-    ax_time.set_xlim(ax_rmse.get_xlim())
-    ax_time.set_xticks(window_idx)
-    ax_time.set_xticklabels([f"{k * dt_window:.3g}" for k in window_idx],
-                             fontsize=6, rotation=45, ha="left")
-    ax_time.set_xlabel("Simulation time (window x dt)", fontsize=8)
+    # -- Final row: pooled binned spread-skill, linear + log/log --------
+    ax_lin = fig.add_subplot(gs[S, 0])
+    ax_log = fig.add_subplot(gs[S, 1])
 
-    ax_spread.legend(fontsize=8, ncol=(2 if S > 4 else 1), loc="best")
-
-    # -- Bottom: binned spread-skill scatter, all strategies pooled ------
-    ax_bin = fig.add_subplot(gs[1, :])
-
-    binned, lim_hi = {}, 0.0
+    binned = {}
+    lim_hi, lim_lo = 0.0, np.inf
     for key in strategy_keys:
         rmss_b, rmse_b, rmse_s, _ = _binned_spread_skill(
             spread_raw_of[key], rmse_raw_of[key], n_bins)
         binned[key] = (rmss_b, rmse_b, rmse_s)
-        lim_hi = max(lim_hi, float(rmss_b.max()), float(rmse_b.max()))
+        vals = np.concatenate([rmss_b, rmse_b])
+        lim_hi = max(lim_hi, float(vals.max()))
+        pos_vals = vals[vals > 0]
+        if pos_vals.size:
+            lim_lo = min(lim_lo, float(pos_vals.min()))
     lim_hi *= 1.1
-
-    ax_bin.plot([0, lim_hi], [0, lim_hi], linestyle="--", linewidth=1.4,
-                color="#37474F", label="1:1 (perfect calibration)", zorder=1)
+    lim_lo = lim_lo / 1.5 if np.isfinite(lim_lo) else lim_hi * 1e-3
 
     # Error bars get busy fast with many strategies pooled on one axes;
     # fade just the bars/caps as S grows while keeping the trend line and
     # markers fully opaque, so shapes stay readable.
     eb_alpha = max(0.25, 0.9 - 0.12 * S)
-    for key in strategy_keys:
-        rmss_b, rmse_b, rmse_s = binned[key]
-        container = ax_bin.errorbar(
-            rmss_b, rmse_b, yerr=rmse_s, fmt="o-", markersize=5, capsize=2.5,
-            linewidth=1.5, color=colors[key],
-            label=f"{label_of[key]} ({n_bins}-bin)", zorder=3,
-        )
-        for cap in container[1]:
-            cap.set_alpha(eb_alpha)
-        for barcol in container[2]:
-            barcol.set_alpha(eb_alpha)
+    for ax, log_scale in ((ax_lin, False), (ax_log, True)):
+        lo = lim_lo if log_scale else 0.0
+        ax.plot([lo, lim_hi], [lo, lim_hi], linestyle="--", linewidth=1.0,
+                 color="#37474F", label="1:1 (perfect calibration)", zorder=1)
+        for key in strategy_keys:
+            rmss_b, rmse_b, rmse_s = binned[key]
+            container = ax.errorbar(
+                rmss_b, rmse_b, yerr=rmse_s, fmt="o-", markersize=2.5, capsize=1.8,
+                linewidth=1.0, color=colors[key],
+                label=f"{label_of[key]} ({n_bins}-bin)", zorder=3,
+            )
+            for cap in container[1]:
+                cap.set_alpha(eb_alpha)
+            for barcol in container[2]:
+                barcol.set_alpha(eb_alpha)
 
-    ax_bin.set_xlim(0, lim_hi)
-    ax_bin.set_ylim(0, lim_hi)
-    ax_bin.set_xlabel("RMS ensemble spread (RMSS)", fontsize=11)
-    ax_bin.set_ylabel("RMSE of ensemble mean", fontsize=11)
-    ax_bin.set_title(
-        f"Binned spread-skill ({n_bins} equal-population bins, pooled over all "
-        f"ICs x windows) — all strategies", fontsize=12,
+        ax.set_xlabel("RMS ensemble spread (RMSS)", fontsize=10)
+        ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+        if log_scale:
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            ax.set_xlim(lim_lo, lim_hi)
+            ax.set_ylim(lim_lo, lim_hi)
+            ax.set_title(f"Binned spread-skill (log/log, {n_bins}-bin)", fontsize=10.5)
+        else:
+            ax.set_xlim(0, lim_hi)
+            ax.set_ylim(0, lim_hi)
+            ax.set_aspect("equal", adjustable="box")
+            ax.set_title(f"Binned spread-skill (linear, {n_bins}-bin)", fontsize=10.5)
+
+    ax_lin.set_ylabel("RMSE of ensemble mean", fontsize=10)
+    ax_lin.legend(fontsize=6.5, ncol=(2 if S > 4 else 1))
+
+    fig.suptitle(
+        f"{title}\n(window index × dt_window={dt_window:g} = simulation time)",
+        fontsize=13, y=1.0,
     )
-    ax_bin.legend(fontsize=8, ncol=(2 if S > 4 else 1))
-    ax_bin.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
-    ax_bin.set_aspect("equal", adjustable="box")
-
-    fig.suptitle(title, fontsize=13, y=0.995)
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.tight_layout(rect=[0.04, 0, 1, 1 - 0.85 / fig_h])
     _save(fig, save_path)
-    logging.info(f"Bulk calibration plot ({S} strategies) saved to: {save_path}")
+    logging.info(
+        f"Bulk calibration plot ({S} strategies, stacked small-multiples) saved to: {save_path}"
+    )
 
 # ─────────────────────────────────────────────────────────────────────────
 # 2c. Error Reduction Factor, ALL strategies on one PDF
@@ -1699,14 +1788,14 @@ def _plot_erf_bulk(
     for key in strategy_keys:
         c = colors[key]
         mean, std = erf_mean_of[key], erf_std_of[key]
-        ax.plot(obs_times, mean, color=c, linewidth=1.8, marker="o", markersize=3,
+        ax.plot(obs_times, mean, color=c, linewidth=1.1, marker="o", markersize=2.2,
                 label=label_of[key])
         if show_bands:
             ax.fill_between(obs_times, mean - std, mean + std, color=c,
                              alpha=band_alpha, linewidth=0)
 
     ax.set_yscale("log")
-    ax.axhline(y=1.0, color="#37474F", linestyle="--", linewidth=1.4,
+    ax.axhline(y=1.0, color="#37474F", linestyle="--", linewidth=1.1,
                label="ERF = 1  (no reduction)")
 
     ax.set_xlabel("Observation time  t", fontsize=12)
@@ -1741,19 +1830,21 @@ def _plot_rmse_bulk(
 ) -> None:
     """Prior/posterior RMSE for every strategy, split into two side-by-side
     panels (prior, posterior) rather than 2*S lines on one axes; both
-    panels share a y-axis and a single strategy-color legend."""
+    panels share a y-axis and a single strategy-color legend. Both panels
+    use small dot markers (rather than squares) and thin lines so the
+    S-way overlay stays legible."""
     S = len(strategy_keys)
     fig, (ax_prior, ax_post) = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
 
     for key in strategy_keys:
         c = colors[key]
-        ax_prior.plot(obs_times, prior_mean_of[key], color=c, linewidth=1.8,
-                       marker="o", markersize=3, label=label_of[key])
-        ax_post.plot(obs_times, post_mean_of[key], color=c, linewidth=1.8,
-                      marker="s", markersize=3, label=label_of[key])
+        ax_prior.plot(obs_times, prior_mean_of[key], color=c, linewidth=1.1,
+                       marker="o", markersize=2.2, label=label_of[key])
+        ax_post.plot(obs_times, post_mean_of[key], color=c, linewidth=1.1,
+                      marker="o", markersize=2.2, label=label_of[key])
 
     for ax, panel_title in ((ax_prior, "Prior RMSE"), (ax_post, "Posterior RMSE")):
-        ax.axhline(y=sigma_obs, color="#4CAF50", linestyle=":", linewidth=1.6,
+        ax.axhline(y=sigma_obs, color="#4CAF50", linestyle=":", linewidth=1.2,
                    label=f"σ_obs = {sigma_obs}")
         ax.set_yscale("log")
         ax.set_xlabel("Observation time  t", fontsize=11)
@@ -1810,8 +1901,8 @@ def _plot_equilibrium_variance_bulk(
 
     fig, ax = plt.subplots(figsize=(11, 6))
 
-    ax.plot(var_idx, reference_mean, color="#37474F", linewidth=2.4,
-            marker="o", markersize=3, label="Reference (unfiltered truth)", zorder=5)
+    ax.plot(var_idx, reference_mean, color="#37474F", linewidth=1.6,
+            marker="o", markersize=2.2, label="Reference (unfiltered truth)", zorder=5)
     ax.fill_between(var_idx, reference_mean - reference_std, reference_mean + reference_std,
                      color="#37474F", alpha=0.15, linewidth=0, zorder=1)
 
@@ -1819,14 +1910,14 @@ def _plot_equilibrium_variance_bulk(
     for i, prop_key in enumerate(sorted(open_loop_eqvar)):
         rec = open_loop_eqvar[prop_key]
         c = ol_palette[i % len(ol_palette)]
-        ax.plot(var_idx, rec["mean"], color=c, linewidth=1.8, linestyle="--",
-                 marker="^", markersize=3, zorder=4,
+        ax.plot(var_idx, rec["mean"], color=c, linewidth=1.1, linestyle="--",
+                 marker="^", markersize=2.2, zorder=4,
                  label=f"{prop_key} open-loop (static physics)")
 
     for key in strategy_keys:
         c = colors[key]
-        ax.plot(var_idx, eqvar_mean_of[key], color=c, linewidth=1.6,
-                 marker="s", markersize=3, label=label_of[key], zorder=3)
+        ax.plot(var_idx, eqvar_mean_of[key], color=c, linewidth=1.1,
+                 marker="o", markersize=2.2, label=label_of[key], zorder=3)
 
     if log_scale:
         ax.set_yscale("log")
