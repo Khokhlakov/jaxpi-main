@@ -312,6 +312,6 @@ if __name__ == "__main__":
                       N=256,
                       dt=0.02,
                       t_burn=500.0,
-                      max_additions=500,
-                      test_windows=500,
+                      max_additions=300,
+                      test_windows=300,
                       batch_size=25)
