@@ -4,7 +4,7 @@ import jax.numpy as jnp
 def get_config():
     # Config 1 but init weights 10:1 and using causal training
     config = ml_collections.ConfigDict()
-    config.mode = "evaluate_enkf_4_way"
+    config.mode = "run_mult_inflation_sweep"
 
     # Weights & Biases
     # Base for inflation tunning
@@ -71,7 +71,7 @@ def get_config():
     kf.obs_every_n  = 4
 
     kf.sigma_obs       = 0.2
-    kf.P0_sigma        = 0.3
+    kf.P0_sigma        = 0.2
     kf.dynamic_vars    = False 
     kf.batch_l2_size   = 100
 
@@ -82,7 +82,7 @@ def get_config():
     # Multiplicative Inflation
     kf.sigma_model      = 1.0 # window-level 
     kf.inflation_factor = 1.05 # window-level 
-    kf.N_ens            = 90
+    kf.N_ens            = 200
 
     # Route B & Additive Inflation
     kf.route_b_alpha  = 1.0
@@ -110,11 +110,11 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "test_1/ckpt/udon_model"
-    saving.total_plots = 3
+    saving.total_plots = 4
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
-    eval.windows            = 200
+    eval.windows            = 320
     eval.trajectory_windows = 200
     eval.num_ics            = 500
     eval.dt_integration     = 0.005

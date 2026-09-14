@@ -831,14 +831,12 @@ Entry point: `plot_comparisons(h5_path, workdir=None, n_bins=10)`.
 # ─────────────────────────────────────────────────────────────────────────
 # Small shared helpers
 # ─────────────────────────────────────────────────────────────────────────
-
 def _decode(arr):
     """h5py string datasets may come back as bytes; normalize to str."""
     out = []
     for v in arr:
         out.append(v.decode() if isinstance(v, bytes) else str(v))
     return out
-
 
 def _binned_spread_skill(rmss, rmse, n_bins=10):
     """
@@ -866,7 +864,6 @@ def _binned_spread_skill(rmss, rmse, n_bins=10):
     return (np.array(bin_rmss_mean), np.array(bin_rmse_mean),
             np.array(bin_rmse_std), np.array(bin_counts))
 
-
 def _save(fig, save_path, dpi=300):
     os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
     fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
@@ -876,7 +873,6 @@ def _save(fig, save_path, dpi=300):
 # ─────────────────────────────────────────────────────────────────────────
 # 1. Individual-trajectory plot (single strategy vs ground truth)
 # ─────────────────────────────────────────────────────────────────────────
-
 def _plot_trajectory_individual(
     t_ax: np.ndarray,          # (T,)   time axis
     x_true: np.ndarray,        # (T, N) ground-truth state
@@ -1007,7 +1003,6 @@ def _plot_trajectory_individual(
 # ─────────────────────────────────────────────────────────────────────────
 # 2a. EnKF vs open-loop, time-mean relative L2 (one graph, arbitrary #curves)
 # ─────────────────────────────────────────────────────────────────────────
-
 def _plot_l2_per_timestep(
     curves: dict[str, tuple[np.ndarray, np.ndarray]],  # label -> (t_axis, l2_array)
     title: str,
@@ -1037,7 +1032,6 @@ def _plot_l2_per_timestep(
 # ─────────────────────────────────────────────────────────────────────────
 # 2b. Calibration (pairwise): spread-vs-RMSE timeseries + binned scatter
 # ─────────────────────────────────────────────────────────────────────────
-
 def _plot_calibration_pair(
     window_idx: np.ndarray,
     dt_window: float,
@@ -1121,7 +1115,6 @@ def _plot_calibration_pair(
 # ─────────────────────────────────────────────────────────────────────────
 # 2c. Error Reduction Factor (pairwise, one graph)
 # ─────────────────────────────────────────────────────────────────────────
-
 def _plot_erf_pair(
     obs_times: np.ndarray,
     erf_mean_a: np.ndarray, erf_std_a: np.ndarray,
@@ -1163,7 +1156,6 @@ def _plot_erf_pair(
 # ─────────────────────────────────────────────────────────────────────────
 # 2d. Prior vs posterior RMSE (pairwise, one graph, no spread bands)
 # ─────────────────────────────────────────────────────────────────────────
-
 def _plot_rmse_pair(
     obs_times: np.ndarray,
     prior_mean_a: np.ndarray, post_mean_a: np.ndarray,
@@ -1205,7 +1197,6 @@ def _plot_rmse_pair(
 # ─────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────
-
 def plot_comparisons(h5_path: str, workdir: str | None = None, n_bins: int = 10) -> str:
     """
     Reads the HDF5 file written by `evaluate_filters` and generates:
@@ -1406,6 +1397,485 @@ def plot_comparisons(h5_path: str, workdir: str | None = None, n_bins: int = 10)
 
 
 
+# Non pairwise plotting
+"""
+Bulk (all-strategies-at-once) comparison plots for the EnKF / DeepONet
+covariance-inflation evaluation pipeline.
+
+This module is the counterpart to the pairwise `plot_comparisons`: instead
+of one PDF per strategy PAIR per category (4 * C(S, 2) PDFs), it produces
+exactly ONE PDF per category, with every strategy overlaid on it (4 PDFs
+total, regardless of how many strategies S there are).
+
+Individual-trajectory plots are unchanged from the pairwise module -- one
+PDF per (IC, strategy), still S * P PDFs.
+
+Decluttering strategy for the bulk plots
+-----------------------------------------
+Naively overlaying S strategies * 2 metrics (e.g. spread AND RMSE, or
+prior AND posterior RMSE) on one axes gives 2*S lines, which gets messy
+fast. Instead:
+
+  * Calibration and prior/posterior-RMSE panels are split into two
+    side-by-side subplots (one metric each), so each subplot only ever
+    has S lines, all sharing one color-per-strategy legend.
+  * Every strategy gets a single, STABLE color (`_STRATEGY_PALETTE`) that
+    is reused across every panel and every bulk plot, so the reader only
+    has to learn the strategy -> color mapping once.
+  * Legends switch to two columns once there are more than ~4-5
+    strategies, and error-bar / spread-band decorations are progressively
+    faded (or dropped, for ERF bands beyond 4 strategies) as S grows, so
+    the trend lines stay the visually dominant element.
+  * The EnKF-vs-open-loop L2 plot was already curve-count-agnostic in the
+    original code, so it's reused as-is.
+
+This is tuned for up to roughly 8-10 strategies; well beyond that, a
+small-multiples (one mini-panel per strategy) layout would likely read
+better than any single overlaid axes.
+"""
+
+
+# Stable, deterministic strategy -> color mapping shared by every bulk
+# plot, so the same strategy always gets the same color everywhere.
+_STRATEGY_PALETTE = [
+    "#1f77b4", "#FF8C00", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+]
+
+def _strategy_colors(strategy_keys):
+    return {k: _STRATEGY_PALETTE[i % len(_STRATEGY_PALETTE)]
+            for i, k in enumerate(strategy_keys)}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2a. EnKF vs open-loop, time-mean relative L2 (already curve-count-
+#     agnostic -- called with S curves)
+# ─────────────────────────────────────────────────────────────────────────
+def _plot_l2_per_timestep(
+    curves: dict[str, tuple[np.ndarray, np.ndarray]],  # label -> (t_axis, l2_array)
+    title: str,
+    save_path: str,
+    colors: dict[str, str] | None = None,
+) -> None:
+    """Plot average L2 error continuously across fine time stamps."""
+    default_colors = ["#2196F3", "#FF5722", "#4CAF50", "#9C27B0"]
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+
+    for i, (label, (t_axis, l2_arr)) in enumerate(curves.items()):
+        color = (colors or {}).get(label, default_colors[i % len(default_colors)])
+        ax.plot(t_axis, l2_arr, linewidth=1.8, label=label, color=color)
+
+    ax.set_yscale("log")
+    ax.set_xlabel("Time (t)", fontsize=12)
+    ax.set_ylabel("Mean relative L2 error (log scale)", fontsize=12)
+    ax.set_title(title, fontsize=13)
+    ax.legend(fontsize=9, ncol=(2 if len(curves) > 5 else 1))
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+
+    fig.tight_layout()
+    _save(fig, save_path)
+    logging.info(f"Bulk L2-vs-open-loop comparison plot saved to: {save_path}")
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2b. Calibration, ALL strategies on one PDF
+# ─────────────────────────────────────────────────────────────────────────
+def _plot_calibration_bulk(
+    strategy_keys,
+    label_of,
+    window_idx: np.ndarray,
+    dt_window: float,
+    spread_window_of: dict,   # key -> (n_window,) sim-time-mean RMS spread
+    rmse_window_of: dict,     # key -> (n_window,) sim-time-mean EnKF RMSE
+    spread_raw_of: dict,      # key -> raw (IC, window) spread pairs, flattened
+    rmse_raw_of: dict,        # key -> raw (IC, window) RMSE pairs, flattened
+    colors: dict,
+    title: str,
+    save_path: str,
+    n_bins: int = 10,
+) -> None:
+    """
+    Single calibration PDF covering every strategy at once:
+      * top-left:  RMS ensemble spread vs window index, all strategies
+      * top-right: EnKF RMSE vs window index, all strategies (shares the
+        y-axis with top-left so the two panels are directly comparable)
+      * bottom:    binned spread-skill scatter, all strategies, pooled
+        over every (IC, window) in the batch
+
+    Splitting spread and RMSE into side-by-side panels (rather than
+    overlaying 2*S lines on one axes, as the pairwise version does)
+    keeps the figure legible as the strategy count grows; every strategy
+    only needs one legend entry since color is shared across both panels.
+    """
+    S = len(strategy_keys)
+    fig = plt.figure(figsize=(13, 11))
+    gs = gridspec.GridSpec(2, 2, height_ratios=[1, 1.3], hspace=0.42, wspace=0.28)
+
+    # -- Top row: spread panel + RMSE panel, side by side ----------------
+    ax_spread = fig.add_subplot(gs[0, 0])
+    ax_rmse = fig.add_subplot(gs[0, 1], sharey=ax_spread)
+
+    for key in strategy_keys:
+        c = colors[key]
+        ax_spread.plot(window_idx, spread_window_of[key], marker="^", markersize=4,
+                        linewidth=1.6, color=c, label=label_of[key])
+        ax_rmse.plot(window_idx, rmse_window_of[key], marker="s", markersize=4,
+                      linewidth=1.6, color=c, label=label_of[key])
+
+    for ax, panel_title in ((ax_spread, "RMS ensemble spread"), (ax_rmse, "EnKF RMSE")):
+        ax.set_yscale("log")
+        ax.set_xlabel("Window index", fontsize=10)
+        ax.set_title(panel_title, fontsize=11)
+        ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+    ax_spread.set_ylabel("Log scale", fontsize=10)
+    plt.setp(ax_rmse.get_yticklabels(), visible=False)
+
+    # Secondary simulation-time axis, kept on the right panel only so the
+    # top row doesn't carry two redundant tick strips.
+    ax_time = ax_rmse.twiny()
+    ax_time.set_xlim(ax_rmse.get_xlim())
+    ax_time.set_xticks(window_idx)
+    ax_time.set_xticklabels([f"{k * dt_window:.3g}" for k in window_idx],
+                             fontsize=6, rotation=45, ha="left")
+    ax_time.set_xlabel("Simulation time (window x dt)", fontsize=8)
+
+    ax_spread.legend(fontsize=8, ncol=(2 if S > 4 else 1), loc="best")
+
+    # -- Bottom: binned spread-skill scatter, all strategies pooled ------
+    ax_bin = fig.add_subplot(gs[1, :])
+
+    binned, lim_hi = {}, 0.0
+    for key in strategy_keys:
+        rmss_b, rmse_b, rmse_s, _ = _binned_spread_skill(
+            spread_raw_of[key], rmse_raw_of[key], n_bins)
+        binned[key] = (rmss_b, rmse_b, rmse_s)
+        lim_hi = max(lim_hi, float(rmss_b.max()), float(rmse_b.max()))
+    lim_hi *= 1.1
+
+    ax_bin.plot([0, lim_hi], [0, lim_hi], linestyle="--", linewidth=1.4,
+                color="#37474F", label="1:1 (perfect calibration)", zorder=1)
+
+    # Error bars get busy fast with many strategies pooled on one axes;
+    # fade just the bars/caps as S grows while keeping the trend line and
+    # markers fully opaque, so shapes stay readable.
+    eb_alpha = max(0.25, 0.9 - 0.12 * S)
+    for key in strategy_keys:
+        rmss_b, rmse_b, rmse_s = binned[key]
+        container = ax_bin.errorbar(
+            rmss_b, rmse_b, yerr=rmse_s, fmt="o-", markersize=5, capsize=2.5,
+            linewidth=1.5, color=colors[key],
+            label=f"{label_of[key]} ({n_bins}-bin)", zorder=3,
+        )
+        for cap in container[1]:
+            cap.set_alpha(eb_alpha)
+        for barcol in container[2]:
+            barcol.set_alpha(eb_alpha)
+
+    ax_bin.set_xlim(0, lim_hi)
+    ax_bin.set_ylim(0, lim_hi)
+    ax_bin.set_xlabel("RMS ensemble spread (RMSS)", fontsize=11)
+    ax_bin.set_ylabel("RMSE of ensemble mean", fontsize=11)
+    ax_bin.set_title(
+        f"Binned spread-skill ({n_bins} equal-population bins, pooled over all "
+        f"ICs x windows) — all strategies", fontsize=12,
+    )
+    ax_bin.legend(fontsize=8, ncol=(2 if S > 4 else 1))
+    ax_bin.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+    ax_bin.set_aspect("equal", adjustable="box")
+
+    fig.suptitle(title, fontsize=13, y=0.995)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    _save(fig, save_path)
+    logging.info(f"Bulk calibration plot ({S} strategies) saved to: {save_path}")
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2c. Error Reduction Factor, ALL strategies on one PDF
+# ─────────────────────────────────────────────────────────────────────────
+def _plot_erf_bulk(
+    strategy_keys,
+    label_of,
+    obs_times: np.ndarray,
+    erf_mean_of: dict,
+    erf_std_of: dict,
+    colors: dict,
+    n_traj: int,
+    title: str,
+    save_path: str,
+    show_bands: bool | None = None,
+) -> None:
+    """ERF comparison for every strategy on ONE set of axes. +/-1 sigma
+    bands are auto-dropped once there are more than 4 strategies, since
+    overlapping fills stop conveying anything once they stack that deep."""
+    S = len(strategy_keys)
+    if show_bands is None:
+        show_bands = S <= 4
+    band_alpha = 0.15 if S <= 3 else 0.08
+
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+    for key in strategy_keys:
+        c = colors[key]
+        mean, std = erf_mean_of[key], erf_std_of[key]
+        ax.plot(obs_times, mean, color=c, linewidth=1.8, marker="o", markersize=3,
+                label=label_of[key])
+        if show_bands:
+            ax.fill_between(obs_times, mean - std, mean + std, color=c,
+                             alpha=band_alpha, linewidth=0)
+
+    ax.set_yscale("log")
+    ax.axhline(y=1.0, color="#37474F", linestyle="--", linewidth=1.4,
+               label="ERF = 1  (no reduction)")
+
+    ax.set_xlabel("Observation time  t", fontsize=12)
+    ax.set_ylabel("Error Reduction Factor  (prior RMSE / posterior RMSE)", fontsize=11)
+    ax.set_title(f"{title}  (n = {n_traj} trajectories)", fontsize=13)
+    ax.legend(fontsize=8, ncol=(2 if S > 5 else 1))
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+
+    if not show_bands:
+        ax.text(0.99, 0.02, "±1σ bands omitted for legibility (n strategies > 4)",
+                transform=ax.transAxes, fontsize=7.5, ha="right", va="bottom",
+                color="#666666", style="italic")
+
+    fig.tight_layout()
+    _save(fig, save_path)
+    logging.info(f"Bulk ERF plot ({S} strategies) saved to: {save_path}")
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2d. Prior vs posterior RMSE, ALL strategies on one PDF
+# ─────────────────────────────────────────────────────────────────────────
+def _plot_rmse_bulk(
+    strategy_keys,
+    label_of,
+    obs_times: np.ndarray,
+    prior_mean_of: dict,
+    post_mean_of: dict,
+    sigma_obs: float,
+    n_traj: int,
+    colors: dict,
+    title: str,
+    save_path: str,
+) -> None:
+    """Prior/posterior RMSE for every strategy, split into two side-by-side
+    panels (prior, posterior) rather than 2*S lines on one axes; both
+    panels share a y-axis and a single strategy-color legend."""
+    S = len(strategy_keys)
+    fig, (ax_prior, ax_post) = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
+
+    for key in strategy_keys:
+        c = colors[key]
+        ax_prior.plot(obs_times, prior_mean_of[key], color=c, linewidth=1.8,
+                       marker="o", markersize=3, label=label_of[key])
+        ax_post.plot(obs_times, post_mean_of[key], color=c, linewidth=1.8,
+                      marker="s", markersize=3, label=label_of[key])
+
+    for ax, panel_title in ((ax_prior, "Prior RMSE"), (ax_post, "Posterior RMSE")):
+        ax.axhline(y=sigma_obs, color="#4CAF50", linestyle=":", linewidth=1.6,
+                   label=f"σ_obs = {sigma_obs}")
+        ax.set_yscale("log")
+        ax.set_xlabel("Observation time  t", fontsize=11)
+        ax.set_title(panel_title, fontsize=12)
+        ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+    ax_prior.set_ylabel("RMSE  (log scale)", fontsize=11)
+    plt.setp(ax_post.get_yticklabels(), visible=False)
+
+    ax_prior.legend(fontsize=8, ncol=(2 if S > 4 else 1))
+
+    fig.suptitle(f"{title}  (n = {n_traj} trajectories)", fontsize=13, y=1.0)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    _save(fig, save_path)
+    logging.info(f"Bulk prior/posterior RMSE plot ({S} strategies) saved to: {save_path}")
+
+# ─────────────────────────────────────────────────────────────────────────
+# Main entry point
+# ─────────────────────────────────────────────────────────────────────────
+def plot_comparisons_bulk(h5_path: str, workdir: str | None = None, n_bins: int = 10) -> str:
+    """
+    Reads the HDF5 file written by `evaluate_filters` and generates:
+
+      * one individual-trajectory PDF per (IC, strategy) -- S * P PDFs
+        for S strategies and P trajectory ICs (unchanged from
+        `plot_comparisons`),
+      * exactly FOUR batch-comparison PDFs total, each overlaying every
+        strategy at once: calibration (3-panel), ERF, EnKF-vs-open-loop
+        L2, and prior/posterior RMSE.
+
+    This is the "all strategies on one plot" counterpart to
+    `plot_comparisons`, which instead writes 4 * C(S, 2) pairwise PDFs.
+
+    Output layout (under ``workdir/figures/comparisons_bulk/``):
+
+        individual_trajectories/trajectory_ic_<i>_<strategy_key>.pdf
+        calibration_all.pdf
+        erf_all.pdf
+        l2_all.pdf
+        rmse_all.pdf
+
+    Parameters
+    ----------
+    h5_path : path to the HDF5 file written by `evaluate_filters`.
+    workdir : base directory for outputs; defaults to the HDF5 file's
+        parent directory.
+    n_bins  : number of equal-population bins for the calibration
+        binned spread-skill scatter.
+
+    Returns the path of the ``figures/comparisons_bulk`` directory written.
+    """
+    if workdir is None:
+        workdir = os.path.dirname(os.path.abspath(h5_path))
+
+    save_dir = os.path.join(workdir, "figures", "comparisons_bulk")
+    indiv_dir = os.path.join(save_dir, "individual_trajectories")
+    os.makedirs(indiv_dir, exist_ok=True)
+
+    with h5py.File(h5_path, "r") as f:
+        meta = f["meta"]
+        N = int(meta.attrs["N"])
+        dt_window = float(meta.attrs["dt_window"])
+        obs_every_n = int(meta.attrs["obs_every_n"])
+        sigma_obs = float(meta.attrs["sigma_obs"])
+        N_ens = int(meta.attrs["N_ens"])
+        num_ics_traj = int(meta.attrs["num_ics_traj"])
+
+        strategy_keys = _decode(meta["strategy_keys"][:])
+        strategy_labels = _decode(meta["strategy_labels"][:])
+        strategy_propagator = _decode(meta["strategy_propagator"][:])
+        label_of = dict(zip(strategy_keys, strategy_labels))
+        propagator_of = dict(zip(strategy_keys, strategy_propagator))
+        colors = _strategy_colors(strategy_keys)
+
+        S = len(strategy_keys)
+        if S < 2:
+            logging.warning(
+                "plot_comparisons_bulk: fewer than 2 strategies found in "
+                f"{h5_path}; individual-trajectory plots will still be "
+                "written, but no bulk comparison PDFs will be generated."
+            )
+
+        t_fine_traj = f["trajectories/t_fine"][:]
+
+        # ── 1. Individual-trajectory PDFs: one per (IC, strategy) ───────
+        n_traj_pdfs = 0
+        for ic_idx in range(num_ics_traj):
+            ic_grp = f[f"trajectories/ic_{ic_idx}"]
+            F_val = float(ic_grp.attrs["F"])
+            x_true = ic_grp["x_true"][:]
+            obs_coords_raw = ic_grp["obs_coords"][:]
+            obs_coords = list(map(tuple, obs_coords_raw)) if obs_coords_raw.size else []
+
+            for key in strategy_keys:
+                sg = ic_grp[f"strategies/{key}"]
+                x_est = sg["x_est"][:]
+                x_std = sg["x_std"][:]
+                l2_time_avg = float(sg.attrs["l2_time_avg"])
+
+                save_path = os.path.join(indiv_dir, f"trajectory_ic_{ic_idx}_{key}.pdf")
+                _plot_trajectory_individual(
+                    t_ax=t_fine_traj, x_true=x_true, x_est=x_est, x_std=x_std,
+                    ic_idx=ic_idx, F_val=F_val, strategy_label=label_of[key],
+                    l2_time_avg=l2_time_avg, save_path=save_path,
+                    N=N, dt_window=dt_window, obs_coords=obs_coords,
+                )
+                n_traj_pdfs += 1
+
+        logging.info(
+            f"plot_comparisons_bulk: wrote {n_traj_pdfs} individual trajectory "
+            f"PDFs ({num_ics_traj} ICs x {S} strategies) to {indiv_dir}"
+        )
+
+        # ── 2. Batch data needed for the bulk comparisons ────────────────
+        batch = f["batch"]
+        B = int(batch.attrs["B"])
+        obs_times_batch = batch["obs_times"][:]
+        window_idx = batch["window_idx"][:]
+        t_dense_fine = batch["t_dense_fine"][:]
+
+        batch_fields = (
+            "prior_rmse_mean", "post_rmse_mean", "erf_mean", "erf_std",
+            "rmse_window_mean", "spread_window_mean", "rmse_raw", "spread_raw",
+            "l2_dense_mean",
+        )
+        batch_strat = {}
+        for key in strategy_keys:
+            sg = batch[f"strategies/{key}"]
+            batch_strat[key] = {field: sg[field][:] for field in batch_fields}
+
+        open_loop = {}
+        if "open_loop" in batch:
+            for prop_key in batch["open_loop"]:
+                og = batch[f"open_loop/{prop_key}"]
+                open_loop[prop_key] = dict(t=og["t"][:], l2_dense_mean=og["l2_dense_mean"][:])
+
+    if S < 2:
+        return save_dir
+
+    # ── 3. Four bulk comparison PDFs, every strategy overlaid on each ───
+    _plot_calibration_bulk(
+        strategy_keys=strategy_keys, label_of=label_of,
+        window_idx=window_idx, dt_window=dt_window,
+        spread_window_of={k: batch_strat[k]["spread_window_mean"] for k in strategy_keys},
+        rmse_window_of={k: batch_strat[k]["rmse_window_mean"] for k in strategy_keys},
+        spread_raw_of={k: batch_strat[k]["spread_raw"] for k in strategy_keys},
+        rmse_raw_of={k: batch_strat[k]["rmse_raw"] for k in strategy_keys},
+        colors=colors,
+        title=(
+            f"Calibration: ensemble spread vs RMSE — all strategies\n"
+            f"(B={B} trajectories, N_ens={N_ens})"
+        ),
+        save_path=os.path.join(save_dir, "calibration_all.pdf"),
+        n_bins=n_bins,
+    )
+
+    _plot_erf_bulk(
+        strategy_keys=strategy_keys, label_of=label_of,
+        obs_times=obs_times_batch,
+        erf_mean_of={k: batch_strat[k]["erf_mean"] for k in strategy_keys},
+        erf_std_of={k: batch_strat[k]["erf_std"] for k in strategy_keys},
+        colors=colors, n_traj=B,
+        title=(
+            f"EnKF Error Reduction Factor per observation time — all strategies\n"
+            f"(N_ens={N_ens}, obs every {obs_every_n}th var, σ_obs={sigma_obs})"
+        ),
+        save_path=os.path.join(save_dir, "erf_all.pdf"),
+    )
+
+    curves, curve_colors = {}, {}
+    used_props = sorted({propagator_of[k] for k in strategy_keys})
+    ol_palette = ["#B0BEC5", "#78909C", "#546E7A"]
+    for i, prop_key in enumerate(used_props):
+        if prop_key in open_loop:
+            lbl = f"{prop_key} open-loop"
+            curves[lbl] = (open_loop[prop_key]["t"], open_loop[prop_key]["l2_dense_mean"])
+            curve_colors[lbl] = ol_palette[i % len(ol_palette)]
+    for key in strategy_keys:
+        curves[label_of[key]] = (t_dense_fine, batch_strat[key]["l2_dense_mean"])
+        curve_colors[label_of[key]] = colors[key]
+
+    _plot_l2_per_timestep(
+        curves=curves,
+        title=f"EnKF vs open-loop: mean relative L2 per timestep — all strategies  (B={B})",
+        save_path=os.path.join(save_dir, "l2_all.pdf"),
+        colors=curve_colors,
+    )
+
+    _plot_rmse_bulk(
+        strategy_keys=strategy_keys, label_of=label_of,
+        obs_times=obs_times_batch,
+        prior_mean_of={k: batch_strat[k]["prior_rmse_mean"] for k in strategy_keys},
+        post_mean_of={k: batch_strat[k]["post_rmse_mean"] for k in strategy_keys},
+        sigma_obs=sigma_obs, n_traj=B, colors=colors,
+        title=(
+            f"EnKF prior vs posterior RMSE — all strategies\n"
+            f"(N_ens={N_ens}, obs every {obs_every_n}th var, σ_obs={sigma_obs})"
+        ),
+        save_path=os.path.join(save_dir, "rmse_all.pdf"),
+    )
+
+    logging.info(
+        f"plot_comparisons_bulk: wrote 4 bulk comparison PDFs "
+        f"({S} strategies each) to {save_dir}"
+    )
+    return save_dir
+
+
 
 """
 Run the classic 3-way EnKF comparison
@@ -1594,3 +2064,240 @@ def run_4way_comparison(config, workdir: str, test_h5_path: str | None = None, n
     logging.info(f"  wrote figures to {save_dir}")
 
     return save_dir
+
+
+"""
+Run a Mult.-inflation-factor calibration sweep: DD vs PI propagator
+
+    For every value `alpha` in `config.kf.inflation_factor_list`, and for
+    each of the two propagators (data-driven "dd", physics-informed
+    "pi"), evaluate:
+
+        DD propagator + Multiplicative inflation @ alpha
+        PI propagator + Multiplicative inflation @ alpha
+
+    using the same two-stage modular pipeline (`evaluate_filters` +
+    `plot_comparisons`) as `run_3way_comparison` / `run_4way_comparison`.
+    Unlike those, the inflation *scheme* is held fixed (multiplicative
+    only); instead we sweep the inflation *factor* itself, crossed with
+    the DD/PI propagator choice, so the comparison isolates calibration
+    of alpha before moving on to the other inflation schemes (Route B,
+    additive, RTPP).
+
+    `evaluate_filters`'s `strategies=None` fallback only knows how to
+    build the historical DD-mult / PI-mult / PI-RouteB 3-way set at a
+    single hardcoded alpha, so this function builds its own
+    strategy/propagator set via `build_mult_sweep_strategies` and passes
+    it in explicitly (along with the `t_star_window` that set was built
+    against, since `evaluate_filters` only computes that itself on the
+    None/None fallback path).
+
+Choosing `config.kf.inflation_factor_list`
+--------------------------------------------
+    Multiplicative inflation factors near 1.0 correspond to (almost) no
+    correction to ensemble spread; values too small risk ensemble
+    collapse / filter divergence over a long smoother window, values too
+    large needlessly inflate the posterior and hurt RMSE. Standard
+    operational EnKF practice keeps this factor in roughly the
+    [1.00, 1.30] range, with the tuned optimum depending on N_ens, model
+    error, and observation density.
+
+    Since this codebase already defaults the earlier single-value knob
+    `inflation_factor` to 1.05, a reasonable first-pass coarse grid
+    bracketing that default is:
+
+        config.kf.inflation_factor_list = [
+            1.00, 1.02, 1.04, 1.06, 1.08, 1.10, 1.15, 1.20, 1.30,
+        ]
+
+    (1.00 is included as a no-inflation control.) Once this coarse sweep
+    identifies an approximate optimum (e.g. by RMSE / calibration on the
+    held-out window), re-run a finer sweep bracketing that value, e.g.
+    `np.linspace(best - 0.03, best + 0.03, 7)`.
+
+A note on plot_comparisons and sweep size
+------------------------------------------
+    `plot_comparisons` (as used by the 3-way/4-way runs) plots every
+    pairwise combination of strategies. That's fine for 3 or 4 strategies
+    (3 or 6 pairs), but this sweep produces
+    `2 * len(inflation_factor_list)` strategies -- e.g. 9 alphas x 2
+    propagators = 18 strategies = C(18, 2) = 153 pairs, x4 metric types.
+    That's a lot of not-very-useful pairwise PDFs. Two options, depending
+    on what `plot_comparisons` actually supports internally:
+      (a) keep `inflation_factor_list` short (3-5 values) for the first
+          pass so the pairwise grid stays legible, and widen it only for
+          a final confirmation run around the winner;
+      (b) write a dedicated "metric vs alpha" summary-curve plot (one
+          line per propagator) that reads the same output HDF5 -- much
+          more directly useful for calibration than pairwise comparisons,
+          but not included here since it needs to match
+          `evaluate_filters`'s HDF5 schema, which wasn't provided. Happy
+          to add this if you share that schema / `plot_comparisons`'s
+          signature.
+
+CLI usage
+---------
+    python run_mult_inflation_sweep.py \\
+        --config=configs/your_config.py \\
+        --workdir=./results/my_run
+
+Programmatic usage
+-------------------
+    from run_mult_inflation_sweep import run_mult_inflation_sweep
+    save_dir = run_mult_inflation_sweep(config, workdir)
+
+Outputs
+-------
+    <workdir>/<config.wandb.name>.h5                      -- evaluate_filters
+    <workdir>/figures/comparisons/individual_trajectories/ -- per-(IC, strategy) PDFs
+    <workdir>/figures/comparisons/calibration_*_vs_*.pdf   -- one pair per
+    <workdir>/figures/comparisons/erf_*_vs_*.pdf              (strategy_a, strategy_b)
+    <workdir>/figures/comparisons/l2_*_vs_*.pdf                combination -- see
+    <workdir>/figures/comparisons/rmse_*_vs_*.pdf               note above on size
+"""
+
+
+def build_mult_sweep_strategies(config, N_ens, alpha_coarse_list, steps_per_window):
+    """
+    Builds a DD+Mult / PI+Mult inflation-factor sweep strategy set, all
+    sharing two propagators -- the DD and PI checkpoints named in
+    `config.wandb.name_dd` / `config.wandb.name_pi` (mirroring the
+    `name_pi` field used by `build_default_4way_strategies`; adjust the
+    `name_dd` lookup below if your config uses a different key) -- with
+    one strategy pair per value in `alpha_coarse_list`:
+
+        dd_mult_a<tag> -- DD propagator + multiplicative inflation at
+                          alpha_coarse_list[i] (converted internally to
+                          the fine-step-scaled `alpha_fine`).
+        pi_mult_a<tag> -- same, PI propagator.
+
+    Unlike `build_default_4way_strategies` (which builds one
+    predict_fn/update_fn pair per *scheme*), here `predict_fn`/`update_fn`
+    are built ONCE per propagator: multiplicative inflation doesn't
+    change the EnKF closure itself, only the `alpha_fine` scalar carried
+    alongside it in the strategy dict. So the sweep is cheap -- no extra
+    model calls or checkpoint loads per alpha, just extra strategy dict
+    entries reusing the same two closures.
+
+    Returns (strategies, propagators, N, t_star_window).
+    """
+    dt_window = float(config.get("dt_window", 0.25))
+    dt_integration = config.eval.get("dt_integration", 0.005)
+    time_steps = int(round(dt_window / dt_integration)) + 1
+    t_star_window = jnp.linspace(0.0, dt_window, time_steps)
+
+    logging.info("Loading DD model...")
+    model_dd = models.L96UDON(config, t_star_window)
+    ckpt_path_dd = os.path.join(os.getcwd(), config.wandb.name_dd, "ckpt", "udon_model")
+    model_dd.state = restore_checkpoint(model_dd.state, ckpt_path_dd)
+    params_dd = model_dd.state.params
+
+    logging.info("Loading PI model...")
+    model_pi = models.L96UDON(config, t_star_window)
+    ckpt_path_pi = os.path.join(os.getcwd(), config.wandb.name_pi, "ckpt", "udon_model")
+    model_pi.state = restore_checkpoint(model_pi.state, ckpt_path_pi)
+    params_pi = model_pi.state.params
+
+    N = model_pi.N
+    assert model_dd.N == N, (
+        f"DD checkpoint state dim ({model_dd.N}) != PI checkpoint state "
+        f"dim ({N}); can't share a strategy/propagator set across them."
+    )
+
+    predict_fn_dd, update_fn_dd = model_dd.make_enkf_fns(params_dd, N_ens=N_ens)
+    predict_fn_pi, update_fn_pi = model_pi.make_enkf_fns(params_pi, N_ens=N_ens)
+
+    strategies = []
+    for alpha_coarse in alpha_coarse_list:
+        alpha_fine = scale_inflation_for_fine_steps(alpha_coarse, steps_per_window)
+        tag = f"{alpha_coarse:g}".replace(".", "p")
+
+        strategies.append(dict(
+            key=f"dd_mult_a{tag}",
+            label=f"DD + Mult. Infl. (\u03b1={alpha_coarse:g})",
+            kind="standard", propagator="dd",
+            predict_fn=predict_fn_dd, update_fn=update_fn_dd,
+            alpha_fine=alpha_fine,
+        ))
+        strategies.append(dict(
+            key=f"pi_mult_a{tag}",
+            label=f"PI + Mult. Infl. (\u03b1={alpha_coarse:g})",
+            kind="standard", propagator="pi",
+            predict_fn=predict_fn_pi, update_fn=update_fn_pi,
+            alpha_fine=alpha_fine,
+        ))
+
+    propagators = {
+        "dd": (model_dd, params_dd),
+        "pi": (model_pi, params_pi),
+    }
+    return strategies, propagators, N, t_star_window
+
+def run_mult_inflation_sweep(config, workdir: str, test_h5_path: str | None = None, n_bins: int = 10) -> str:
+    """
+    Runs the DD-Mult / PI-Mult multiplicative-inflation-factor sweep --
+    one calibration pass per value in `config.kf.inflation_factor_list`,
+    crossed with the DD and PI propagators -- and writes every comparison
+    figure.
+
+    Returns the path of the `figures/comparisons` directory written by
+    `plot_comparisons`.
+    """
+    os.makedirs(workdir, exist_ok=True)
+
+    # ── EnKF / inflation configuration ──
+    N_ens = config.kf.get("N_ens", 50)
+    alpha_coarse_list = list(config.kf.get(
+        "inflation_factor_list",
+        [1.00, 1.02, 1.04, 1.06, 1.08, 1.10, 1.15, 1.20, 1.30],  # see module docstring
+    ))
+    if len(alpha_coarse_list) == 0:
+        raise ValueError("config.kf.inflation_factor_list is empty.")
+    if not all(a > 0 for a in alpha_coarse_list):
+        raise ValueError(
+            f"config.kf.inflation_factor_list must be strictly positive, got {alpha_coarse_list}"
+        )
+
+    DT_WINDOW = float(config.get("dt_window", 0.25))
+    DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
+    steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
+
+    n_strategies = 2 * len(alpha_coarse_list)
+    logging.info(
+        f"Building Mult.-inflation sweep strategy set: DD+Mult / PI+Mult "
+        f"x {len(alpha_coarse_list)} inflation factor(s) "
+        f"({alpha_coarse_list}) -> {n_strategies} strategies ..."
+    )
+    if n_strategies > 8:
+        logging.warning(
+            f"{n_strategies} strategies -> plot_comparisons will draw "
+            f"C({n_strategies}, 2) = {n_strategies * (n_strategies - 1) // 2} "
+            "pairwise comparisons per metric. Consider a shorter "
+            "inflation_factor_list for a first pass (see module docstring)."
+        )
+
+    strategies, propagators, N, t_star_window = build_mult_sweep_strategies(
+        config, N_ens, alpha_coarse_list, steps_per_window,
+    )
+
+    logging.info(
+        f"Stage 1/2: evaluate_filters — running {len(strategies)} DD/PI x "
+        "alpha strategies on shared data and writing the results HDF5 ..."
+    )
+    h5_path = evaluate_filters(
+        config=config,
+        workdir=workdir,
+        strategies=strategies,
+        propagators=propagators,
+        t_star_window=t_star_window,
+        test_h5_path=test_h5_path,
+    )
+    logging.info(f"  wrote {h5_path}")
+
+    logging.info(f"Stage 2/2: plot_comparisons — reading {h5_path} and writing figures ...")
+    save_dir = plot_comparisons_bulk(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
+    logging.info(f"  wrote figures to {save_dir}")
+
+    return save_dir
+
+
