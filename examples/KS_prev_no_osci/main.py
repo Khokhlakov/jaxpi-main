@@ -49,7 +49,7 @@ def main(argv):
         eval.evaluate_enkf_dd_vs_pi_vs_num(FLAGS.config, FLAGS.workdir)
 
     elif FLAGS.config.mode == "train_and_evaluate_hybrid":
-        eval.train_and_evaluate_hybrid(FLAGS.config, FLAGS.workdir)
+        train.train_and_evaluate_hybrid(FLAGS.config, FLAGS.workdir)
 
     
 
