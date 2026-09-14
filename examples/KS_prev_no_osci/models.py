@@ -485,3 +485,97 @@ class KSUDONEvaluator_DD(BaseEvaluator):
             self.log_preds(state.params, u_ref_batch[0])
 
         return self.log_dict
+
+
+# ---------------------------------------------------------------------------
+# Hybrid: Physics-Informed + Data-Driven
+# ---------------------------------------------------------------------------
+class KSUDON_Hybrid(KSUDON):
+    """Physics-informed + data-driven DeepONet for the 1D KS equation.
+
+    Combines KSUDON's two physics-informed loss terms with KSUDON_DD's
+    supervised data loss into a single 3-term loss:
+        • "ics"       -- IC loss        (KSUDON.losses,    from the PI sub-batch)
+        • "res"       -- residual loss  (KSUDON.losses,    from the PI sub-batch)
+        • "data_loss" -- supervised MSE (KSUDON_DD.losses, from the DD sub-batch)
+
+    All physics machinery (solver, x_net, r_net, res_and_w,
+    compute_l2_error, x_pred_fn/r_pred_fn/r_grid_fn,
+    make_surrogate_propagator, make_ekf_fns, make_enkf_fns) is inherited
+    unchanged from KSUDON -- the architecture and the underlying ODE
+    right-hand side don't change here, only the loss does.
+
+    `losses`/`step` expect the batch produced by
+    `train.train_and_evaluate_hybrid`'s sampler:
+        (batch_u_pi, batch_t_pi, batch_u_dd, batch_t_dd, batch_x_dd)
+
+    Note: config.weighting.init_weights (and grad_norm/ntk state) needs
+    entries for all three keys -- "ics", "res", "data_loss" -- since that's
+    what `losses` now returns.
+    """
+
+    def __init__(self, config, t_star, L: float = 64.0, N: int = 256, dt: float = 0.02):
+        super().__init__(config, t_star, L=L, N=N, dt=dt)
+
+    @partial(jit, static_argnums=(0,))
+    def losses(self, params, batch):
+        # batch: (batch_u_pi, batch_t_pi, batch_u_dd, batch_t_dd, batch_x_dd)
+        batch_u_pi, batch_t_pi, batch_u_dd, batch_t_dd, batch_x_dd = batch
+        batch_t_pi = batch_t_pi.reshape(-1)
+        batch_t_dd = batch_t_dd.reshape(-1)
+
+        # -- IC loss (identical to KSUDON.losses) ----------------------------
+        x_pred_ic = vmap(self.x_net, (None, 0, None))(params, batch_u_pi, self.t0)
+        ics_loss = jnp.mean((batch_u_pi - x_pred_ic) ** 2)
+
+        # -- Residual loss (identical to KSUDON.losses) ----------------------
+        pi_batch = (batch_u_pi, batch_t_pi)
+        if self.config.weighting.use_causal == True:
+            l, w = self.res_and_w(params, pi_batch)
+            res_loss = jnp.mean(l * w)
+        elif self.config.training.use_cartesian_prod == True:
+            r_pred = self.r_grid_fn(params, batch_u_pi, batch_t_pi)
+            res_loss = jnp.mean(r_pred ** 2)
+        else:
+            r_pred = vmap(self.r_net, (None, 0, 0))(params, batch_u_pi, batch_t_pi)
+            res_loss = jnp.mean(r_pred ** 2)
+
+        # -- Data loss (identical to KSUDON_DD.losses) ------------------------
+        x_pred_dd = vmap(self.x_net, (None, 0, 0))(params, batch_u_dd, batch_t_dd)
+        data_loss = jnp.mean((x_pred_dd - batch_x_dd) ** 2)
+
+        loss_dict = {"ics": ics_loss, "res": res_loss, "data_loss": data_loss}
+        return loss_dict
+
+
+class KSUDONEvaluator_Hybrid(KSUDONEvaluator):
+    """Evaluator for KSUDON_Hybrid.
+
+    `log_errors`/`log_preds` are reused unchanged from `KSUDONEvaluator`
+    (the rollout evaluation against x_ref_eval doesn't depend on how the
+    model was trained). `__call__` is overridden only because the
+    causal-weight branch needs the PI sub-batch, not the full 5-tuple
+    hybrid batch.
+    """
+
+    def __call__(self, state, batch, u_ref_batch, x_ref_batch):
+        # BaseEvaluator.__call__ logs self.model.losses(params, batch), and
+        # KSUDON_Hybrid.losses already knows how to unpack the full 5-tuple
+        # hybrid batch -- call it directly here (skip
+        # KSUDONEvaluator.__call__, which assumes a 2-tuple batch below).
+        self.log_dict = BaseEvaluator.__call__(self, state, batch)
+
+        # Causal weights are only defined over the residual loss, so slice
+        # out just the physics-informed part of the batch for them.
+        if self.config.weighting.use_causal:
+            batch_u_pi, batch_t_pi, *_dd_batch = batch
+            _, causal_weight = self.model.res_and_w(state.params, (batch_u_pi, batch_t_pi))
+            self.log_dict["cas_weight"] = causal_weight.min()
+
+        if self.config.logging.log_errors:
+            self.log_errors(state.params, u_ref_batch, x_ref_batch)
+
+        if self.config.logging.log_preds:
+            self.log_preds(state.params, u_ref_batch[0])
+
+        return self.log_dict

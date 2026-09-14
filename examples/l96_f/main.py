@@ -53,6 +53,11 @@ def main(argv):
 
     elif FLAGS.config.mode == "evaluate_enkf_4_way":
         eval.run_4way_comparison(FLAGS.config, FLAGS.workdir)
+
+    elif FLAGS.config.mode == "run_mult_inflation_sweep":
+            eval.run_mult_inflation_sweep(FLAGS.config, FLAGS.workdir)
+
+    
     
     
     

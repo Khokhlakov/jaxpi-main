@@ -170,7 +170,6 @@ def train_and_evaluate(config, workdir: str):
 
     return model
 
-
 # ---------------------------------------------------------------------------
 # Data-Driven (DD) branch
 # ---------------------------------------------------------------------------
@@ -313,6 +312,243 @@ def train_and_evaluate_dd(config, workdir: str):
                     or (step + 1) == config.training.max_steps):
                 ckpt_path = os.path.join(
                     os.getcwd(), config.wandb.name, "ckpt", "ks_udon_dd_model"
+                )
+                save_checkpoint(
+                    model.state, ckpt_path, keep=config.saving.num_keep_ckpts
+                )
+
+    return model
+
+# ---------------------------------------------------------------------------
+# Hybrid branch -- Physics-Informed + Data-Driven
+# ---------------------------------------------------------------------------
+def train_and_evaluate_hybrid(config, workdir: str):
+    """Trains a KSUDON DeepONet on a 3-term loss: ic_loss + res_loss (the PI
+    terms from `train_and_evaluate`) plus data_loss (the DD term from
+    `train_and_evaluate_dd`).
+
+    The physics-informed terms (ic_loss, res_loss) use the *same* amount of
+    data as `train_and_evaluate` -- the full IC pool from ks_train_data.h5.
+    The data term (data_loss) only uses a fraction of ks_train_data_dd.h5,
+    controlled by `config.training.dd_data_percentage` (defaults to 0.1,
+    i.e. 10%).
+
+    Expects a hybrid model in models.py (e.g. `KSUDON_Hybrid` /
+    `KSUDONEvaluator_Hybrid`) whose `step`/evaluator accept a 5-tuple batch
+    `(batch_u_pi, batch_t_pi, batch_u_dd, batch_t_dd, batch_x_dd)` and
+    internally combine:
+        • ic_loss   -- same as KSUDON,    from (batch_u_pi, t=0)
+        • res_loss  -- same as KSUDON,    from (batch_u_pi, batch_t_pi)
+        • data_loss -- same as KSUDON_DD, from (batch_u_dd, batch_t_dd, batch_x_dd)
+    into a single weighted total loss, exactly as KSUDON / KSUDON_DD already
+    do internally for their own two- and one-term losses respectively.
+    """
+
+    # ── W&B ────────────────────────────────────────────────────────────────
+    wandb.init(project=config.wandb.project, name=config.wandb.name)
+
+    # ── Load PI dataset (physics-informed IC pool) -- unchanged, full pool ──
+    train_file_pi = "data/ks_train_data.h5"
+    test_file     = "data/ks_test_data.h5"
+
+    with h5py.File(train_file_pi, 'r') as f_train:
+        # u_pool contains states pooled across all trajectories and windows.
+        # Shape: (num_samples * (max_additions + 1), N) -> [N spatial grid pts]
+        u_pool_np = np.array(f_train['u'][:])
+        L  = float(f_train.attrs["L"])
+        N  = int(f_train.attrs["N"])
+        dt = float(f_train.attrs["dt"])
+
+    with h5py.File(test_file, 'r') as f_test:
+        # Dense test trajectories. Shape: (num_samples, test_windows*interval_steps + 1, N)
+        x_ref_eval_all = jnp.array(f_test['u'][:])
+
+    # gen_data.py always defines a single training "window" as 1.0
+    # (normalized) time unit -> interval_steps = round(1.0 / dt) fine steps.
+    interval_steps = int(round(1.0 / dt))
+    time_steps     = interval_steps + 1  # points per window, including the IC
+
+    # ── Reference data (used only for eval logging during training) ────────
+    trajs_per_window = min(100, x_ref_eval_all.shape[0])
+
+    t_star = jnp.arange(time_steps, dtype=jnp.float32) * dt
+
+    x_ref_eval = x_ref_eval_all[0:trajs_per_window, 0:time_steps, :]  # (trajs, time_steps, N)
+    u_ref_eval = x_ref_eval_all[0:trajs_per_window, 0, :]             # (trajs, N)
+
+    logging.info("L2 dataset imported:")
+    logging.info(f"x_ref_eval: {x_ref_eval.shape}")
+    logging.info(f"u_ref_eval (Branch Input): {u_ref_eval.shape}")
+    logging.info(f"t_star: {t_star.shape}")
+
+    # ── Load DD dataset (data-driven windows), then subsample a percentage ──
+    train_file_dd = "data/ks_train_data_dd.h5"
+
+    with h5py.File(train_file_dd, 'r') as f_train_dd:
+        train_data_dd_np  = np.array(f_train_dd['u'][:])              # (num_windows, num_t, N)
+        L_dd              = float(f_train_dd.attrs["L"])
+        N_dd              = int(f_train_dd.attrs["N"])
+        dt_dd             = float(f_train_dd.attrs["dt"])
+        interval_steps_dd = int(f_train_dd.attrs["interval_steps"])   # pts per window (excl. IC)
+
+    assert N_dd == N, (
+        f"ks_train_data_dd.h5 spatial resolution ({N_dd}) does not match "
+        f"ks_train_data.h5 ({N})."
+    )
+    assert abs(L_dd - L) < 1e-9, (
+        f"ks_train_data_dd.h5 domain length ({L_dd}) does not match ks_train_data.h5 ({L})."
+    )
+    assert abs(dt_dd - dt) < 1e-12, (
+        f"ks_train_data_dd.h5 dt ({dt_dd}) does not match ks_train_data.h5 dt ({dt})."
+    )
+    assert interval_steps_dd == interval_steps, (
+        f"ks_train_data_dd.h5 window length ({interval_steps_dd} steps) does not match "
+        f"ks_train_data.h5's implied window length ({interval_steps} steps)."
+    )
+
+    num_windows_dd_full, num_t_dd, state_dim_dd = train_data_dd_np.shape
+    assert state_dim_dd == N, (
+        f"ks_train_data_dd.h5 state_dim ({state_dim_dd}) does not match its own "
+        f"'N' attribute ({N_dd})."
+    )
+
+    # -- Keep only a percentage of the DD windows for the data_loss term ----
+    dd_data_percentage = config.training.get("dd_data_percentage", 0.1)
+    assert 0.0 < dd_data_percentage <= 1.0, (
+        "config.training.dd_data_percentage must be in (0, 1]."
+    )
+
+    seed = config.training.get("seed", 42)
+    num_windows_dd = max(1, int(round(num_windows_dd_full * dd_data_percentage)))
+
+    # Fixed, reproducible random subset of DD windows (host-side, one-time).
+    dd_subset_rng = np.random.default_rng(seed)
+    dd_subset_idx = np.sort(
+        dd_subset_rng.choice(num_windows_dd_full, size=num_windows_dd, replace=False)
+    )
+    train_data_dd_np = train_data_dd_np[dd_subset_idx]
+    train_data_dd    = jnp.array(train_data_dd_np)
+
+    num_windows, num_t, _ = train_data_dd.shape  # num_windows == num_windows_dd
+
+    # Window-local time grid: 0 -> window_size over num_t points
+    t_star_dd = jnp.arange(num_t, dtype=jnp.float32) * dt_dd
+
+    logging.info(
+        f"Data-loss term: using {num_windows}/{num_windows_dd_full} DD windows "
+        f"({dd_data_percentage:.1%}); IC-pool size for ic_loss/res_loss "
+        f"unchanged at {u_pool_np.shape[0]} (same as train_and_evaluate)."
+    )
+
+    # ── Samplers ───────────────────────────────────────────────────────────
+    num_devices = jax.local_device_count()
+    batch_size_per_device = config.training.batch_size_per_device
+    pool_size = u_pool_np.shape[0]
+
+    # t is sampled uniformly over the training window [t0, t1] (PI part).
+    dom_t_np = np.array([[t_star[0], t_star[-1]]])
+
+    # Push exact copies of both datasets + time grids to every local device.
+    u_pool_repl        = jax.device_put_replicated(u_pool_np, jax.local_devices())
+    dom_t_repl         = jax.device_put_replicated(dom_t_np, jax.local_devices())
+    train_data_dd_repl = jax.device_put_replicated(train_data_dd, jax.local_devices())
+    t_star_dd_repl     = jax.device_put_replicated(t_star_dd, jax.local_devices())
+
+    # 3. Define the PMAP On-Device Sampler -- draws one PI batch (u, t) and
+    #    one DD batch (u, t, x) per step, in a single fully-parallel
+    #    dispatch, mirroring the two samplers above.
+    @jax.pmap
+    def get_batch_on_device(device_key, local_u_pool, local_dom_t, local_dd_data, local_t_dd):
+        """Splits keys and samples both the PI and DD batches entirely on-device."""
+        new_key, sample_key = jax.random.split(device_key)
+        key_pi, key_dd       = jax.random.split(sample_key)
+
+        # -- Physics-informed part (same logic as train_and_evaluate) -------
+        key_u, key_t = jax.random.split(key_pi)
+
+        idx_u      = jax.random.randint(key_u, (batch_size_per_device,), 0, pool_size)
+        batch_u_pi = local_u_pool[idx_u, :]
+
+        t_min = local_dom_t[0, 0]
+        t_max = local_dom_t[0, 1]
+        batch_t_pi = jax.random.uniform(
+            key_t, (batch_size_per_device, 1), minval=t_min, maxval=t_max
+        )
+
+        # -- Data-driven part (same logic as train_and_evaluate_dd) ---------
+        key_win, key_t_dd = jax.random.split(key_dd)
+
+        idx_win = jax.random.randint(key_win, (batch_size_per_device,), 0, num_windows)
+        idx_t   = jax.random.randint(key_t_dd, (batch_size_per_device,), 0, num_t)
+
+        batch_u_dd = local_dd_data[idx_win, 0, :]
+        batch_t_dd = local_t_dd[idx_t].reshape(batch_size_per_device, 1)
+        batch_x_dd = local_dd_data[idx_win, idx_t, :]
+
+        return new_key, (batch_u_pi, batch_t_pi, batch_u_dd, batch_t_dd, batch_x_dd)
+
+    # 4. Initialize reproducible PRNG Keys, seeded independently per device
+    #    via a device-parallel fold_in (no host-side split + scatter).
+    init_key    = jax.random.PRNGKey(seed)
+    device_keys = jax.pmap(lambda i: jax.random.fold_in(init_key, i))(jnp.arange(num_devices))
+
+    # ── Build model ────────────────────────────────────────────────────────
+    model     = models.KSUDON_Hybrid(config, t_star, L=L, N=N, dt=dt)
+    evaluator = models.KSUDONEvaluator_Hybrid(config, model)
+
+    if config.saving.get("restore_checkpoint", False):
+        ckpt_path   = os.path.join(os.getcwd(), config.saving.restore_checkpoint_path)
+        model.state = restore_checkpoint(model.state, ckpt_path)
+        model.state = replicate(model.state)
+        logging.info(f"Restored and re-replicated checkpoint from: {ckpt_path}")
+
+    # ── Training loop ──────────────────────────────────────────────────────
+    logger     = Logger()
+    start_time = time.time()
+    logging.info("Waiting for JIT compilation…")
+
+    for step in range(config.training.max_steps):
+
+        # ── Sample on-device (key advance + batch draw in one dispatch) ─────
+        device_keys, batch = get_batch_on_device(
+            device_keys, u_pool_repl, dom_t_repl, train_data_dd_repl, t_star_dd_repl
+        )
+
+        # ── Forward + gradient step ────────────────────────────────────────
+        # model.step combines ic_loss + res_loss (PI part of the batch) and
+        # data_loss (DD part of the batch) into the total weighted loss.
+        model.state = model.step(model.state, batch)
+
+        # ── Adaptive loss weighting (optional) ────────────────────────────
+        if config.weighting.scheme in ("grad_norm", "ntk"):
+            if step % config.weighting.update_every_steps == 0 and step >= config.weighting.warmup_steps:
+                model.state = model.update_weights(model.state, batch)
+
+        # ── Logging ────────────────────────────────────────────────────────
+        if jax.process_index() == 0:
+            if step % config.logging.log_every_steps == 0:
+                state     = jax.device_get(tree_map(lambda x: x[0], model.state))
+                batch_dev = jax.device_get(tree_map(lambda x: x[0], batch))
+
+                # Evaluator expects state, train batch, branch eval input, and ground truth trajectory
+                log_dict = evaluator(state, batch_dev, u_ref_eval, x_ref_eval)
+
+                # Track pool parameters (fixed values now, since augmentation is dropped)
+                log_dict["pool/active_ics"]        = pool_size
+                log_dict["pool/active_dd_windows"] = num_windows
+
+                wandb.log(log_dict, step)
+
+                end_time = time.time()
+                logger.log_iter(step, start_time, end_time, log_dict)
+                start_time = end_time
+
+        # ── Checkpointing ──────────────────────────────────────────────────
+        if config.saving.save_every_steps is not None:
+            if ((step + 1) % config.saving.save_every_steps == 0
+                    or (step + 1) == config.training.max_steps):
+                ckpt_path = os.path.join(
+                    os.getcwd(), config.wandb.name, "ckpt", "ks_udon_hybrid_model"
                 )
                 save_checkpoint(
                     model.state, ckpt_path, keep=config.saving.num_keep_ckpts

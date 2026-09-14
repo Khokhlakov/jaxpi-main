@@ -45,7 +45,7 @@ HDF5 layout written by `evaluate_filters`
         strategies/{key}/l2_time_avg         scalar attr -- time-avg relative L2
                                               over the 40 vars, for quick titling
 
-    /batch  (attrs: B, obs_every_n, sigma_obs, N_ens, dt_obs)
+    /batch  (attrs: B, obs_every_n, sigma_obs, N_ens, dt_obs, eqvar_burn_in_frac)
         obs_times                            (T_obs,)
         window_idx                           (n_windows,)
         t_dense_fine                         (n_fine,)
@@ -60,10 +60,29 @@ HDF5 layout written by `evaluate_filters`
         strategies/{key}/rmse_raw            (B * n_windows,)  -- for calibration binned scatter
         strategies/{key}/spread_raw          (B * n_windows,)
         strategies/{key}/l2_dense_mean       (n_fine,)      -- batch time-mean L2 error curve
+        strategies/{key}/eqvar_mean          (N,)           -- equilibrium (climatological)
+        strategies/{key}/eqvar_std           (N,)              variance, see below
         strategies/{key}/route_b_scale_mean  (n_fine,)      -- only present for kind == "route_b"
         strategies/{key}/route_b_scale_std   (n_fine,)
         open_loop/{propagator}/t             (n_ol,)
         open_loop/{propagator}/l2_dense_mean (n_ol,)
+        open_loop/{propagator}/eqvar_mean    (N,)
+        open_loop/{propagator}/eqvar_std     (N,)
+        reference/eqvar_mean                 (N,)           -- ground-truth (unfiltered)
+        reference/eqvar_std                  (N,)              equilibrium variance
+
+    Equilibrium (climatological/attractor) variance
+    -------------------------------------------------
+    For a dense state trajectory of B ICs x T time steps x N variables,
+    the leading `eqvar_burn_in_frac` fraction of the time axis is
+    discarded (letting transients -- assimilation spin-up for filtered
+    strategies, or an off-attractor start for an open-loop rollout --
+    decay), then the per-variable temporal variance is computed on the
+    remaining tail for each IC. `eqvar_mean`/`eqvar_std` are the
+    mean/std of that per-IC variance across the B ICs. `reference/*` is
+    computed the same way from the true (unfiltered) test trajectories,
+    and is the target every open-loop and filtered curve is compared
+    against by `plot_equilibrium_variance`.
 """
 
 import os
@@ -403,7 +422,6 @@ def build_default_4way_strategies(
 # ─────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────
-
 def evaluate_filters(
     config: ml_collections.ConfigDict,
     workdir: str,
@@ -470,6 +488,9 @@ def evaluate_filters(
     batch_windows = config.eval.get("windows", 200)
     num_ics_eval = config.eval.get("num_ics", u_test.shape[0])
     enkf_batch_size = config.kf.get("batch_l2_size", 200)
+    # Fraction of each dense trajectory's time axis discarded as transient
+    # spin-up before estimating equilibrium (climatological) variance.
+    eqvar_burn_in_frac = config.eval.get("eqvar_burn_in_frac", 0.5)
 
     # Shared inflation / process-noise scaling (used by the default
     # 3-way set; custom strategy lists already carry their own).
@@ -622,10 +643,46 @@ def evaluate_filters(
     def _mean_std(a):
         return np.array(jnp.mean(a, axis=0)), np.array(jnp.std(a, axis=0))
 
+    def _equilibrium_variance_per_ic(x_dense, burn_in_frac: float = 0.5):
+        """
+        Per-IC, per-variable equilibrium (climatological/attractor)
+        variance: the long-term temporal variance of a dense state
+        trajectory once transient initial conditions have decayed.
+
+        `x_dense` is (B, T, N) -- B dense state trajectories, T time
+        steps, N state variables (any dt / time grid; the different
+        strategies, the open-loop rollouts, and the truth are each on
+        their own grid, but variance of a stationary process doesn't
+        depend on sampling density). The leading `burn_in_frac` fraction
+        of the time axis is discarded before the variance is computed,
+        so an assimilation spin-up (filtered strategies) or an
+        off-attractor start (open-loop rollout) doesn't bias the
+        estimate of the intrinsic, unforced/unfiltered variability.
+
+        Returns (B, N): temporal variance of each variable, for each IC,
+        over the retained (post-burn-in) tail of the trajectory.
+        """
+        T = x_dense.shape[1]
+        if T < 4:
+            raise ValueError(
+                f"_equilibrium_variance_per_ic needs T >= 4 time steps to "
+                f"discard a burn-in and still estimate a variance, got T={T}."
+            )
+        t0 = min(int(round(burn_in_frac * T)), T - 2)
+        return jnp.var(x_dense[:, t0:, :], axis=1)
+
     x_true_at_windows_b = x_true_fine_batch2[:, window_step_indices_b + 1, :]
     x_true_fine_tail = x_true_fine_batch2[:, 1:, :]
     den_dense = jnp.linalg.norm(x_true_fine_tail, axis=2) + 1e-12
     t_dense_fine = np.arange(1, total_fine_steps_batch + 1) * DT_FINE
+
+    # Reference equilibrium (climatological/attractor) variance: the
+    # intrinsic, long-term variability of the true, unforced/unfiltered
+    # system state, once transients have decayed. Every open-loop
+    # ("static physics") and filtered-strategy equilibrium variance
+    # below is compared against this by `plot_equilibrium_variance`.
+    ref_eqvar_ic = _equilibrium_variance_per_ic(x_true_fine_tail, eqvar_burn_in_frac)
+    ref_eqvar_mean, ref_eqvar_std = _mean_std(ref_eqvar_ic)
 
     batch_strat_records = {}
     for spec in strategies:
@@ -657,6 +714,14 @@ def evaluate_filters(
             jnp.mean(jnp.linalg.norm(out["x_means"][:, :, :N] - x_true_fine_tail, axis=2) / den_dense, axis=0)
         )
 
+        # Equilibrium variance of this strategy's own filtered (posterior
+        # mean) trajectory -- compare against `ref_eqvar_mean` to check
+        # whether filtering preserves the system's intrinsic variability
+        # (collapsing well below the reference signals ensemble/variance
+        # collapse; sitting well above it signals over-inflation).
+        eqvar_ic = _equilibrium_variance_per_ic(out["x_means"][:, :, :N], eqvar_burn_in_frac)
+        eqvar_mean, eqvar_std = _mean_std(eqvar_ic)
+
         rec = dict(
             label=spec["label"], kind=spec["kind"], propagator=spec["propagator"],
             prior_rmse_mean=prior_rmse_mean, prior_rmse_std=prior_rmse_std,
@@ -665,6 +730,7 @@ def evaluate_filters(
             rmse_window_mean=rmse_window_mean, spread_window_mean=spread_window_mean,
             rmse_raw=rmse_raw, spread_raw=spread_raw,
             l2_dense_mean=l2_dense_mean,
+            eqvar_mean=eqvar_mean, eqvar_std=eqvar_std,
         )
 
         if spec["kind"] == "route_b":
@@ -700,7 +766,17 @@ def evaluate_filters(
             l2_ol = np.array(
                 jnp.mean(jnp.linalg.norm(x_pred_dense - x_ref_dense_ol, axis=2) / denom_ol, axis=0)
             )
-            open_loop_records[prop_key] = dict(t=np.array(t_test[:total_steps_ol]), l2_dense_mean=l2_ol)
+
+            # Equilibrium variance of the "static" (open-loop, unfiltered)
+            # physics rollout -- this is the propagator's own free-running
+            # climatology, with no observation updates ever applied.
+            eqvar_ic_ol = _equilibrium_variance_per_ic(x_pred_dense, eqvar_burn_in_frac)
+            eqvar_mean_ol, eqvar_std_ol = _mean_std(eqvar_ic_ol)
+
+            open_loop_records[prop_key] = dict(
+                t=np.array(t_test[:total_steps_ol]), l2_dense_mean=l2_ol,
+                eqvar_mean=eqvar_mean_ol, eqvar_std=eqvar_std_ol,
+            )
 
     # ── 5. Write everything to HDF5 ─────────────────────────────────────
     out_path = os.path.join(workdir, f"{config.wandb.name}.h5")
@@ -756,9 +832,15 @@ def evaluate_filters(
 
         batch_grp = f.create_group("batch")
         batch_grp.attrs["B"] = B
+        batch_grp.attrs["eqvar_burn_in_frac"] = eqvar_burn_in_frac
         batch_grp.create_dataset("obs_times", data=obs_times_batch)
         batch_grp.create_dataset("window_idx", data=np.arange(1, batch_windows + 1))
         batch_grp.create_dataset("t_dense_fine", data=t_dense_fine)
+
+        ref_grp = batch_grp.create_group("reference")
+        ref_grp.create_dataset("eqvar_mean", data=ref_eqvar_mean)
+        ref_grp.create_dataset("eqvar_std", data=ref_eqvar_std)
+
         strat_grp_b = batch_grp.create_group("strategies")
         for key, rec in batch_strat_records.items():
             sg = strat_grp_b.create_group(key)
@@ -769,6 +851,7 @@ def evaluate_filters(
                 "prior_rmse_mean", "prior_rmse_std", "post_rmse_mean", "post_rmse_std",
                 "erf_mean", "erf_std", "rmse_window_mean", "spread_window_mean",
                 "rmse_raw", "spread_raw", "l2_dense_mean",
+                "eqvar_mean", "eqvar_std",
             ):
                 sg.create_dataset(field, data=rec[field])
             if rec["kind"] == "route_b":
@@ -782,6 +865,8 @@ def evaluate_filters(
             og = ol_grp.create_group(prop_key)
             og.create_dataset("t", data=rec["t"])
             og.create_dataset("l2_dense_mean", data=rec["l2_dense_mean"])
+            og.create_dataset("eqvar_mean", data=rec["eqvar_mean"])
+            og.create_dataset("eqvar_std", data=rec["eqvar_std"])
 
     logging.info(f"evaluate_filters: wrote all evaluation data to {out_path}")
     return out_path
@@ -1685,6 +1770,78 @@ def _plot_rmse_bulk(
     logging.info(f"Bulk prior/posterior RMSE plot ({S} strategies) saved to: {save_path}")
 
 # ─────────────────────────────────────────────────────────────────────────
+# 2e. Equilibrium (climatological/attractor) variance: reference truth +
+#     static (open-loop) physics vs every filtered strategy, one PDF
+# ─────────────────────────────────────────────────────────────────────────
+def _plot_equilibrium_variance_bulk(
+    strategy_keys,
+    label_of,
+    eqvar_mean_of: dict,          # key -> (N,) per-variable equilibrium variance
+    eqvar_std_of: dict,           # key -> (N,) IC-to-IC std of that estimate
+    reference_mean: np.ndarray,   # (N,) reference (unfiltered truth) equilibrium variance
+    reference_std: np.ndarray,
+    open_loop_eqvar: dict,        # propagator -> dict(mean=(N,), std=(N,))
+    colors: dict,
+    title: str,
+    save_path: str,
+    log_scale: bool = True,
+) -> None:
+    """
+    Per-state-variable equilibrium (climatological/attractor) variance —
+    the long-term temporal variance of each variable once transients
+    have decayed — comparing:
+
+      * the reference/truth trajectory (the intrinsic variability of the
+        unforced, unfiltered system; the target every curve below is
+        compared against),
+      * each propagator's open-loop, "static" (unfiltered) physics
+        rollout, and
+      * every filtered EnKF strategy's posterior-mean trajectory,
+
+    all on ONE set of axes, regardless of strategy count S (mirrors the
+    other bulk "*_all" plots above). A well-calibrated filter's curve
+    should track the reference closely; collapsing well below it signals
+    ensemble/variance collapse (over-confident filtering, insufficient
+    inflation), while sitting well above it signals over-inflation.
+    """
+    N = len(reference_mean)
+    var_idx = np.arange(N)
+    S = len(strategy_keys)
+
+    fig, ax = plt.subplots(figsize=(11, 6))
+
+    ax.plot(var_idx, reference_mean, color="#37474F", linewidth=2.4,
+            marker="o", markersize=3, label="Reference (unfiltered truth)", zorder=5)
+    ax.fill_between(var_idx, reference_mean - reference_std, reference_mean + reference_std,
+                     color="#37474F", alpha=0.15, linewidth=0, zorder=1)
+
+    ol_palette = ["#B0BEC5", "#78909C", "#546E7A"]
+    for i, prop_key in enumerate(sorted(open_loop_eqvar)):
+        rec = open_loop_eqvar[prop_key]
+        c = ol_palette[i % len(ol_palette)]
+        ax.plot(var_idx, rec["mean"], color=c, linewidth=1.8, linestyle="--",
+                 marker="^", markersize=3, zorder=4,
+                 label=f"{prop_key} open-loop (static physics)")
+
+    for key in strategy_keys:
+        c = colors[key]
+        ax.plot(var_idx, eqvar_mean_of[key], color=c, linewidth=1.6,
+                 marker="s", markersize=3, label=label_of[key], zorder=3)
+
+    if log_scale:
+        ax.set_yscale("log")
+    ax.set_xlabel("State variable index", fontsize=12)
+    ax.set_ylabel("Equilibrium variance" + ("  (log scale)" if log_scale else ""), fontsize=11)
+    ax.set_title(title, fontsize=13)
+    ax.legend(fontsize=8, ncol=(2 if S > 5 else 1))
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+
+    fig.tight_layout()
+    _save(fig, save_path)
+    logging.info(f"Bulk equilibrium-variance plot ({S} strategies) saved to: {save_path}")
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────
 def plot_comparisons_bulk(h5_path: str, workdir: str | None = None, n_bins: int = 10) -> str:
@@ -1873,6 +2030,116 @@ def plot_comparisons_bulk(h5_path: str, workdir: str | None = None, n_bins: int 
         f"plot_comparisons_bulk: wrote 4 bulk comparison PDFs "
         f"({S} strategies each) to {save_dir}"
     )
+    return save_dir
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Main entry point — equilibrium (climatological/attractor) variance
+# ─────────────────────────────────────────────────────────────────────────
+def plot_equilibrium_variance(
+    h5_path: str, workdir: str | None = None, log_scale: bool = True,
+) -> str:
+    """
+    Reads the HDF5 file written by `evaluate_filters` and writes ONE PDF
+    comparing, per state variable, the long-term equilibrium
+    (climatological/attractor) variance of:
+
+      * the reference/truth trajectory (the intrinsic variability of the
+        unforced, unfiltered system),
+      * each propagator's open-loop, "static" (unfiltered) physics
+        rollout, and
+      * every filtered EnKF strategy in the file,
+
+    overlaid on a single set of axes -- the "static physics vs filtered
+    strategies" steady-state diagnostic. This is the equilibrium-variance
+    counterpart to `plot_comparisons_bulk`'s other "*_all.pdf" outputs,
+    and works for any number of strategies S >= 1 (no pairwise blow-up,
+    since every curve is compared against the one shared reference
+    rather than against every other curve).
+
+    Output: ``<workdir>/figures/comparisons_bulk/equilibrium_variance_all.pdf``
+
+    Parameters
+    ----------
+    h5_path : path to the HDF5 file written by `evaluate_filters`. Must
+        have been written by a version of `evaluate_filters` that
+        includes equilibrium-variance data (see the module docstring's
+        "/batch/reference" and "eqvar_mean"/"eqvar_std" fields); older
+        files will raise a `KeyError` telling you to re-run it.
+    workdir : base directory for outputs; defaults to the HDF5 file's
+        parent directory.
+    log_scale : plot the variance axis on a log scale (default) so that
+        variance collapse (orders-of-magnitude drops) is easy to spot.
+
+    Returns the path of the ``figures/comparisons_bulk`` directory written.
+    """
+    if workdir is None:
+        workdir = os.path.dirname(os.path.abspath(h5_path))
+
+    save_dir = os.path.join(workdir, "figures", "comparisons_bulk")
+    os.makedirs(save_dir, exist_ok=True)
+
+    with h5py.File(h5_path, "r") as f:
+        meta = f["meta"]
+        N_ens = int(meta.attrs["N_ens"])
+        obs_every_n = int(meta.attrs["obs_every_n"])
+        sigma_obs = float(meta.attrs["sigma_obs"])
+
+        strategy_keys = _decode(meta["strategy_keys"][:])
+        strategy_labels = _decode(meta["strategy_labels"][:])
+        label_of = dict(zip(strategy_keys, strategy_labels))
+        colors = _strategy_colors(strategy_keys)
+
+        batch = f["batch"]
+        B = int(batch.attrs["B"])
+
+        missing_eqvar = "reference" not in batch or any(
+            "eqvar_mean" not in batch[f"strategies/{k}"] for k in strategy_keys
+        )
+        if missing_eqvar:
+            raise KeyError(
+                f"{h5_path} has no equilibrium-variance data (missing "
+                "'batch/reference' and/or per-strategy 'eqvar_mean'). "
+                "Re-run evaluate_filters to regenerate the HDF5 file "
+                "before calling plot_equilibrium_variance."
+            )
+
+        burn_in_frac = float(batch.attrs["eqvar_burn_in_frac"])
+        reference_mean = batch["reference/eqvar_mean"][:]
+        reference_std = batch["reference/eqvar_std"][:]
+
+        eqvar_mean_of, eqvar_std_of = {}, {}
+        for key in strategy_keys:
+            sg = batch[f"strategies/{key}"]
+            eqvar_mean_of[key] = sg["eqvar_mean"][:]
+            eqvar_std_of[key] = sg["eqvar_std"][:]
+
+        open_loop_eqvar = {}
+        if "open_loop" in batch:
+            for prop_key in batch["open_loop"]:
+                og = batch[f"open_loop/{prop_key}"]
+                if "eqvar_mean" in og:
+                    open_loop_eqvar[prop_key] = dict(
+                        mean=og["eqvar_mean"][:], std=og["eqvar_std"][:],
+                    )
+
+    save_path = os.path.join(save_dir, "equilibrium_variance_all.pdf")
+    _plot_equilibrium_variance_bulk(
+        strategy_keys=strategy_keys, label_of=label_of,
+        eqvar_mean_of=eqvar_mean_of, eqvar_std_of=eqvar_std_of,
+        reference_mean=reference_mean, reference_std=reference_std,
+        open_loop_eqvar=open_loop_eqvar, colors=colors,
+        title=(
+            f"Equilibrium variance — static (open-loop) physics vs filtered "
+            f"strategies\n(B={B} trajectories, N_ens={N_ens}, obs every "
+            f"{obs_every_n}th var, σ_obs={sigma_obs}, "
+            f"burn-in={burn_in_frac:.0%} of window discarded)"
+        ),
+        save_path=save_path,
+        log_scale=log_scale,
+    )
+
+    logging.info(f"plot_equilibrium_variance: wrote {save_path}")
     return save_dir
 
 
@@ -2148,12 +2415,20 @@ Programmatic usage
 
 Outputs
 -------
-    <workdir>/<config.wandb.name>.h5                      -- evaluate_filters
-    <workdir>/figures/comparisons/individual_trajectories/ -- per-(IC, strategy) PDFs
-    <workdir>/figures/comparisons/calibration_*_vs_*.pdf   -- one pair per
-    <workdir>/figures/comparisons/erf_*_vs_*.pdf              (strategy_a, strategy_b)
-    <workdir>/figures/comparisons/l2_*_vs_*.pdf                combination -- see
-    <workdir>/figures/comparisons/rmse_*_vs_*.pdf               note above on size
+    <workdir>/<config.wandb.name>.h5                            -- evaluate_filters
+    <workdir>/figures/comparisons_bulk/individual_trajectories/ -- per-(IC, strategy) PDFs
+    <workdir>/figures/comparisons_bulk/calibration_all.pdf      -- plot_comparisons_bulk:
+    <workdir>/figures/comparisons_bulk/erf_all.pdf                  every strategy overlaid
+    <workdir>/figures/comparisons_bulk/l2_all.pdf                   on one PDF per category
+    <workdir>/figures/comparisons_bulk/rmse_all.pdf                 (see note above on size
+                                                                     if using plot_comparisons
+                                                                     instead, which is pairwise)
+    <workdir>/figures/comparisons_bulk/equilibrium_variance_all.pdf -- plot_equilibrium_variance:
+                                                                     reference (unfiltered truth)
+                                                                     + each propagator's static
+                                                                     open-loop physics vs every
+                                                                     filtered strategy's steady-
+                                                                     state variance, per variable
 """
 
 
@@ -2238,10 +2513,12 @@ def run_mult_inflation_sweep(config, workdir: str, test_h5_path: str | None = No
     Runs the DD-Mult / PI-Mult multiplicative-inflation-factor sweep --
     one calibration pass per value in `config.kf.inflation_factor_list`,
     crossed with the DD and PI propagators -- and writes every comparison
-    figure.
+    figure, including the steady-state equilibrium-variance diagnostic
+    (static open-loop physics + reference truth vs every filtered
+    strategy; see `plot_equilibrium_variance`).
 
-    Returns the path of the `figures/comparisons` directory written by
-    `plot_comparisons`.
+    Returns the path of the `figures/comparisons_bulk` directory written
+    by `plot_comparisons_bulk` (and also used by `plot_equilibrium_variance`).
     """
     os.makedirs(workdir, exist_ok=True)
 
@@ -2281,8 +2558,9 @@ def run_mult_inflation_sweep(config, workdir: str, test_h5_path: str | None = No
     )
 
     logging.info(
-        f"Stage 1/2: evaluate_filters — running {len(strategies)} DD/PI x "
-        "alpha strategies on shared data and writing the results HDF5 ..."
+        f"Stage 1/3: evaluate_filters — running {len(strategies)} DD/PI x "
+        "alpha strategies on shared data and writing the results HDF5 "
+        "(including the steady-state / equilibrium-variance data) ..."
     )
     h5_path = evaluate_filters(
         config=config,
@@ -2294,10 +2572,15 @@ def run_mult_inflation_sweep(config, workdir: str, test_h5_path: str | None = No
     )
     logging.info(f"  wrote {h5_path}")
 
-    logging.info(f"Stage 2/2: plot_comparisons — reading {h5_path} and writing figures ...")
+    logging.info(f"Stage 2/3: plot_comparisons_bulk — reading {h5_path} and writing figures ...")
     save_dir = plot_comparisons_bulk(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
     logging.info(f"  wrote figures to {save_dir}")
 
+    logging.info(
+        f"Stage 3/3: plot_equilibrium_variance — reading {h5_path} and writing "
+        "the static-physics-vs-filtered-strategies equilibrium-variance PDF ..."
+    )
+    plot_equilibrium_variance(h5_path=h5_path, workdir=workdir)
+    logging.info(f"  wrote {os.path.join(save_dir, 'equilibrium_variance_all.pdf')}")
+
     return save_dir
-
-
