@@ -8,7 +8,7 @@ def get_config():
     # Weights & Biases
     # rerun of conf 2 8 with the modified l2 computation
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project       = "KS_W1"
+    wandb.project       = "KS-W1"
     wandb.name          = "base_dd_1"
     wandb.ckpt_name     = "base_dd_1" 
     wandb.tag = None
