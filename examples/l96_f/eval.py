@@ -2677,3 +2677,245 @@ def run_mult_inflation_sweep(config, workdir: str, test_h5_path: str | None = No
     logging.info(f"  wrote {os.path.join(save_dir, 'equilibrium_variance_all.pdf')}")
 
     return save_dir
+
+# ─────────────────────────────────────────────────────────────────────────
+# Pure-additive-inflation-strength sweep: PI propagator only
+# ─────────────────────────────────────────────────────────────────────────
+
+def build_add_sweep_strategies(config, N_ens, alpha_list, steps_per_window):
+    """
+    Builds a PI + pure-additive-inflation-strength sweep strategy set,
+    reusing the single PI checkpoint named in `config.wandb.name_pi` and
+    ONE `make_route_b_enkf_fns` closure pair -- with one strategy per
+    value in `alpha_list`:
+
+        pi_add_a<tag> -- PI propagator + Route B inflation with `beta`
+                          pinned to 0.0, i.e. the flow-dependent
+                          `beta * ||rho||^2` term switched off, so the
+                          residual-scaled Route B machinery degenerates
+                          to *pure* additive inflation: a fixed-
+                          covariance process-noise floor `alpha * Q0`
+                          injected every fine step, with `alpha_list[i]`
+                          setting the floor's strength.
+
+    Route B is only ever exercised against the PI checkpoint elsewhere in
+    this file (`build_default_3way_strategies`, `build_default_4way_strategies`
+    both only call `model_pi.make_route_b_enkf_fns`) -- there's no
+    DD-model counterpart wired up here -- so, mirroring that, this sweep
+    is PI-only, unlike `build_mult_sweep_strategies`, which crosses its
+    alpha sweep with both the DD and PI propagators. If
+    `models.L96UDON_DD` does expose `make_route_b_enkf_fns` in your
+    checkout, extending this to a DD+PI 2x sweep is a straightforward
+    copy of the DD-loading block in `build_mult_sweep_strategies`.
+
+    Like `build_mult_sweep_strategies`, `predict_fn`/`update_fn` are built
+    ONCE and reused across every alpha -- Route B's `alpha`/`beta` are
+    runtime scalars passed into `run_enkf_smoother_route_b` per strategy
+    dict, not baked into the closure -- so the sweep is cheap: no extra
+    model calls or checkpoint loads per alpha.
+
+    Returns (strategies, propagators, N, t_star_window).
+    """
+    dt_window = float(config.get("dt_window", 0.25))
+    dt_integration = config.eval.get("dt_integration", 0.005)
+    time_steps = int(round(dt_window / dt_integration)) + 1
+    t_star_window = jnp.linspace(0.0, dt_window, time_steps)
+
+    logging.info("Loading PI model...")
+    model_pi = models.L96UDON(config, t_star_window)
+    ckpt_path_pi = os.path.join(os.getcwd(), config.wandb.name_pi, "ckpt", "udon_model")
+    model_pi.state = restore_checkpoint(model_pi.state, ckpt_path_pi)
+    params_pi = model_pi.state.params
+    N = model_pi.N
+
+    # Pure additive inflation is Route B with beta pinned to 0.0 (see the
+    # module-level strategy-spec docs: Route B's scale is
+    # `alpha + beta * ||rho||^2`; zeroing beta drops the flow-dependent
+    # term and leaves only the constant `alpha * Q0` floor).
+    P0_sigma = config.kf.get("P0_sigma", 1.0)
+    Q0_sigma = config.kf.get("Q0_sigma", P0_sigma)
+    n_quad_rb = config.kf.get("route_b_n_quad", 3)
+    Q_coarse = jnp.eye(N) * Q0_sigma ** 2
+    Q_fine = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
+
+    predict_fn_rb, update_fn_rb = model_pi.make_route_b_enkf_fns(params_pi, N_ens=N_ens)
+
+    strategies = []
+    for alpha in alpha_list:
+        tag = f"{alpha:g}".replace(".", "p")
+        strategies.append(dict(
+            key=f"pi_add_a{tag}",
+            label=f"PI + Add. Infl. (\u03b1={alpha:g})",
+            kind="route_b", propagator="pi",
+            predict_fn=predict_fn_rb, update_fn=update_fn_rb,
+            Q0=Q_fine, alpha=float(alpha), beta=0.0, n_quad=n_quad_rb,
+        ))
+
+    propagators = {
+        "pi": (model_pi, params_pi),
+    }
+    return strategies, propagators, N, t_star_window
+
+
+"""
+Run a pure-additive-inflation-strength sweep: PI propagator only
+
+    For every value `alpha` in `config.kf.inflation_alpha_list`, evaluate:
+
+        PI propagator + pure additive inflation @ alpha
+            (Route B with beta pinned to 0.0, i.e. a fixed-covariance
+            `alpha * Q0` process-noise floor injected every fine step,
+            with no flow-dependent `||rho||^2` scaling)
+
+    using the same two-stage modular pipeline (`evaluate_filters` +
+    `plot_comparisons_bulk` + `plot_equilibrium_variance`) as
+    `run_mult_inflation_sweep`. Unlike that sweep, which crosses its
+    alpha sweep with both the DD and PI propagators, Route B (and so
+    pure additive inflation) is only ever exercised against the PI
+    checkpoint elsewhere in this file, so this sweep is PI-only -- see
+    `build_add_sweep_strategies`.
+
+    `evaluate_filters`'s `strategies=None` fallback only knows how to
+    build the historical DD-mult / PI-mult / PI-RouteB 3-way set, so
+    this function builds its own strategy/propagator set via
+    `build_add_sweep_strategies` and passes it in explicitly (along with
+    the `t_star_window` that set was built against).
+
+Choosing `config.kf.inflation_alpha_list`
+--------------------------------------------
+    Pure additive inflation injects a FIXED-covariance process-noise
+    perturbation `alpha * Q0` at every fine step, independent of the
+    current ensemble spread -- unlike multiplicative inflation, which
+    rescales the existing spread and so is a no-op at `alpha_coarse =
+    1.0`. That means the natural "no correction" control for THIS sweep
+    is `alpha = 0.0`, not 1.0 -- make sure it's included as a baseline.
+
+    `Q0` itself is set by `config.kf.Q0_sigma` (a per-variable noise std,
+    0.3 in the config values given alongside this sweep) via
+    `Q0 = alpha * diag(Q0_sigma^2)` (fine-step-scaled). So `alpha` scales
+    that base floor up or down; `route_b_alpha`'s own default of 1.0
+    (used, together with `route_b_beta = 250.0` and `Q0_sigma = 0.3`,
+    when Route B's flow-dependent term is ALSO active -- see
+    `build_default_4way_strategies` / `run_4way_comparison`) is a
+    reasonable center for this sweep once beta is zeroed out. A
+    first-pass grid bracketing it, with a 0.0 control and headroom above
+    1.0 since a pure floor (no flow-dependent term) may need more
+    strength to match Route B's own calibration:
+
+        config.kf.inflation_alpha_list = [
+            0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0,
+        ]
+
+    Once this coarse sweep identifies an approximate optimum (e.g. by
+    RMSE / calibration on the held-out window), re-run a finer sweep
+    bracketing that value, e.g. `np.linspace(best - 0.25, best + 0.25, 7)`
+    (clipped at 0).
+
+CLI usage
+---------
+    python run_add_inflation_sweep.py \\
+        --config=configs/your_config.py \\
+        --workdir=./results/my_run
+
+Programmatic usage
+-------------------
+    from run_add_inflation_sweep import run_add_inflation_sweep
+    save_dir = run_add_inflation_sweep(config, workdir)
+
+Outputs
+-------
+    <workdir>/<config.wandb.name>.h5                            -- evaluate_filters
+    <workdir>/figures/comparisons_bulk/individual_trajectories/ -- per-(IC, strategy) PDFs
+    <workdir>/figures/comparisons_bulk/calibration_all.pdf      -- plot_comparisons_bulk:
+    <workdir>/figures/comparisons_bulk/erf_all.pdf                  every strategy overlaid
+    <workdir>/figures/comparisons_bulk/l2_all.pdf                   on one PDF per category
+    <workdir>/figures/comparisons_bulk/rmse_all.pdf                 (see note in
+                                                                     run_mult_inflation_sweep's
+                                                                     docstring on pairwise size
+                                                                     if using plot_comparisons
+                                                                     instead)
+    <workdir>/figures/comparisons_bulk/equilibrium_variance_all.pdf -- plot_equilibrium_variance:
+                                                                     reference (unfiltered truth)
+                                                                     + PI's static open-loop
+                                                                     physics vs every additive-
+                                                                     strength strategy's steady-
+                                                                     state variance, per variable
+"""
+
+
+def run_add_inflation_sweep(config, workdir: str, test_h5_path: str | None = None, n_bins: int = 10) -> str:
+    """
+    Runs the PI-only pure-additive-inflation-strength sweep -- one
+    calibration pass per value in `config.kf.inflation_alpha_list`, with
+    Route B's beta pinned to 0.0 so the swept `alpha` scales a fixed
+    `Q0`-based noise floor rather than a residual-scaled term -- and
+    writes every comparison figure, including the steady-state
+    equilibrium-variance diagnostic (static open-loop physics + reference
+    truth vs every filtered strategy; see `plot_equilibrium_variance`).
+
+    Returns the path of the `figures/comparisons_bulk` directory written
+    by `plot_comparisons_bulk` (and also used by `plot_equilibrium_variance`).
+    """
+    os.makedirs(workdir, exist_ok=True)
+
+    # ── EnKF / inflation configuration ──
+    N_ens = config.kf.get("N_ens", 50)
+    alpha_list = list(config.kf.get(
+        "inflation_alpha_list",
+        [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0],  # see module docstring
+    ))
+    if len(alpha_list) == 0:
+        raise ValueError("config.kf.inflation_alpha_list is empty.")
+    if not all(a >= 0 for a in alpha_list):
+        raise ValueError(
+            f"config.kf.inflation_alpha_list must be non-negative, got {alpha_list}"
+        )
+
+    DT_WINDOW = float(config.get("dt_window", 0.25))
+    DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
+    steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
+
+    n_strategies = len(alpha_list)
+    logging.info(
+        f"Building Additive-inflation sweep strategy set: PI + pure "
+        f"additive inflation (Route B, beta=0) x {n_strategies} alpha "
+        f"value(s) ({alpha_list}) -> {n_strategies} strategies ..."
+    )
+    if n_strategies > 12:
+        logging.warning(
+            f"{n_strategies} strategies overlaid on one plot_comparisons_bulk "
+            "figure may get crowded. Consider a shorter inflation_alpha_list "
+            "for a first pass (see module docstring)."
+        )
+
+    strategies, propagators, N, t_star_window = build_add_sweep_strategies(
+        config, N_ens, alpha_list, steps_per_window,
+    )
+
+    logging.info(
+        f"Stage 1/3: evaluate_filters — running {len(strategies)} PI + "
+        "additive-alpha strategies on shared data and writing the results "
+        "HDF5 (including the steady-state / equilibrium-variance data) ..."
+    )
+    h5_path = evaluate_filters(
+        config=config,
+        workdir=workdir,
+        strategies=strategies,
+        propagators=propagators,
+        t_star_window=t_star_window,
+        test_h5_path=test_h5_path,
+    )
+    logging.info(f"  wrote {h5_path}")
+
+    logging.info(f"Stage 2/3: plot_comparisons_bulk — reading {h5_path} and writing figures ...")
+    save_dir = plot_comparisons_bulk(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
+    logging.info(f"  wrote figures to {save_dir}")
+
+    logging.info(
+        f"Stage 3/3: plot_equilibrium_variance — reading {h5_path} and writing "
+        "the static-physics-vs-filtered-strategies equilibrium-variance PDF ..."
+    )
+    plot_equilibrium_variance(h5_path=h5_path, workdir=workdir)
+    logging.info(f"  wrote {os.path.join(save_dir, 'equilibrium_variance_all.pdf')}")
+
+    return save_dir

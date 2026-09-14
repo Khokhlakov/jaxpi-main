@@ -4,7 +4,7 @@ import jax.numpy as jnp
 def get_config():
     # Config 1 but init weights 10:1 and using causal training
     config = ml_collections.ConfigDict()
-    config.mode = "run_mult_inflation_sweep"
+    config.mode = "run_add_inflation_sweep"
 
     # Weights & Biases
     # Base for inflation tunning
