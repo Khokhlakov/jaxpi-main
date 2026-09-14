@@ -2919,3 +2919,274 @@ def run_add_inflation_sweep(config, workdir: str, test_h5_path: str | None = Non
     logging.info(f"  wrote {os.path.join(save_dir, 'equilibrium_variance_all.pdf')}")
 
     return save_dir
+
+
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# RTPP relaxation-factor sweep: DD vs PI propagator
+# ─────────────────────────────────────────────────────────────────────────
+
+def build_rtpp_sweep_strategies(config, N_ens, alpha_rtpp_list, alpha_fine_rtpp):
+    """
+    Builds a DD+RTPP / PI+RTPP relaxation-factor sweep strategy set, all
+    sharing two propagators -- the DD and PI checkpoints named in
+    `config.wandb.name_dd` / `config.wandb.name_pi` -- with one strategy
+    pair per value in `alpha_rtpp_list`:
+
+        dd_rtpp_a<tag> -- DD propagator + RTPP at relaxation factor
+                           alpha_rtpp_list[i], with the (shared)
+                           predict-step multiplicative inflation pinned
+                           to `alpha_fine_rtpp` (default 1.0, i.e. off)
+                           so the swept `alpha_rtpp` is the only active
+                           inflation mechanism.
+        pi_rtpp_a<tag> -- same, PI propagator.
+
+    Note: `make_rtpp_enkf_fns` is only ever exercised against the PI
+    checkpoint elsewhere in this file (`build_default_4way_strategies`
+    calls `model_pi.make_rtpp_enkf_fns` only) -- unlike `make_enkf_fns`,
+    which both `models.L96UDON` and `models.L96UDON_DD` already expose
+    and which `build_mult_sweep_strategies` calls on both. This function
+    assumes `models.L96UDON_DD` also exposes `make_rtpp_enkf_fns` (with
+    the same `(params, N_ens=...)` signature as its `make_enkf_fns`), by
+    direct analogy with how `make_enkf_fns` is shared across both model
+    classes. If that method isn't implemented on the DD model yet in
+    your checkout, add it there first (mirroring `make_rtpp_enkf_fns` on
+    `L96UDON`) -- this function's DD-loading/closure-building code
+    doesn't need to change once it is.
+
+    Like `build_mult_sweep_strategies`, `predict_fn`/`update_fn` are
+    built ONCE per propagator and reused across every alpha_rtpp -- RTPP's
+    relaxation factor is a runtime scalar passed into
+    `run_enkf_smoother_rtpp` per strategy dict, not baked into the
+    closure -- so the sweep is cheap: no extra model calls or checkpoint
+    loads per alpha_rtpp.
+
+    Returns (strategies, propagators, N, t_star_window).
+    """
+    dt_window = float(config.get("dt_window", 0.25))
+    dt_integration = config.eval.get("dt_integration", 0.005)
+    time_steps = int(round(dt_window / dt_integration)) + 1
+    t_star_window = jnp.linspace(0.0, dt_window, time_steps)
+
+    logging.info("Loading DD model...")
+    model_dd = models.L96UDON_DD(config, t_star_window)
+    ckpt_path_dd = os.path.join(os.getcwd(), config.wandb.name_dd, "ckpt", "udon_model")
+    if not os.path.exists(ckpt_path_dd):
+        ckpt_path_dd = os.path.join(os.getcwd(), config.wandb.name_dd, "ckpt", "udon_dd_model")
+    model_dd.state = restore_checkpoint(model_dd.state, ckpt_path_dd)
+    params_dd = model_dd.state.params
+
+    logging.info("Loading PI model...")
+    model_pi = models.L96UDON(config, t_star_window)
+    ckpt_path_pi = os.path.join(os.getcwd(), config.wandb.name_pi, "ckpt", "udon_model")
+    model_pi.state = restore_checkpoint(model_pi.state, ckpt_path_pi)
+    params_pi = model_pi.state.params
+
+    N = model_pi.N
+    assert model_dd.N == N, (
+        f"DD checkpoint state dim ({model_dd.N}) != PI checkpoint state "
+        f"dim ({N}); can't share a strategy/propagator set across them."
+    )
+
+    predict_fn_dd, update_fn_dd = model_dd.make_rtpp_enkf_fns(params_dd, N_ens=N_ens)
+    predict_fn_pi, update_fn_pi = model_pi.make_rtpp_enkf_fns(params_pi, N_ens=N_ens)
+
+    strategies = []
+    for alpha_rtpp in alpha_rtpp_list:
+        tag = f"{alpha_rtpp:g}".replace(".", "p")
+
+        strategies.append(dict(
+            key=f"dd_rtpp_a{tag}",
+            label=f"DD + RTPP (\u03b1={alpha_rtpp:g})",
+            kind="rtpp", propagator="dd",
+            predict_fn=predict_fn_dd, update_fn=update_fn_dd,
+            alpha_fine=alpha_fine_rtpp, alpha_rtpp=alpha_rtpp,
+        ))
+        strategies.append(dict(
+            key=f"pi_rtpp_a{tag}",
+            label=f"PI + RTPP (\u03b1={alpha_rtpp:g})",
+            kind="rtpp", propagator="pi",
+            predict_fn=predict_fn_pi, update_fn=update_fn_pi,
+            alpha_fine=alpha_fine_rtpp, alpha_rtpp=alpha_rtpp,
+        ))
+
+    propagators = {
+        "dd": (model_dd, params_dd),
+        "pi": (model_pi, params_pi),
+    }
+    return strategies, propagators, N, t_star_window
+
+
+"""
+Run an RTPP relaxation-factor sweep: DD vs PI propagator
+
+    For every value `alpha_rtpp` in `config.kf.rtpp_alpha_list`, and for
+    each of the two propagators (data-driven "dd", physics-informed
+    "pi"), evaluate:
+
+        DD propagator + RTPP @ alpha_rtpp
+        PI propagator + RTPP @ alpha_rtpp
+
+    using the same two-stage modular pipeline (`evaluate_filters` +
+    `plot_comparisons_bulk` + `plot_equilibrium_variance`) as
+    `run_mult_inflation_sweep` / `run_add_inflation_sweep`. As in those,
+    the inflation *scheme* is held fixed (RTPP only, with its own
+    predict-step multiplicative inflation pinned at `rtpp_alpha_fine`,
+    default 1.0 -- see `build_default_4way_strategies`'s docstring);
+    instead we sweep RTPP's relaxation-to-prior factor itself, crossed
+    with the DD/PI propagator choice.
+
+    `evaluate_filters`'s `strategies=None` fallback only knows how to
+    build the historical DD-mult / PI-mult / PI-RouteB 3-way set, so
+    this function builds its own strategy/propagator set via
+    `build_rtpp_sweep_strategies` and passes it in explicitly (along
+    with the `t_star_window` that set was built against).
+
+    Note: this sweep assumes `models.L96UDON_DD` exposes
+    `make_rtpp_enkf_fns` -- see the caveat in
+    `build_rtpp_sweep_strategies`'s docstring.
+
+Choosing `config.kf.rtpp_alpha_list`
+--------------------------------------------
+    RTPP relaxes each posterior ensemble perturbation partway back toward
+    its (larger, pre-update) prior perturbation:
+    `x'_post <- (1 - alpha_rtpp) * x'_post + alpha_rtpp * x'_prior`. So
+    `alpha_rtpp = 0` is the "no correction" control (posterior spread
+    used as-is -- the natural RTPP analogue of additive inflation's
+    `alpha = 0.0` control, NOT multiplicative inflation's `alpha_coarse =
+    1.0`), and `alpha_rtpp = 1` discards the update's spread reduction
+    entirely, fully reverting to the prior's spread every step. Values
+    are only meaningful in `[0, 1]`.
+
+    Since this codebase already defaults the single-value knob
+    `rtpp_alpha` to 0.5, and the relaxation literature (Zhang, Snyder &
+    Sacher 2004; typical operational EnKF practice) usually finds tuned
+    values somewhere in the `[0.5, 0.9]` band -- lower values under-
+    correct spread collapse, values pushed toward 1 increasingly ignore
+    the filter's own update -- a reasonable first-pass grid bracketing
+    the default, denser in that typical band, with a `0.0` no-relaxation
+    control:
+
+        config.kf.rtpp_alpha_list = [
+            0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9,
+        ]
+
+    Once this coarse sweep identifies an approximate optimum (e.g. by
+    RMSE / calibration on the held-out window), re-run a finer sweep
+    bracketing that value, e.g. `np.linspace(best - 0.1, best + 0.1, 5)`
+    (clipped to `[0, 1]`).
+
+A note on plot_comparisons_bulk and sweep size
+------------------------------------------------
+    As in `run_mult_inflation_sweep`, this produces
+    `2 * len(rtpp_alpha_list)` strategies -- e.g. 8 alphas x 2
+    propagators = 16 strategies overlaid per figure. Keep
+    `rtpp_alpha_list` short (4-6 values) for a first pass if the overlay
+    gets too crowded to read, and widen it only for a final confirmation
+    run around the winner.
+
+CLI usage
+---------
+    python run_rtpp_inflation_sweep.py \\
+        --config=configs/your_config.py \\
+        --workdir=./results/my_run
+
+Programmatic usage
+-------------------
+    from run_rtpp_inflation_sweep import run_rtpp_inflation_sweep
+    save_dir = run_rtpp_inflation_sweep(config, workdir)
+
+Outputs
+-------
+    <workdir>/<config.wandb.name>.h5                            -- evaluate_filters
+    <workdir>/figures/comparisons_bulk/individual_trajectories/ -- per-(IC, strategy) PDFs
+    <workdir>/figures/comparisons_bulk/calibration_all.pdf      -- plot_comparisons_bulk:
+    <workdir>/figures/comparisons_bulk/erf_all.pdf                  every strategy overlaid
+    <workdir>/figures/comparisons_bulk/l2_all.pdf                   on one PDF per category
+    <workdir>/figures/comparisons_bulk/rmse_all.pdf                 (see note above on size)
+    <workdir>/figures/comparisons_bulk/equilibrium_variance_all.pdf -- plot_equilibrium_variance:
+                                                                     reference (unfiltered truth)
+                                                                     + each propagator's static
+                                                                     open-loop physics vs every
+                                                                     RTPP-alpha strategy's steady-
+                                                                     state variance, per variable
+"""
+
+
+def run_rtpp_inflation_sweep(config, workdir: str, test_h5_path: str | None = None, n_bins: int = 10) -> str:
+    """
+    Runs the DD-RTPP / PI-RTPP relaxation-factor sweep -- one calibration
+    pass per value in `config.kf.rtpp_alpha_list`, crossed with the DD
+    and PI propagators, with the shared predict-step multiplicative
+    inflation pinned at `config.kf.rtpp_alpha_fine` (default 1.0) so the
+    swept relaxation factor is the only active inflation mechanism -- and
+    writes every comparison figure, including the steady-state
+    equilibrium-variance diagnostic (static open-loop physics + reference
+    truth vs every filtered strategy; see `plot_equilibrium_variance`).
+
+    Returns the path of the `figures/comparisons_bulk` directory written
+    by `plot_comparisons_bulk` (and also used by `plot_equilibrium_variance`).
+    """
+    os.makedirs(workdir, exist_ok=True)
+
+    # ── EnKF / inflation configuration ──
+    N_ens = config.kf.get("N_ens", 50)
+    alpha_fine_rtpp = config.kf.get("rtpp_alpha_fine", 1.0)
+    alpha_rtpp_list = list(config.kf.get(
+        "rtpp_alpha_list",
+        [0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],  # see module docstring
+    ))
+    if len(alpha_rtpp_list) == 0:
+        raise ValueError("config.kf.rtpp_alpha_list is empty.")
+    if not all(0.0 <= a <= 1.0 for a in alpha_rtpp_list):
+        raise ValueError(
+            f"config.kf.rtpp_alpha_list must lie in [0, 1], got {alpha_rtpp_list}"
+        )
+
+    n_strategies = 2 * len(alpha_rtpp_list)
+    logging.info(
+        f"Building RTPP sweep strategy set: DD+RTPP / PI+RTPP "
+        f"x {len(alpha_rtpp_list)} relaxation factor(s) "
+        f"({alpha_rtpp_list}) -> {n_strategies} strategies ..."
+    )
+    if n_strategies > 8:
+        logging.warning(
+            f"{n_strategies} strategies -> the plot_comparisons_bulk overlay "
+            "may get crowded. Consider a shorter rtpp_alpha_list for a "
+            "first pass (see module docstring)."
+        )
+
+    strategies, propagators, N, t_star_window = build_rtpp_sweep_strategies(
+        config, N_ens, alpha_rtpp_list, alpha_fine_rtpp,
+    )
+
+    logging.info(
+        f"Stage 1/3: evaluate_filters — running {len(strategies)} DD/PI x "
+        "rtpp_alpha strategies on shared data and writing the results HDF5 "
+        "(including the steady-state / equilibrium-variance data) ..."
+    )
+    h5_path = evaluate_filters(
+        config=config,
+        workdir=workdir,
+        strategies=strategies,
+        propagators=propagators,
+        t_star_window=t_star_window,
+        test_h5_path=test_h5_path,
+    )
+    logging.info(f"  wrote {h5_path}")
+
+    logging.info(f"Stage 2/3: plot_comparisons_bulk — reading {h5_path} and writing figures ...")
+    save_dir = plot_comparisons_bulk(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
+    logging.info(f"  wrote figures to {save_dir}")
+
+    logging.info(
+        f"Stage 3/3: plot_equilibrium_variance — reading {h5_path} and writing "
+        "the static-physics-vs-filtered-strategies equilibrium-variance PDF ..."
+    )
+    plot_equilibrium_variance(h5_path=h5_path, workdir=workdir)
+    logging.info(f"  wrote {os.path.join(save_dir, 'equilibrium_variance_all.pdf')}")
+
+    return save_dir
+
+
