@@ -48,6 +48,9 @@ def main(argv):
     elif FLAGS.config.mode == "eval_enkf_dd_vs_pi_vs_num":
         eval.evaluate_enkf_dd_vs_pi_vs_num(FLAGS.config, FLAGS.workdir)
 
+    elif FLAGS.config.mode == "train_and_evaluate_hybrid":
+        eval.train_and_evaluate_hybrid(FLAGS.config, FLAGS.workdir)
+
     
 
 if __name__ == "__main__":

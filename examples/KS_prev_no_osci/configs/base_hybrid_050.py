@@ -3,7 +3,7 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    config.mode = "train"
+    config.mode = "train_and_evaluate_hybrid"
 
     # Weights & Biases
     # 
