@@ -46,11 +46,11 @@ import h5py
 # ── Configurable Parameters ────────────────────────────────────────────────────
 
 N           = 40       
-num_ics     = 500  
+num_ics     = 300  
 F_low       = 5.0
 F_high      = 9.0
 
-M           = 50      # Training windows per trajectory
+M           = 10      # Training windows per trajectory
 M_pi        = 1 * M    # PI training windows
 window_size = 0.25     # Window duration [time units]
 L           = 500      # Test trajectory length [in windows]

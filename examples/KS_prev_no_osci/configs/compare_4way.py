@@ -15,6 +15,10 @@ def get_config():
     wandb.ckpt_name_dd  = "base_dd_1" 
     wandb.name_hy       = "base_hybrid_050"
     wandb.ckpt_name_hy  = "base_hybrid_050" 
+
+    
+    wandb.name          = "compare_4way"
+    wandb.ckpt_name     = "compare_4way"
     wandb.tag = None
 
     # Arch 
@@ -118,7 +122,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
-    saving.total_plots = 3
+    saving.total_plots = 2
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
