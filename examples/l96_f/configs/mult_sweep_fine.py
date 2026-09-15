@@ -83,7 +83,7 @@ def get_config():
     kf.sigma_model           = 1.0 # window-level 
     kf.inflation_factor      = 1.05 # window-level 
     kf.N_ens                 = 200
-    kf.inflation_factor_list = [1.075, 1.08, 1.085, 1.09, 1.095, 1.1, 1.105, 1.15, 1.15]
+    kf.inflation_factor_list = [1.075, 1.08, 1.085, 1.09, 1.095, 1.1, 1.105, 1.15]
 
     # Route B & Additive Inflation
     kf.route_b_alpha        = 1.0
