@@ -67,6 +67,41 @@ def get_config():
     weighting.causal_tol = 0.02
     weighting.num_chunks = 10
 
+    # KF settings
+    config.kf = kf = ml_collections.ConfigDict()
+    kf.specify_obs_idx  = False
+    kf.obs_idx_list     = [0,2,4,8,12,14,16,20,24,26,28,32,36]
+
+    kf.obs_every_n  = 4
+
+    kf.sigma_obs       = 0.2
+    kf.P0_sigma        = 0.2
+    kf.dynamic_vars    = False 
+    kf.batch_l2_size   = 100
+
+    kf.dt_fine = 0.05
+    kf.dt_obs  = 0.25
+    # dt_fine must divide dt_obs and dt_window
+
+    # Multiplicative Inflation
+    kf.sigma_model           = 1.0 # window-level 
+    kf.inflation_factor      = 1.05 # window-level 
+    kf.N_ens                 = 200
+    kf.inflation_factor_list = [1.00, 1.02, 1.04, 1.06, 1.08, 1.10, 1.15, 1.20, 1.30]
+
+    # Route B & Additive Inflation
+    kf.route_b_alpha        = 0.0
+    kf.route_b_beta         = 250.0
+    kf.Q0_sigma             = 0.3
+    kf.route_b_n_quad       = 3
+    kf.inflation_alpha_list = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
+    kf.route_b_beta_list = [35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0]
+
+    # RTPP
+    kf.rtpp_alpha      = 0.5
+    kf.rtpp_alpha_fine = 1.0
+    kf.rtpp_alpha_list = [0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
     logging.log_every_steps = 500
