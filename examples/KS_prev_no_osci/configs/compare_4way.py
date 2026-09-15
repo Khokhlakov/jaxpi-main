@@ -9,8 +9,8 @@ def get_config():
     # 
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "KS-W1"
-    wandb.name_pi       = "base_pi_3"
-    wandb.ckpt_name_pi  = "base_pi_3" 
+    wandb.name_pi       = "base_pi_2"
+    wandb.ckpt_name_pi  = "base_pi_2" 
     wandb.name_dd       = "base_dd_1"
     wandb.ckpt_name_dd  = "base_dd_1" 
     wandb.name_hy       = "base_hybrid_050"
