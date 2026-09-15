@@ -4066,9 +4066,151 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
 
 
 def _plot_trajectory_summary(
+    t_ax: np.ndarray,
+    x_true: np.ndarray,
+    x_est: np.ndarray,
+    ic_idx: int,
+    test_windows: int,
+    pts_pw: int,
+    save_path: str,
+    N: int = 256,
+) -> None:
+    """
+    Generate and save the trajectory-summary PDF for a single KS IC.
+    Layout: 
+    - Row 1: 3 Heatmaps (Pred, True, Diff)
+    - Row 2: Relative L2 Error over time
+    - Rows 3+: Line plots at every window boundary (t=0, t=1, ...)
+    """
+    x_true = np.asarray(x_true)
+    x_est = np.asarray(x_est)
+    
+    # 1. Compute Errors
+    diff = x_est - x_true
+    # Relative L2 error for this specific trajectory over time
+    norm_err = np.linalg.norm(diff, axis=-1)
+    norm_ref = np.linalg.norm(x_true, axis=-1)
+    l2_rel = norm_err / (norm_ref + 1e-12)
+
+    # 2. Grid Setup
+    # Boundaries are at index w * pts_pw for w in 0...test_windows
+    num_boundaries = test_windows + 1
+    cols_line_plots = 4 # How many line plots per row
+    rows_line_plots = int(np.ceil(num_boundaries / cols_line_plots))
+    
+    total_rows = 2 + rows_line_plots
+    
+    # Dynamic figure height based on how many boundary plots we have
+    fig = plt.figure(figsize=(18, 5 + 3.5 + 2.5 * rows_line_plots))
+    
+    # Use 12 columns to easily split by 3 (heatmaps) and by 4 (line plots)
+    gs = gridspec.GridSpec(
+        nrows=total_rows, 
+        ncols=12, 
+        figure=fig, 
+        hspace=0.6, 
+        wspace=0.6,
+        height_ratios=[1.5, 0.8] + [1.0] * rows_line_plots
+    )
+
+    # --- ROW 0: Heatmaps ---
+    ax_heat_pred = fig.add_subplot(gs[0, 0:4])
+    ax_heat_true = fig.add_subplot(gs[0, 4:8], sharey=ax_heat_pred)
+    ax_heat_diff = fig.add_subplot(gs[0, 8:12], sharey=ax_heat_pred)
+
+    extent = [0, N-1, t_ax[0], t_ax[-1]]
+    
+    # Prediction
+    im_pred = ax_heat_pred.imshow(x_est, aspect='auto', extent=extent, cmap='viridis', origin='lower')
+    ax_heat_pred.set_title("DeepONet Prediction", fontsize=12, fontweight='bold')
+    ax_heat_pred.set_ylabel("Time (t)")
+    fig.colorbar(im_pred, ax=ax_heat_pred, fraction=0.046, pad=0.04)
+
+    # Truth
+    im_true = ax_heat_true.imshow(x_true, aspect='auto', extent=extent, cmap='viridis', origin='lower')
+    ax_heat_true.set_title("Reference Truth", fontsize=12, fontweight='bold')
+    ax_heat_true.set_xlabel("Spatial Points")
+    ax_heat_true.tick_params(labelleft=False)
+    fig.colorbar(im_true, ax=ax_heat_true, fraction=0.046, pad=0.04)
+
+    # Difference (Centered at 0)
+    vmax_diff = np.max(np.abs(diff))
+    im_diff = ax_heat_diff.imshow(diff, aspect='auto', extent=extent, cmap='RdBu_r', 
+                                  vmin=-vmax_diff, vmax=vmax_diff, origin='lower')
+    ax_heat_diff.set_title("Absolute Difference", fontsize=12, fontweight='bold')
+    ax_heat_diff.tick_params(labelleft=False)
+    fig.colorbar(im_diff, ax=ax_heat_diff, fraction=0.046, pad=0.04)
+    
+    # --- ROW 1: Mean L2 Error Plot ---
+    ax_l2 = fig.add_subplot(gs[1, :])
+    ax_l2.plot(t_ax, l2_rel, color="#E53935", linewidth=2.0, label="Relative L2 Error")
+    
+    # Add vertical lines for window boundaries
+    for w in range(num_boundaries):
+        wb = t_ax[w * pts_pw]
+        ax_l2.axvline(x=wb, color="#78909C", linestyle="--", linewidth=0.8, alpha=0.5)
+        
+    ax_l2.set_title("Trajectory Relative L2 Error Over Time", fontsize=12, fontweight='bold')
+    ax_l2.set_xlabel("Time (t)")
+    ax_l2.set_ylabel("Error")
+    ax_l2.set_yscale("log")
+    ax_l2.grid(True, linestyle="--", alpha=0.6)
+    ax_l2.legend()
+
+    # --- ROWS 2+: Boundary Line Plots ---
+    TRUTH_COLOR = "#37474F"
+    EST_COLOR   = "#1E88E5"
+    x_nodes = np.arange(N)
+
+    for i in range(num_boundaries):
+        row_idx = 2 + (i // cols_line_plots)
+        # Each plot takes 3 grid columns (12 / 4 = 3)
+        col_start = (i % cols_line_plots) * 3 
+        col_end = col_start + 3
+        
+        ax = fig.add_subplot(gs[row_idx, col_start:col_end])
+        
+        t_idx = i * pts_pw
+        t_val = t_ax[t_idx]
+        
+        ax.plot(x_nodes, x_true[t_idx], color=TRUTH_COLOR, linewidth=1.5, label="Truth")
+        ax.plot(x_nodes, x_est[t_idx], color=EST_COLOR, linewidth=1.5, linestyle="--", label="Pred")
+        
+        ax.set_title(f"Boundary t = {t_val:.1f}", fontsize=10)
+        ax.grid(True, linestyle="--", alpha=0.5)
+        ax.set_xlim(0, N-1)
+        
+        if i == 0:
+            ax.legend(fontsize=8, loc="upper right")
+
+    fig.suptitle(f"KS Trajectory Summary — IC {ic_idx}", fontsize=16, fontweight="bold", y=0.99)
+    
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=150)
+    plt.close(fig)
     logging.info(f"Trajectory summary for IC {ic_idx} saved to: {save_path}")
 
 def _plot_batch_l2_over_time(
+    t_ax: np.ndarray,
+    overall_mean_l2: np.ndarray,
+    save_path: str
+) -> None:
+    """
+    Plots the batch-average L2 error over time for the KS system.
+    """
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    ax.plot(t_ax, overall_mean_l2, color="#1E88E5", linewidth=2.5, label="Overall Mean (All Trajectories)")
+    ax.set_xlabel("Time (t)", fontsize=11)
+    ax.set_ylabel("Mean Relative L2 Error", fontsize=11)
+    ax.set_title("KS System: Overall Mean L2 Error Over Time", fontsize=13, fontweight="bold")
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+    ax.set_yscale("log")
+    ax.legend(fontsize=11)
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
 
 
