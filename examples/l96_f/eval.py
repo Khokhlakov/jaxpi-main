@@ -3825,8 +3825,10 @@ def build_default_7way_strategies(
 
     # ── Load both checkpoints ───────────────────────────────────────────
     logging.info("Loading DD model...")
-    model_dd = models.L96UDON(config, t_star_window)
+    model_dd = models.L96UDON_DD(config, t_star_window)          # <-- was models.L96UDON
     ckpt_path_dd = os.path.join(os.getcwd(), config.wandb.name_dd, "ckpt", "udon_model")
+    if not os.path.exists(ckpt_path_dd):
+        ckpt_path_dd = os.path.join(os.getcwd(), config.wandb.name_dd, "ckpt", "udon_dd_model")
     model_dd.state = restore_checkpoint(model_dd.state, ckpt_path_dd)
     params_dd = model_dd.state.params
 
