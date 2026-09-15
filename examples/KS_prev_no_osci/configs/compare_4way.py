@@ -95,7 +95,7 @@ def get_config():
 
     # Route B & Additive Inflation
     kf.route_b_alpha        = 0.0
-    kf.route_b_beta         = 250.0
+    kf.route_b_beta         = 45.0
     kf.Q0_sigma             = 0.3
     kf.route_b_n_quad       = 3
     kf.inflation_alpha_list = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
