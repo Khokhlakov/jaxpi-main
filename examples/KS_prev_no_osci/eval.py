@@ -620,45 +620,73 @@ def build_default_3way_strategies(config, N_ens, alpha_fine, Q_fine,
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Default 4-way strategy set: same PI propagator throughout, varying only
-# the inflation scheme, so differences isolate the inflation choice rather
-# than conflating it with propagator quality (unlike the 3-way set, which
-# also swaps DD vs PI).
+# Default 4-way strategy set, crossed with the propagators: for each
+# propagator in `propagator_kinds`, the same 4 inflation schemes are run,
+# so differences ACROSS inflation schemes (at fixed propagator) isolate
+# the inflation choice, and differences ACROSS propagators (at fixed
+# inflation scheme) isolate the surrogate choice (unlike the 3-way set,
+# which conflates the two by swapping both DD vs PI and mult vs Route B
+# at once).
 # ─────────────────────────────────────────────────────────────────────────
 
 def build_default_4way_strategies(
     config, N_ens, alpha_fine, alpha_rb, beta_rb, n_quad_rb, alpha_rtpp,
-    grid, alpha_fine_rtpp: float = 1.0,
+    grid, alpha_fine_rtpp: float = 1.0, propagator_kinds=("pi", "hy"),
 ):
     """
-    Builds the 4-way inflation-strategy comparison set, all sharing the
-    single PI checkpoint named in `config.wandb.name_pi`:
+    Builds the 4-way inflation-strategy comparison set, crossed with each
+    propagator in `propagator_kinds` (default: the physics-informed "pi"
+    checkpoint named in `config.wandb.name_pi` and the hybrid "hy"
+    checkpoint named in `config.wandb.name_hy`; "dd" has no PDE residual
+    so it can't run Route B / additive inflation and is not a valid entry
+    here):
 
-        1. pi_mult     -- standard multiplicative inflation (`make_enkf`).
-        2. pi_route_b  -- Route B: residual-scaled additive inflation,
-                          scale = alpha_rb + beta_rb * ||rho||^2
-                          (`make_route_b_enkf`).
-        3. pi_additive -- plain additive inflation, obtained from the SAME
-                          Route B machinery with the flow-dependent term
-                          zeroed out (beta=0.0), leaving only the constant
-                          alpha_rb * Q0 floor.
-        4. pi_rtpp     -- Relaxation-to-Prior Perturbations (`make_rtpp_enkf`).
-                          `alpha_fine_rtpp` controls the (optional, shared)
-                          multiplicative inflation in RTPP's predict step;
-                          it defaults to 1.0 so `alpha_rtpp` (the relaxation
-                          factor, in [0, 1]) is the only active inflation
-                          mechanism for this strategy.
+        1. <kind>_mult     -- standard multiplicative inflation (`make_enkf`).
+        2. <kind>_route_b  -- Route B: residual-scaled additive inflation,
+                              scale = alpha_rb + beta_rb * ||rho||^2
+                              (`make_route_b_enkf`).
+        3. <kind>_additive -- plain additive inflation, obtained from the
+                              SAME Route B machinery with the flow-dependent
+                              term zeroed out (beta=0.0), leaving only the
+                              constant alpha_rb * Q0 floor.
+        4. <kind>_rtpp     -- Relaxation-to-Prior Perturbations
+                              (`make_rtpp_enkf`). `alpha_fine_rtpp` controls
+                              the (optional, shared) multiplicative
+                              inflation in RTPP's predict step; it defaults
+                              to 1.0 so `alpha_rtpp` (the relaxation factor,
+                              in [0, 1]) is the only active inflation
+                              mechanism for this strategy.
 
-    Note that (2) and (3) differ ONLY in beta, so a flat gap between them
-    is the cleanest available read on whether Route B's physics-driven term
-    is doing anything for KS at the beta you passed in.
+    With the default two-propagator set this produces an 8-way comparison
+    (4 inflation schemes x {PI, Hybrid}); pass `propagator_kinds=("pi",)`
+    to recover the original PI-only 4-way comparison.
+
+    Note that (2) and (3), for the SAME propagator, differ ONLY in beta,
+    so a flat gap between them is the cleanest available read on whether
+    Route B's physics-driven term is doing anything for KS at the beta you
+    passed in.
 
     Returns (strategies, propagators, N, t_star_window).
     """
     dt_window, _, t_star_window = _window_grid(config, grid)
 
-    model_pi, params_pi = _load_ks_model(config, "pi", t_star_window, grid)
-    N = model_pi.N
+    loaded = {}
+    N = None
+    for kind in propagator_kinds:
+        if kind == "dd":
+            raise ValueError(
+                "'dd' has no PDE residual (r_net), so it cannot run Route "
+                "B / additive inflation and is not eligible for the 4-way "
+                "comparison. Use 'pi' and/or 'hy' in propagator_kinds."
+            )
+        model, params = _load_ks_model(config, kind, t_star_window, grid)
+        loaded[kind] = (model, params)
+        if N is None:
+            N = model.N
+        assert model.N == N, (
+            f"'{kind}' checkpoint grid size ({model.N}) != {N}; can't share a "
+            "strategy/propagator set across them."
+        )
 
     # Route B / additive both need Q_fine.
     P0_sigma = config.kf.get("P0_sigma", 0.5)
@@ -669,28 +697,33 @@ def build_default_4way_strategies(
     Q_coarse = build_cov(N, grid["L"], Q0_sigma, Q0_corr_len)
     Q_fine = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
 
-    predict_fn_mult, update_fn_mult = model_pi.make_enkf_fns(params_pi, N_ens=N_ens)
-    predict_fn_rb, update_fn_rb = model_pi.make_route_b_enkf_fns(params_pi, N_ens=N_ens)
-    predict_fn_rtpp, update_fn_rtpp = model_pi.make_rtpp_enkf_fns(params_pi, N_ens=N_ens)
+    label_of_kind = {"pi": "PI", "hy": "Hybrid"}
 
-    strategies = [
-        dict(key="pi_mult", label="PI + Mult. Infl.", kind="standard",
-             propagator="pi", predict_fn=predict_fn_mult, update_fn=update_fn_mult,
-             alpha_fine=alpha_fine),
-        dict(key="pi_route_b", label="PI + Route B Infl.", kind="route_b",
-             propagator="pi", predict_fn=predict_fn_rb, update_fn=update_fn_rb,
-             Q0=Q_fine, alpha=alpha_rb, beta=beta_rb, n_quad=n_quad_rb),
-        dict(key="pi_additive", label="PI + Additive Infl.", kind="route_b",
-             propagator="pi", predict_fn=predict_fn_rb, update_fn=update_fn_rb,
-             Q0=Q_fine, alpha=alpha_rb, beta=0.0, n_quad=n_quad_rb),
-        dict(key="pi_rtpp", label="PI + RTPP", kind="rtpp",
-             propagator="pi", predict_fn=predict_fn_rtpp, update_fn=update_fn_rtpp,
-             alpha_fine=alpha_fine_rtpp, alpha_rtpp=alpha_rtpp),
-    ]
-    propagators = {
-        "pi": (model_pi, params_pi),
-    }
-    return strategies, propagators, N, t_star_window
+    strategies = []
+    for kind in propagator_kinds:
+        model, params = loaded[kind]
+        label = label_of_kind.get(kind, kind.upper())
+
+        predict_fn_mult, update_fn_mult = model.make_enkf_fns(params, N_ens=N_ens)
+        predict_fn_rb, update_fn_rb = model.make_route_b_enkf_fns(params, N_ens=N_ens)
+        predict_fn_rtpp, update_fn_rtpp = model.make_rtpp_enkf_fns(params, N_ens=N_ens)
+
+        strategies.extend([
+            dict(key=f"{kind}_mult", label=f"{label} + Mult. Infl.", kind="standard",
+                 propagator=kind, predict_fn=predict_fn_mult, update_fn=update_fn_mult,
+                 alpha_fine=alpha_fine),
+            dict(key=f"{kind}_route_b", label=f"{label} + Route B Infl.", kind="route_b",
+                 propagator=kind, predict_fn=predict_fn_rb, update_fn=update_fn_rb,
+                 Q0=Q_fine, alpha=alpha_rb, beta=beta_rb, n_quad=n_quad_rb),
+            dict(key=f"{kind}_additive", label=f"{label} + Additive Infl.", kind="route_b",
+                 propagator=kind, predict_fn=predict_fn_rb, update_fn=update_fn_rb,
+                 Q0=Q_fine, alpha=alpha_rb, beta=0.0, n_quad=n_quad_rb),
+            dict(key=f"{kind}_rtpp", label=f"{label} + RTPP", kind="rtpp",
+                 propagator=kind, predict_fn=predict_fn_rtpp, update_fn=update_fn_rtpp,
+                 alpha_fine=alpha_fine_rtpp, alpha_rtpp=alpha_rtpp),
+        ])
+
+    return strategies, loaded, N, t_star_window
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -2920,24 +2953,33 @@ def run_3way_comparison(config, workdir: str, test_h5_path: str | None = None,
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Runner: 4-way inflation-scheme comparison (PI propagator throughout)
+# Runner: 4-way inflation-scheme comparison, crossed with the propagators
 # ─────────────────────────────────────────────────────────────────────────
 """
-Run a 4-way EnKF covariance-inflation comparison
+Run a 4-way EnKF covariance-inflation comparison, crossed with the
+propagators that expose a PDE residual (PI and/or Hybrid; "dd" is not
+eligible)
 
-    1. PI propagator + Multiplicative inflation
-    2. PI propagator + Route B (residual-scaled additive) inflation
-    3. PI propagator + plain Additive inflation (Route B with the
+For each propagator in `config.kf.compare_propagators` (default: PI and
+Hybrid, i.e. `["pi", "hy"]`):
+
+    1. <kind> propagator + Multiplicative inflation
+    2. <kind> propagator + Route B (residual-scaled additive) inflation
+    3. <kind> propagator + plain Additive inflation (Route B with the
        flow-dependent term zeroed out, i.e. beta=0)
-    4. PI propagator + Relaxation-to-Prior Perturbations (RTPP)
+    4. <kind> propagator + Relaxation-to-Prior Perturbations (RTPP)
 
-The propagator is held fixed at the PI (physics-informed) checkpoint
-across all four strategies, so the comparison isolates the effect of the
-inflation scheme rather than mixing it with the DD-vs-PI propagator
-choice.
+so differences ACROSS inflation schemes, at fixed propagator, isolate the
+effect of the inflation scheme, while differences ACROSS propagators, at
+fixed inflation scheme, isolate the effect of the surrogate itself. Pass
+`config.kf.compare_propagators = ["pi"]` to recover the original PI-only
+4-way comparison.
 
 Knobs, all read from `config.kf`
 --------------------------------
+    compare_propagators -- which propagators to cross the 4 inflation
+                         schemes with. Default `["pi", "hy"]`; "dd" is not
+                         eligible (no PDE residual for Route B/additive).
     inflation_factor  -- window-level multiplicative inflation (scaled to
                          a per-fine-step factor internally).
     route_b_alpha     -- Route B / additive constant floor.
@@ -2953,15 +2995,17 @@ Knobs, all read from `config.kf`
     rtpp_alpha_fine   -- multiplicative inflation inside RTPP's (shared)
                          predict step. Defaults to 1.0 so `rtpp_alpha` is
                          the only active inflation mechanism, which is what
-                         makes the 4-way comparison fair.
+                         makes the comparison fair across inflation schemes.
 """
 
 
 def run_4way_comparison(config, workdir: str, test_h5_path: str | None = None,
                         n_bins: int = 10) -> str:
     """
-    Runs the PI-only Mult / Route-B / Additive / RTPP 4-way EnKF
-    inflation-strategy evaluation and writes every comparison figure.
+    Runs the Mult / Route-B / Additive / RTPP inflation-strategy
+    evaluation, crossed with the configured propagators (default PI and
+    Hybrid -- "dd" has no PDE residual and is not eligible), and writes
+    every comparison figure.
 
     Returns the path of the `figures/comparisons` directory written by
     `plot_comparisons`.
@@ -2981,6 +3025,7 @@ def run_4way_comparison(config, workdir: str, test_h5_path: str | None = None,
     n_quad_rb = config.kf.get("route_b_n_quad", 3)
     alpha_rtpp = config.kf.get("rtpp_alpha", 0.5)
     alpha_fine_rtpp = config.kf.get("rtpp_alpha_fine", 1.0)
+    propagator_kinds = tuple(config.kf.get("compare_propagators", ["pi", "hy"]))
 
     DT_WINDOW = float(config.get("dt_window", 1.0))
     DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
@@ -2988,16 +3033,24 @@ def run_4way_comparison(config, workdir: str, test_h5_path: str | None = None,
     alpha_fine = scale_inflation_for_fine_steps(alpha_coarse, steps_per_window)
 
     logging.info(
-        "Building 4-way strategy set: PI+Mult / PI+RouteB / PI+Additive / PI+RTPP ..."
+        f"Building 4-way strategy set (x {list(propagator_kinds)}): "
+        "Mult / RouteB / Additive / RTPP ..."
     )
     strategies, propagators, N, t_star_window = build_default_4way_strategies(
         config, N_ens, alpha_fine, alpha_rb, beta_rb, n_quad_rb, alpha_rtpp,
-        grid, alpha_fine_rtpp=alpha_fine_rtpp,
+        grid, alpha_fine_rtpp=alpha_fine_rtpp, propagator_kinds=propagator_kinds,
     )
+    if len(strategies) > 12:
+        logging.warning(
+            f"{len(strategies)} strategies -> {len(strategies) * (len(strategies) - 1) // 2} "
+            "pairwise comparison PDFs from plot_comparisons. Consider "
+            "config.kf.compare_propagators = ['pi'] for the original "
+            "PI-only 4-way comparison if that's too many."
+        )
 
     logging.info(
-        "Stage 1/2: evaluate_filters — running Mult / RouteB / Additive / "
-        "RTPP on shared data and writing the results HDF5 ..."
+        f"Stage 1/2: evaluate_filters — running {len(strategies)} propagator x "
+        "inflation-scheme strategies on shared data and writing the results HDF5 ..."
     )
     h5_path = evaluate_filters(
         config=config,
@@ -3080,8 +3133,9 @@ def build_mult_sweep_strategies(config, N_ens, alpha_coarse_list, steps_per_wind
 Run a multiplicative-inflation-factor calibration sweep
 
     For every value `alpha` in `config.kf.inflation_factor_list`, and for
-    each propagator in `config.kf.sweep_propagators` (default DD and PI),
-    evaluate that propagator + multiplicative inflation @ alpha.
+    each propagator in `config.kf.sweep_propagators` (default DD, PI and
+    Hybrid -- "dd", "pi", "hy"), evaluate that propagator + multiplicative
+    inflation @ alpha.
 
 Choosing `config.kf.inflation_factor_list`
 ------------------------------------------
@@ -3124,7 +3178,7 @@ def run_mult_inflation_sweep(config, workdir: str, test_h5_path: str | None = No
     grid = _read_test_meta(test_h5_path)
 
     N_ens = config.kf.get("N_ens", 50)
-    propagator_kinds = tuple(config.kf.get("sweep_propagators", ["dd", "pi"]))
+    propagator_kinds = tuple(config.kf.get("sweep_propagators", ["dd", "pi", "hy"]))
     alpha_coarse_list = list(config.kf.get(
         "inflation_factor_list",
         [1.00, 1.02, 1.04, 1.06, 1.08, 1.10, 1.15, 1.20, 1.30],
@@ -3181,29 +3235,37 @@ def run_mult_inflation_sweep(config, workdir: str, test_h5_path: str | None = No
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Pure-additive-inflation-strength sweep: PI propagator only
+# Pure-additive-inflation-strength sweep: propagators exposing r_net only
+# (PI and/or Hybrid -- "dd" has no PDE residual)
 # ─────────────────────────────────────────────────────────────────────────
 
-def build_add_sweep_strategies(config, N_ens, alpha_list, steps_per_window, grid):
+def build_add_sweep_strategies(config, N_ens, alpha_list, steps_per_window, grid,
+                               propagator_kinds=("pi", "hy")):
     """
-    Builds a PI + pure-additive-inflation-strength sweep, reusing the
-    single PI checkpoint and ONE `make_route_b_enkf_fns` closure pair --
-    one strategy per value in `alpha_list`:
+    Builds a pure-additive-inflation-strength sweep, crossed with each
+    propagator in `propagator_kinds`, reusing ONE `make_route_b_enkf_fns`
+    closure pair per propagator -- one strategy per (propagator, alpha)
+    pair:
 
-        pi_add_a<tag> -- PI propagator + Route B inflation with `beta`
-                         pinned to 0.0, i.e. the flow-dependent
-                         `beta * ||rho||^2` term switched off, so the
-                         residual-scaled Route B machinery degenerates to
-                         *pure* additive inflation: a fixed-covariance
-                         process-noise floor `alpha * Q0` injected every
-                         fine step, with `alpha_list[i]` setting the
-                         floor's strength.
+        <kind>_add_a<tag> -- that propagator + Route B inflation with
+                             `beta` pinned to 0.0, i.e. the flow-dependent
+                             `beta * ||rho||^2` term switched off, so the
+                             residual-scaled Route B machinery degenerates
+                             to *pure* additive inflation: a fixed-
+                             covariance process-noise floor `alpha * Q0`
+                             injected every fine step, with
+                             `alpha_list[i]` setting the floor's strength.
 
-    Route B needs the PDE residual, which only the physics-informed model
-    exposes (`KSUDON.r_net`), so this sweep is PI-only. `KSUDON_Hybrid`
-    also has `r_net` and can be substituted by changing the `_load_ks_model`
-    call below to `"hy"` if you want the additive sweep against the hybrid
-    checkpoint instead.
+    Route B needs the PDE residual, which only the physics-informed
+    `KSUDON` ("pi") and the hybrid `KSUDON_Hybrid` ("hy") expose
+    (`r_net`) -- `KSUDON_DD` doesn't, so "dd" is not a valid entry in
+    `propagator_kinds` here.
+
+    `predict_fn`/`update_fn` are built ONCE per propagator: pinning
+    `beta=0.0` doesn't change the EnKF closure itself, only the scalars
+    carried alongside it in the strategy dict. So the sweep is cheap --
+    no extra model calls or checkpoint loads per alpha, just extra
+    strategy dict entries reusing the same closures.
 
     `Q0`'s spatial structure comes from `config.kf.Q0_sigma` and
     `config.kf.Q0_corr_len` (see `kf.periodic_gaussian_cov` for why a
@@ -3213,8 +3275,24 @@ def build_add_sweep_strategies(config, N_ens, alpha_list, steps_per_window, grid
     """
     _, _, t_star_window = _window_grid(config, grid)
 
-    model_pi, params_pi = _load_ks_model(config, "pi", t_star_window, grid)
-    N = model_pi.N
+    loaded, closures = {}, {}
+    N = None
+    for kind in propagator_kinds:
+        if kind == "dd":
+            raise ValueError(
+                "'dd' has no PDE residual (r_net), so it cannot run Route "
+                "B / additive inflation. Use 'pi' and/or 'hy' in "
+                "propagator_kinds."
+            )
+        model, params = _load_ks_model(config, kind, t_star_window, grid)
+        loaded[kind] = (model, params)
+        closures[kind] = model.make_route_b_enkf_fns(params, N_ens=N_ens)
+        if N is None:
+            N = model.N
+        assert model.N == N, (
+            f"'{kind}' checkpoint grid size ({model.N}) != {N}; can't share a "
+            "strategy/propagator set across them."
+        )
 
     P0_sigma = config.kf.get("P0_sigma", 0.5)
     Q0_sigma = config.kf.get("Q0_sigma", P0_sigma)
@@ -3223,24 +3301,28 @@ def build_add_sweep_strategies(config, N_ens, alpha_list, steps_per_window, grid
     Q_coarse = build_cov(N, grid["L"], Q0_sigma, Q0_corr_len)
     Q_fine = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
 
-    predict_fn_rb, update_fn_rb = model_pi.make_route_b_enkf_fns(params_pi, N_ens=N_ens)
+    label_of_kind = {"pi": "PI", "hy": "Hybrid"}
 
     strategies = []
     for alpha in alpha_list:
         tag = f"{alpha:g}".replace(".", "p")
-        strategies.append(dict(
-            key=f"pi_add_a{tag}",
-            label=f"PI + Add. Infl. (\u03b1={alpha:g})",
-            kind="route_b", propagator="pi",
-            predict_fn=predict_fn_rb, update_fn=update_fn_rb,
-            Q0=Q_fine, alpha=float(alpha), beta=0.0, n_quad=n_quad_rb,
-        ))
+        for kind in propagator_kinds:
+            predict_fn, update_fn = closures[kind]
+            strategies.append(dict(
+                key=f"{kind}_add_a{tag}",
+                label=f"{label_of_kind.get(kind, kind.upper())} + Add. Infl. "
+                      f"(\u03b1={alpha:g})",
+                kind="route_b", propagator=kind,
+                predict_fn=predict_fn, update_fn=update_fn,
+                Q0=Q_fine, alpha=float(alpha), beta=0.0, n_quad=n_quad_rb,
+            ))
 
-    return strategies, {"pi": (model_pi, params_pi)}, N, t_star_window
+    return strategies, loaded, N, t_star_window
 
 
 """
-Run a pure-additive-inflation-strength sweep: PI propagator only
+Run a pure-additive-inflation-strength sweep, crossed with the propagators
+that expose a PDE residual (PI and/or Hybrid; "dd" is not eligible)
 
 Choosing `config.kf.inflation_alpha_list`
 ------------------------------------------
@@ -3271,9 +3353,11 @@ Choosing `config.kf.inflation_alpha_list`
 def run_add_inflation_sweep(config, workdir: str, test_h5_path: str | None = None,
                             n_bins: int = 10) -> str:
     """
-    Runs the PI-only pure-additive-inflation-strength sweep (Route B with
-    beta pinned to 0.0) and writes every comparison figure, including the
-    steady-state equilibrium-variance diagnostic.
+    Runs the pure-additive-inflation-strength sweep (Route B with beta
+    pinned to 0.0), crossed with the configured propagators
+    (`config.kf.sweep_propagators_additive`, default PI and Hybrid -- "dd"
+    has no PDE residual and is not eligible), and writes every comparison
+    figure, including the steady-state equilibrium-variance diagnostic.
 
     Returns the path of the `figures/comparisons_bulk` directory.
     """
@@ -3284,6 +3368,7 @@ def run_add_inflation_sweep(config, workdir: str, test_h5_path: str | None = Non
     grid = _read_test_meta(test_h5_path)
 
     N_ens = config.kf.get("N_ens", 50)
+    propagator_kinds = tuple(config.kf.get("sweep_propagators_additive", ["pi", "hy"]))
     alpha_list = list(config.kf.get(
         "inflation_alpha_list", [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0],
     ))
@@ -3298,23 +3383,25 @@ def run_add_inflation_sweep(config, workdir: str, test_h5_path: str | None = Non
     DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
     steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
 
-    n_strategies = len(alpha_list)
+    n_strategies = len(propagator_kinds) * len(alpha_list)
     logging.info(
-        f"Building Additive-inflation sweep: PI + pure additive inflation "
-        f"(Route B, beta=0) x {n_strategies} alpha value(s) ({alpha_list}) ..."
+        f"Building Additive-inflation sweep: {list(propagator_kinds)} + pure "
+        f"additive inflation (Route B, beta=0) x {len(alpha_list)} alpha "
+        f"value(s) ({alpha_list}) -> {n_strategies} strategies ..."
     )
     if n_strategies > 12:
         logging.warning(
             f"{n_strategies} strategies overlaid on one bulk figure may get "
-            "crowded. Consider a shorter inflation_alpha_list for a first pass."
+            "crowded. Consider a shorter inflation_alpha_list or fewer "
+            "propagators for a first pass."
         )
 
     strategies, propagators, N, t_star_window = build_add_sweep_strategies(
-        config, N_ens, alpha_list, steps_per_window, grid,
+        config, N_ens, alpha_list, steps_per_window, grid, propagator_kinds,
     )
 
     logging.info(
-        f"Stage 1/3: evaluate_filters — running {len(strategies)} PI + "
+        f"Stage 1/3: evaluate_filters — running {len(strategies)} propagator x "
         "additive-alpha strategies on shared data ..."
     )
     h5_path = evaluate_filters(
@@ -3442,7 +3529,7 @@ def run_rtpp_inflation_sweep(config, workdir: str, test_h5_path: str | None = No
     grid = _read_test_meta(test_h5_path)
 
     N_ens = config.kf.get("N_ens", 50)
-    propagator_kinds = tuple(config.kf.get("sweep_propagators", ["dd", "pi"]))
+    propagator_kinds = tuple(config.kf.get("sweep_propagators", ["dd", "pi", "hy"]))
     alpha_fine_rtpp = config.kf.get("rtpp_alpha_fine", 1.0)
     alpha_rtpp_list = list(config.kf.get(
         "rtpp_alpha_list", [0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
@@ -3493,28 +3580,51 @@ def run_rtpp_inflation_sweep(config, workdir: str, test_h5_path: str | None = No
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Route B (modified additive) beta sweep: PI propagator only
+# Route B (modified additive) beta sweep: propagators exposing r_net only
+# (PI and/or Hybrid -- "dd" has no PDE residual)
 # ─────────────────────────────────────────────────────────────────────────
 
 def build_route_b_sweep_strategies(config, N_ens, beta_list, alpha_rb_fixed,
-                                   steps_per_window, grid):
+                                   steps_per_window, grid,
+                                   propagator_kinds=("pi", "hy")):
     """
-    Builds a PI + Route B beta-sweep, reusing the single PI checkpoint and
-    ONE `make_route_b_enkf_fns` closure pair -- one strategy per value in
-    `beta_list`, all sharing the SAME fixed `alpha_rb_fixed` floor:
+    Builds a Route B beta-sweep, crossed with each propagator in
+    `propagator_kinds`, reusing ONE `make_route_b_enkf_fns` closure pair
+    per propagator -- one strategy per (propagator, beta) pair, all
+    sharing the SAME fixed `alpha_rb_fixed` floor:
 
-        pi_route_b_b<tag> -- PI propagator + Route B inflation, scale =
-                             alpha_rb_fixed + beta * ||rho||^2.
+        <kind>_route_b_b<tag> -- that propagator + Route B inflation,
+                                 scale = alpha_rb_fixed + beta * ||rho||^2.
 
     This is the mirror image of `build_add_sweep_strategies`, which pins
     `beta=0.0` and sweeps the constant floor `alpha`.
+
+    Route B needs the PDE residual, which only the physics-informed
+    `KSUDON` ("pi") and the hybrid `KSUDON_Hybrid` ("hy") expose
+    (`r_net`) -- `KSUDON_DD` doesn't, so "dd" is not a valid entry in
+    `propagator_kinds` here.
 
     Returns (strategies, propagators, N, t_star_window).
     """
     _, _, t_star_window = _window_grid(config, grid)
 
-    model_pi, params_pi = _load_ks_model(config, "pi", t_star_window, grid)
-    N = model_pi.N
+    loaded, closures = {}, {}
+    N = None
+    for kind in propagator_kinds:
+        if kind == "dd":
+            raise ValueError(
+                "'dd' has no PDE residual (r_net), so it cannot run Route "
+                "B inflation. Use 'pi' and/or 'hy' in propagator_kinds."
+            )
+        model, params = _load_ks_model(config, kind, t_star_window, grid)
+        loaded[kind] = (model, params)
+        closures[kind] = model.make_route_b_enkf_fns(params, N_ens=N_ens)
+        if N is None:
+            N = model.N
+        assert model.N == N, (
+            f"'{kind}' checkpoint grid size ({model.N}) != {N}; can't share a "
+            "strategy/propagator set across them."
+        )
 
     P0_sigma = config.kf.get("P0_sigma", 0.5)
     Q0_sigma = config.kf.get("Q0_sigma", P0_sigma)
@@ -3523,25 +3633,30 @@ def build_route_b_sweep_strategies(config, N_ens, beta_list, alpha_rb_fixed,
     Q_coarse = build_cov(N, grid["L"], Q0_sigma, Q0_corr_len)
     Q_fine = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
 
-    predict_fn_rb, update_fn_rb = model_pi.make_route_b_enkf_fns(params_pi, N_ens=N_ens)
+    label_of_kind = {"pi": "PI", "hy": "Hybrid"}
 
     strategies = []
     for beta in beta_list:
         tag = f"{beta:g}".replace(".", "p")
-        strategies.append(dict(
-            key=f"pi_route_b_b{tag}",
-            label=f"PI + Route B (\u03b1={alpha_rb_fixed:g}, \u03b2={beta:g})",
-            kind="route_b", propagator="pi",
-            predict_fn=predict_fn_rb, update_fn=update_fn_rb,
-            Q0=Q_fine, alpha=float(alpha_rb_fixed), beta=float(beta),
-            n_quad=n_quad_rb,
-        ))
+        for kind in propagator_kinds:
+            predict_fn, update_fn = closures[kind]
+            strategies.append(dict(
+                key=f"{kind}_route_b_b{tag}",
+                label=f"{label_of_kind.get(kind, kind.upper())} + Route B "
+                      f"(\u03b1={alpha_rb_fixed:g}, \u03b2={beta:g})",
+                kind="route_b", propagator=kind,
+                predict_fn=predict_fn, update_fn=update_fn,
+                Q0=Q_fine, alpha=float(alpha_rb_fixed), beta=float(beta),
+                n_quad=n_quad_rb,
+            ))
 
-    return strategies, {"pi": (model_pi, params_pi)}, N, t_star_window
+    return strategies, loaded, N, t_star_window
 
 
 """
-Run a Route B (modified additive) beta sweep: PI propagator only
+Run a Route B (modified additive) beta sweep, crossed with the
+propagators that expose a PDE residual (PI and/or Hybrid; "dd" is not
+eligible)
 
 Choosing `alpha_rb_fixed`
 -------------------------
@@ -3598,11 +3713,13 @@ def run_route_b_inflation_sweep(
     test_h5_path: str | None = None, n_bins: int = 10,
 ) -> str:
     """
-    Runs the PI-only Route B beta sweep -- one calibration pass per value
-    in `config.kf.route_b_beta_list`, with the constant floor pinned at
-    `alpha_rb_fixed` (falls back to `config.kf.route_b_alpha` if None) --
-    and writes every comparison figure including the equilibrium-variance
-    diagnostic.
+    Runs the Route B beta sweep -- one calibration pass per value in
+    `config.kf.route_b_beta_list`, crossed with the configured propagators
+    (`config.kf.sweep_propagators_route_b`, default PI and Hybrid -- "dd"
+    has no PDE residual and is not eligible), with the constant floor
+    pinned at `alpha_rb_fixed` (falls back to `config.kf.route_b_alpha` if
+    None) -- and writes every comparison figure including the
+    equilibrium-variance diagnostic.
 
     Returns the path of the `figures/comparisons_bulk` directory.
     """
@@ -3613,6 +3730,7 @@ def run_route_b_inflation_sweep(
     grid = _read_test_meta(test_h5_path)
 
     N_ens = config.kf.get("N_ens", 50)
+    propagator_kinds = tuple(config.kf.get("sweep_propagators_route_b", ["pi", "hy"]))
     if alpha_rb_fixed is None:
         # Default 0.0: pure amplified residual error, no constant floor.
         alpha_rb_fixed = config.kf.get("route_b_alpha", 0.0)
@@ -3630,23 +3748,26 @@ def run_route_b_inflation_sweep(
     DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
     steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
 
-    n_strategies = len(beta_list)
+    n_strategies = len(propagator_kinds) * len(beta_list)
     logging.info(
-        f"Building Route B beta sweep: PI + Route B (alpha fixed at "
-        f"{alpha_rb_fixed:g}) x {n_strategies} beta value(s) ({beta_list}) ..."
+        f"Building Route B beta sweep: {list(propagator_kinds)} + Route B "
+        f"(alpha fixed at {alpha_rb_fixed:g}) x {len(beta_list)} beta "
+        f"value(s) ({beta_list}) -> {n_strategies} strategies ..."
     )
     if n_strategies > 12:
         logging.warning(
             f"{n_strategies} strategies overlaid on one bulk figure may get "
-            "crowded. Consider a shorter route_b_beta_list for a first pass."
+            "crowded. Consider a shorter route_b_beta_list or fewer "
+            "propagators for a first pass."
         )
 
     strategies, propagators, N, t_star_window = build_route_b_sweep_strategies(
         config, N_ens, beta_list, alpha_rb_fixed, steps_per_window, grid,
+        propagator_kinds,
     )
 
     logging.info(
-        f"Stage 1/3: evaluate_filters — running {len(strategies)} PI + "
+        f"Stage 1/3: evaluate_filters — running {len(strategies)} propagator x "
         "Route B beta strategies on shared data ..."
     )
     h5_path = evaluate_filters(
@@ -3939,4 +4060,122 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         save_path=batch_save_path,
     )
 
+    logging.info(f"Batch L2 error plot saved to: {batch_save_path}")
+
+
+
+
+def _plot_trajectory_summary(
+    logging.info(f"Trajectory summary for IC {ic_idx} saved to: {save_path}")
+
+def _plot_batch_l2_over_time(
+    plt.close(fig)
+
+
+def evaluate(config: ml_collections.ConfigDict, workdir: str):
+    # ── 1. Load Dense Test Dataset ──────────────────────────────────────────
+    data_dir = config.training.get("data_dir", "data")
+    test_file = os.path.join(data_dir, "ks_test_data.h5")
+
+    logging.info(f"Loading test dataset from {test_file}...")
+    with h5py.File(test_file, 'r') as f:
+        u_test = jnp.array(f['u'][:])[:100, :, :]     # Shape: (num_ics, num_test_pts, 256)
+        N = f.attrs['N']
+        dt = f.attrs['dt']
+        test_windows = f.attrs['test_windows']
+        
+    num_ics, num_test_pts, N_loaded = u_test.shape
+    assert N_loaded == 256, f"Expected state dimension 256, got {N_loaded}"
+
+    # Reconstruct time definitions
+    # 1 time unit = 1 window
+    w_dt = 1.0
+    pts_pw = int(round(w_dt / dt))
+    t_ax = np.arange(num_test_pts) * dt
+    
+    # Single-window relative time grid required by the surrogate model
+    t_star_window = t_ax[:pts_pw + 1]
+
+    # ── 2. Setup Model & Load Checkpoint ────────────────────────────────────
+    if config.mode == "eval":
+        model = models.KSUDON(config, t_star_window)
+    else:
+        model = models.KSUDON_DD(config, t_star_window)
+        
+    ckpt_path = os.path.join(os.getcwd(), config.wandb.name, "ckpt", "ks_udon_model")
+    
+    logging.info(f"Restoring DeepONet model from: {ckpt_path}")
+    model.state = restore_checkpoint(model.state, ckpt_path)
+    params = model.state.params
+
+    # JIT-compile a vmapped batch predictor
+    # KS is autonomous, so input is just u (shape: 256)
+    predict_batch = jax.jit(jax.vmap(lambda u: model.x_pred_fn(params, u, t_star_window), in_axes=0))
+
+    # ── 3. Batched Autoregressive Rollout ───────────────────────────────────
+    logging.info(f"Initiating batched rollout across all {num_ics} test trajectories...")
+    
+    u_current_batch = u_test[:, 0, :]               # Shape: (num_ics, 256)
+    x_pred_list = []
+    
+    for w in range(test_windows):
+        # Predict the full trajectory for the current time window
+        pred_window = predict_batch(u_current_batch)    # Shape: (num_ics, pts_pw+1, 256)
+
+        # Avoid duplicating the overlapping boundary states between windows
+        if w == 0:
+            x_pred_list.append(pred_window)
+        else:
+            x_pred_list.append(pred_window[:, 1:, :])
+
+        # Advance the initial conditions to the end of the predicted window
+        u_current_batch = pred_window[:, -1, :]
+
+    # Reconstruct the continuous dense time series
+    x_pred_full = jnp.concatenate(x_pred_list, axis=1)  # Shape: (num_ics, num_test_pts, 256)
+
+    # ── 4. Generate Individual Trajectory Plots ─────────────────────────────
+    total_plots = config.saving.get("total_plots", 5)
+    for ic_idx in range(min(total_plots, num_ics)):
+        logging.info(f"--- Generating detailed summary for IC {ic_idx} ---")
+        
+        save_path = os.path.join(
+            workdir, "figures", config.wandb.name, f"trajectory_summary_ic_{ic_idx}.pdf"
+        )
+        
+        _plot_trajectory_summary(
+            t_ax=t_ax,
+            x_true=np.array(u_test[ic_idx]),
+            x_est=np.array(x_pred_full[ic_idx]),
+            ic_idx=ic_idx,
+            test_windows=test_windows,
+            pts_pw=pts_pw,
+            save_path=save_path,
+            N=N_loaded
+        )
+
+    # ── 5. Generate Batch Error Analysis ─────────────────────────
+    logging.info("--- Computing Batch L2 Error Statistics ---")
+    
+    err = x_pred_full - u_test
+    norm_err = jnp.linalg.norm(err, axis=-1)
+    norm_ref = jnp.linalg.norm(u_test, axis=-1)
+    l2_rel_per_traj_time = norm_err / (norm_ref + 1e-12)
+
+    l2_rel_np = np.array(l2_rel_per_traj_time)
+
+    # Compute overall mean across all test cases (axis 0 is batch)
+    overall_mean_l2 = np.mean(l2_rel_np, axis=0)
+
+    # Plot the aggregated analytics
+    batch_save_path = os.path.join(
+        workdir, "figures", config.wandb.name, "batch_l2_error_analysis.pdf"
+    )
+    
+    _plot_batch_l2_over_time(
+        t_ax=t_ax, 
+        overall_mean_l2=overall_mean_l2, 
+        save_path=batch_save_path
+    )
+    
     logging.info(f"Batch L2 error plot saved to: {batch_save_path}")
