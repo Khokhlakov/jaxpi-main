@@ -80,7 +80,7 @@ def get_config():
     kf.batch_l2_size   = 100
 
     kf.dt_fine = 0.02
-    kf.dt_obs  = 0.25
+    kf.dt_obs  = 1.0
     # dt_fine must divide dt_obs and dt_window
 
     # Multiplicative Inflation
