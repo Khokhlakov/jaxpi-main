@@ -1673,14 +1673,28 @@ fast. Instead:
     faded (or dropped, for ERF bands beyond 4 strategies) as S grows, so
     the trend lines stay the visually dominant element.
   * The EnKF-vs-open-loop L2 plot is curve-count-agnostic and writes a
-    two-page PDF: all curves, then a second page with the pure-
+    multi-page PDF: all curves, then a second page with the pure-
     propagator open-loop curves dropped so the (usually much smaller)
     filtered-strategy errors aren't squashed against the bottom of the
     axes by the open-loop curves' larger scale.
+  * The L2, ERF and prior/posterior-RMSE PDFs each carry an extra
+    "best strategies only" page (see `_rank_by_mean` / `TOP_K_BEST`)
+    holding at most the 3 top-ranked strategies by that plot's own
+    headline metric -- lowest time-mean relative L2, greatest mean ERF,
+    and lowest mean posterior RMSE respectively. The all-strategies
+    page shows the shape of the whole sweep; this page shows which
+    settings actually won, at a line count where per-curve detail
+    (and, for ERF, the +/-1 sigma bands) is readable again. These pages
+    are skipped when S <= 3, where they would only repeat the first
+    page, so the pairwise two-strategy plots are unaffected.
 
 Markers and line widths are kept small/thin throughout so S-way overlays
 stay legible well beyond the ~8-10 strategies the original side-by-side
-panels were tuned for.
+panels were tuned for. The calibration spread/RMSE small multiples and
+the pooled spread-skill scatter go further -- the former drops markers
+entirely (solid vs dashed already separates spread from RMSE) and the
+latter uses near-dot markers -- since at S x n_windows points the markers
+were merging into bands and hiding the curve shapes.
 """
 
 
@@ -1717,6 +1731,69 @@ def _strategy_colors(strategy_keys):
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Shared ranking helper for the "best strategies only" companion pages
+# ─────────────────────────────────────────────────────────────────────────
+TOP_K_BEST = 3   # max curves kept on the "best strategies only" PDF pages
+
+
+def _rank_by_mean(metric_of, keys=None, largest=False, k=TOP_K_BEST):
+    """
+    Rank strategies by the (finite) mean of a per-strategy metric array
+    and return the best `k` of them.
+
+    Used by the bulk plots to build an extra, decluttered PDF page that
+    shows only the handful of best-performing strategies -- handy when
+    calibrating a large sweep (e.g. the 16-line multiplicative-inflation
+    scan), where the all-strategies page answers "what does the whole
+    sweep look like?" and this page answers "which settings actually
+    won?".
+
+    Parameters
+    ----------
+    metric_of : dict
+        key -> 1-D array of the metric sampled over time (e.g. posterior
+        RMSE per observation time, ERF per observation time, relative L2
+        per fine timestep). Each array is collapsed to one scalar by
+        taking the mean over its finite entries.
+    keys : iterable, optional
+        Which keys of `metric_of` to rank (defaults to all of them).
+        Lets callers exclude curves that aren't strategies, e.g. the
+        open-loop reference rollouts in the L2 plot.
+    largest : bool
+        False -> "lower is better" (RMSE, L2); True -> "higher is
+        better" (ERF).
+    k : int
+        Maximum number of keys to return.
+
+    Returns
+    -------
+    (ranked_keys, scores)
+        `ranked_keys` holds at most `k` keys, best first; `scores` maps
+        EVERY ranked key to its scalar summary, so callers can quote the
+        number in a subtitle. Keys whose metric is entirely non-finite
+        sort last and are given a NaN score.
+    """
+    keys = list(metric_of.keys() if keys is None else keys)
+    scores, sortable = {}, []
+    for key in keys:
+        arr = np.asarray(metric_of[key], dtype=float)
+        finite = arr[np.isfinite(arr)]
+        if finite.size:
+            score = float(finite.mean())
+            scores[key] = score
+            # Negate for "largest is best" so a single ascending sort
+            # handles both directions; non-finite metrics get +inf and
+            # therefore always sort to the very end.
+            sortable.append(((-score if largest else score), key))
+        else:
+            scores[key] = float("nan")
+            sortable.append((float("inf"), key))
+
+    order = [key for _, key in sorted(sortable, key=lambda item: item[0])]
+    return order[:max(0, int(k))], scores
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # 2a. EnKF vs open-loop, time-mean relative L2 (already curve-count-
 #     agnostic -- called with S curves). Shared by both the pairwise
 #     (`plot_comparisons`) and bulk (`plot_comparisons_bulk`) modules.
@@ -1729,7 +1806,7 @@ def _plot_l2_per_timestep(
 ) -> None:
     """
     Plot average L2 error continuously across fine time stamps, as a
-    two-page PDF:
+    multi-page PDF:
 
       page 1 -- every curve in `curves` (matches the original behavior).
       page 2 -- the same plot with the pure-propagator open-loop curves
@@ -1737,6 +1814,14 @@ def _plot_l2_per_timestep(
         so the filtered-strategy curves aren't dwarfed by the open-loop
         curves' much larger error scale. Skipped if there are no
         open-loop curves to drop.
+      pages 3-4 -- duplicates of pages 1 and 2 restricted to the (at
+        most) `TOP_K_BEST` filtered strategies with the LOWEST
+        time-mean relative L2, i.e. the best performers of the sweep,
+        with the open-loop references kept on the first of the two for
+        scale. Both are skipped when there are no more than
+        `TOP_K_BEST` filtered curves to begin with, since the pages
+        would just repeat pages 1-2 (this is what keeps the pairwise
+        two-strategy caller's output unchanged).
     """
     default_colors = ["#2196F3", "#FF5722", "#4CAF50", "#9C27B0"]
     open_loop_labels = {label for label in curves if label.endswith("open-loop")}
@@ -1762,6 +1847,27 @@ def _plot_l2_per_timestep(
         figs.append(_draw(
             filtered_curves,
             title + "\n(pure-propagator open-loop curves omitted)",
+        ))
+
+    # -- Best-performing strategies only (lowest time-mean relative L2) --
+    if len(filtered_curves) > TOP_K_BEST:
+        best, scores = _rank_by_mean(
+            {label: l2_arr for label, (_, l2_arr) in filtered_curves.items()},
+            largest=False, k=TOP_K_BEST,
+        )
+        best_curves = {label: filtered_curves[label] for label in best}
+        ranking = ", ".join(f"{label} ({scores[label]:.3g})" for label in best)
+        best_note = (
+            f"\nBest {len(best)} strategies by time-mean relative L2: {ranking}"
+        )
+        if open_loop_labels:
+            with_ol = {label: val for label, val in curves.items()
+                       if label in open_loop_labels}
+            with_ol.update(best_curves)
+            figs.append(_draw(with_ol, title + best_note))
+        figs.append(_draw(
+            best_curves,
+            title + best_note + "\n(pure-propagator open-loop curves omitted)",
         ))
 
     _save_pdf_pages(figs, save_path)
@@ -1818,9 +1924,12 @@ def _plot_calibration_bulk(
         ax = fig.add_subplot(gs[i, :], sharex=ax_prev)
         ax_prev = ax
         c = colors[key]
-        ax.plot(window_idx, spread_window_of[key], marker="^", markersize=2.5,
+        # Marker-free lines: with many windows the per-point markers just
+        # merged into a solid band and hid the curve shape. The solid /
+        # dashed linestyle still separates spread from RMSE.
+        ax.plot(window_idx, spread_window_of[key],
                  linewidth=1.0, linestyle="-", color=c, label="RMS ensemble σ")
-        ax.plot(window_idx, rmse_window_of[key], marker="o", markersize=2.5,
+        ax.plot(window_idx, rmse_window_of[key],
                  linewidth=1.0, linestyle="--", color=c, label="EnKF RMSE")
         ax.set_yscale("log")
         ax.set_title(label_of[key], fontsize=8, loc="left", pad=2)
@@ -1863,7 +1972,7 @@ def _plot_calibration_bulk(
         for key in strategy_keys:
             rmss_b, rmse_b, rmse_s = binned[key]
             container = ax.errorbar(
-                rmss_b, rmse_b, yerr=rmse_s, fmt="o-", markersize=2.5, capsize=1.8,
+                rmss_b, rmse_b, yerr=rmse_s, fmt="o-", markersize=1.4, capsize=1.8,
                 linewidth=1.0, color=colors[key],
                 label=f"{label_of[key]} ({n_bins}-bin)", zorder=3,
             )
@@ -1914,42 +2023,74 @@ def _plot_erf_bulk(
     save_path: str,
     show_bands: bool | None = None,
 ) -> None:
-    """ERF comparison for every strategy on ONE set of axes. +/-1 sigma
-    bands are auto-dropped once there are more than 4 strategies, since
-    overlapping fills stop conveying anything once they stack that deep."""
+    """
+    ERF comparison for every strategy on ONE set of axes, written as a
+    multi-page PDF:
+
+      page 1 -- every strategy (the original behavior).
+      page 2 -- the same axes restricted to the (at most) `TOP_K_BEST`
+        strategies with the GREATEST time-mean ERF, i.e. the ones whose
+        filtering reduces the error the most. Skipped when there are no
+        more than `TOP_K_BEST` strategies, since it would just repeat
+        page 1.
+
+    +/-1 sigma bands are auto-dropped once there are more than 4
+    strategies, since overlapping fills stop conveying anything once
+    they stack that deep -- evaluated per page, so the decluttered
+    second page usually gets its bands back.
+    """
     S = len(strategy_keys)
-    if show_bands is None:
-        show_bands = S <= 4
-    band_alpha = 0.15 if S <= 3 else 0.08
 
-    fig, ax = plt.subplots(figsize=(10, 5.5))
-    for key in strategy_keys:
-        c = colors[key]
-        mean, std = erf_mean_of[key], erf_std_of[key]
-        ax.plot(obs_times, mean, color=c, linewidth=1.1, marker="o", markersize=2.2,
-                label=label_of[key])
-        if show_bands:
-            ax.fill_between(obs_times, mean - std, mean + std, color=c,
-                             alpha=band_alpha, linewidth=0)
+    def _draw(keys, subtitle):
+        n = len(keys)
+        bands = (n <= 4) if show_bands is None else show_bands
+        band_alpha = 0.15 if n <= 3 else 0.08
 
-    ax.set_yscale("log")
-    ax.axhline(y=1.0, color="#37474F", linestyle="--", linewidth=1.1,
-               label="ERF = 1  (no reduction)")
+        fig, ax = plt.subplots(figsize=(10, 5.5))
+        for key in keys:
+            c = colors[key]
+            mean, std = erf_mean_of[key], erf_std_of[key]
+            ax.plot(obs_times, mean, color=c, linewidth=1.1, marker="o", markersize=2.2,
+                    label=label_of[key])
+            if bands:
+                ax.fill_between(obs_times, mean - std, mean + std, color=c,
+                                 alpha=band_alpha, linewidth=0)
 
-    ax.set_xlabel("Observation time  t", fontsize=12)
-    ax.set_ylabel("Error Reduction Factor  (prior RMSE / posterior RMSE)", fontsize=11)
-    ax.set_title(f"{title}  (n = {n_traj} trajectories)", fontsize=13)
-    ax.legend(fontsize=8, ncol=(2 if S > 5 else 1))
-    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+        ax.set_yscale("log")
+        ax.axhline(y=1.0, color="#37474F", linestyle="--", linewidth=1.1,
+                   label="ERF = 1  (no reduction)")
 
-    if not show_bands:
-        ax.text(0.99, 0.02, "±1σ bands omitted for legibility (n strategies > 4)",
-                transform=ax.transAxes, fontsize=7.5, ha="right", va="bottom",
-                color="#666666", style="italic")
+        ax.set_xlabel("Observation time  t", fontsize=12)
+        ax.set_ylabel("Error Reduction Factor  (prior RMSE / posterior RMSE)", fontsize=11)
+        ax.set_title(f"{subtitle}  (n = {n_traj} trajectories)", fontsize=13)
+        ax.legend(fontsize=8, ncol=(2 if n > 5 else 1))
+        ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
 
-    fig.tight_layout()
-    _save(fig, save_path)
-    logging.info(f"Bulk ERF plot ({S} strategies) saved to: {save_path}")
+        if not bands:
+            ax.text(0.99, 0.02, "±1σ bands omitted for legibility (n strategies > 4)",
+                    transform=ax.transAxes, fontsize=7.5, ha="right", va="bottom",
+                    color="#666666", style="italic")
+
+        fig.tight_layout()
+        return fig
+
+    figs = [_draw(strategy_keys, title)]
+
+    # -- Best-performing strategies only (greatest time-mean ERF) -------
+    if S > TOP_K_BEST:
+        best, scores = _rank_by_mean(
+            erf_mean_of, keys=strategy_keys, largest=True, k=TOP_K_BEST,
+        )
+        ranking = ", ".join(f"{label_of[key]} ({scores[key]:.3g})" for key in best)
+        figs.append(_draw(
+            best,
+            f"{title}\nBest {len(best)} strategies by mean ERF: {ranking}",
+        ))
+
+    _save_pdf_pages(figs, save_path)
+    logging.info(
+        f"Bulk ERF plot ({S} strategies, {len(figs)}-page PDF) saved to: {save_path}"
+    )
 
 # ─────────────────────────────────────────────────────────────────────────
 # 2d. Prior vs posterior RMSE, ALL strategies on one PDF
@@ -1966,37 +2107,70 @@ def _plot_rmse_bulk(
     title: str,
     save_path: str,
 ) -> None:
-    """Prior/posterior RMSE for every strategy, split into two side-by-side
+    """
+    Prior/posterior RMSE for every strategy, split into two side-by-side
     panels (prior, posterior) rather than 2*S lines on one axes; both
     panels share a y-axis and a single strategy-color legend. Both panels
     use small dot markers (rather than squares) and thin lines so the
-    S-way overlay stays legible."""
+    S-way overlay stays legible.
+
+    Written as a multi-page PDF:
+
+      page 1 -- every strategy (the original behavior).
+      page 2 -- the same two panels restricted to the (at most)
+        `TOP_K_BEST` strategies with the LOWEST time-mean POSTERIOR
+        RMSE. Note both panels are filtered by that single posterior
+        ranking, so the prior panel still shows where those same
+        strategies started from. Skipped when there are no more than
+        `TOP_K_BEST` strategies, since it would just repeat page 1.
+    """
     S = len(strategy_keys)
-    fig, (ax_prior, ax_post) = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
 
-    for key in strategy_keys:
-        c = colors[key]
-        ax_prior.plot(obs_times, prior_mean_of[key], color=c, linewidth=1.1,
-                       marker="o", markersize=2.2, label=label_of[key])
-        ax_post.plot(obs_times, post_mean_of[key], color=c, linewidth=1.1,
-                      marker="o", markersize=2.2, label=label_of[key])
+    def _draw(keys, subtitle):
+        n = len(keys)
+        fig, (ax_prior, ax_post) = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
 
-    for ax, panel_title in ((ax_prior, "Prior RMSE"), (ax_post, "Posterior RMSE")):
-        ax.axhline(y=sigma_obs, color="#4CAF50", linestyle=":", linewidth=1.2,
-                   label=f"σ_obs = {sigma_obs}")
-        ax.set_yscale("log")
-        ax.set_xlabel("Observation time  t", fontsize=11)
-        ax.set_title(panel_title, fontsize=12)
-        ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
-    ax_prior.set_ylabel("RMSE  (log scale)", fontsize=11)
-    plt.setp(ax_post.get_yticklabels(), visible=False)
+        for key in keys:
+            c = colors[key]
+            ax_prior.plot(obs_times, prior_mean_of[key], color=c, linewidth=1.1,
+                           marker="o", markersize=2.2, label=label_of[key])
+            ax_post.plot(obs_times, post_mean_of[key], color=c, linewidth=1.1,
+                          marker="o", markersize=2.2, label=label_of[key])
 
-    ax_prior.legend(fontsize=8, ncol=(2 if S > 4 else 1))
+        for ax, panel_title in ((ax_prior, "Prior RMSE"), (ax_post, "Posterior RMSE")):
+            ax.axhline(y=sigma_obs, color="#4CAF50", linestyle=":", linewidth=1.2,
+                       label=f"σ_obs = {sigma_obs}")
+            ax.set_yscale("log")
+            ax.set_xlabel("Observation time  t", fontsize=11)
+            ax.set_title(panel_title, fontsize=12)
+            ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+        ax_prior.set_ylabel("RMSE  (log scale)", fontsize=11)
+        plt.setp(ax_post.get_yticklabels(), visible=False)
 
-    fig.suptitle(f"{title}  (n = {n_traj} trajectories)", fontsize=13, y=1.0)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    _save(fig, save_path)
-    logging.info(f"Bulk prior/posterior RMSE plot ({S} strategies) saved to: {save_path}")
+        ax_prior.legend(fontsize=8, ncol=(2 if n > 4 else 1))
+
+        fig.suptitle(f"{subtitle}  (n = {n_traj} trajectories)", fontsize=13, y=1.0)
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        return fig
+
+    figs = [_draw(strategy_keys, title)]
+
+    # -- Best-performing strategies only (lowest mean posterior RMSE) ---
+    if S > TOP_K_BEST:
+        best, scores = _rank_by_mean(
+            post_mean_of, keys=strategy_keys, largest=False, k=TOP_K_BEST,
+        )
+        ranking = ", ".join(f"{label_of[key]} ({scores[key]:.3g})" for key in best)
+        figs.append(_draw(
+            best,
+            f"{title}\nBest {len(best)} strategies by mean posterior RMSE: {ranking}",
+        ))
+
+    _save_pdf_pages(figs, save_path)
+    logging.info(
+        f"Bulk prior/posterior RMSE plot ({S} strategies, {len(figs)}-page PDF) "
+        f"saved to: {save_path}"
+    )
 
 # ─────────────────────────────────────────────────────────────────────────
 # 2e. Equilibrium (climatological/attractor) variance: reference truth +
@@ -3611,6 +3785,3 @@ def run_route_b_inflation_sweep(
     logging.info(f"  wrote {os.path.join(save_dir, 'equilibrium_variance_all.pdf')}")
 
     return save_dir
-
-
- 
