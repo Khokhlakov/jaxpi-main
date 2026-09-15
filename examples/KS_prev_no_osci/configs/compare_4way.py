@@ -79,7 +79,7 @@ def get_config():
     kf.dynamic_vars    = False 
     kf.batch_l2_size   = 100
 
-    kf.dt_fine = 0.05
+    kf.dt_fine = 0.02
     kf.dt_obs  = 0.25
     # dt_fine must divide dt_obs and dt_window
 
