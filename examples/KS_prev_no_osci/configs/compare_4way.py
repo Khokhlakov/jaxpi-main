@@ -9,8 +9,12 @@ def get_config():
     # 
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "KS-W1"
-    wandb.name          = "base_pi"
-    wandb.ckpt_name     = "base_pi" 
+    wandb.name_pi       = "base_pi_3"
+    wandb.ckpt_name_pi  = "base_pi_3" 
+    wandb.name_dd       = "base_dd_1"
+    wandb.ckpt_name_dd  = "base_dd_1" 
+    wandb.name_hy       = "base_hybrid_050"
+    wandb.ckpt_name_hy  = "base_hybrid_050" 
     wandb.tag = None
 
     # Arch 
@@ -79,7 +83,7 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
-    saving.total_plots = 5
+    saving.total_plots = 3
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
