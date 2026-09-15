@@ -3785,3 +3785,174 @@ def run_route_b_inflation_sweep(
     logging.info(f"  wrote {os.path.join(save_dir, 'equilibrium_variance_all.pdf')}")
 
     return save_dir
+
+
+
+
+def build_default_7way_strategies(
+    config, N_ens,
+    alpha_fine_dd, alpha_fine_pi,
+    alpha_rb, beta_rb, additive_alpha, n_quad_rb,
+    alpha_rtpp_dd, alpha_rtpp_pi,
+    alpha_fine_rtpp: float = 1.0,
+):
+    """
+    Builds the 7-way strategy comparison set:
+
+        1. dd_mult              -- DD + standard multiplicative inflation.
+        2. pi_mult               -- PI + standard multiplicative inflation.
+        3. pi_additive           -- PI + Route B machinery with beta=0.0,
+                                     i.e. a constant (non-flow-dependent)
+                                     additive floor of `additive_alpha` only.
+        4. pi_route_b_residual   -- PI + Route B machinery with alpha=0.0,
+                                     i.e. purely the flow-dependent
+                                     beta_rb * ||rho||^2 term.
+        5. pi_route_b_full       -- PI + Route B, both terms active:
+                                     scale = alpha_rb + beta_rb * ||rho||^2
+        6. dd_rtpp               -- DD + RTPP.
+        7. pi_rtpp               -- PI + RTPP.
+
+    `pi_additive`, `pi_route_b_residual`, and `pi_route_b_full` all share
+    the same Route B predict/update functions and Q0; only alpha/beta
+    (and the label) differ between them.
+
+    Returns (strategies, propagators, N, t_star_window).
+    """
+    dt_window = float(config.get("dt_window", 0.25))
+    dt_integration = config.eval.get("dt_integration", 0.005)
+    time_steps = int(round(dt_window / dt_integration)) + 1
+    t_star_window = jnp.linspace(0.0, dt_window, time_steps)
+
+    # ── Load both checkpoints ───────────────────────────────────────────
+    logging.info("Loading DD model...")
+    model_dd = models.L96UDON(config, t_star_window)
+    ckpt_path_dd = os.path.join(os.getcwd(), config.wandb.name_dd, "ckpt", "udon_model")
+    model_dd.state = restore_checkpoint(model_dd.state, ckpt_path_dd)
+    params_dd = model_dd.state.params
+
+    logging.info("Loading PI model...")
+    model_pi = models.L96UDON(config, t_star_window)
+    ckpt_path_pi = os.path.join(os.getcwd(), config.wandb.name_pi, "ckpt", "udon_model")
+    model_pi.state = restore_checkpoint(model_pi.state, ckpt_path_pi)
+    params_pi = model_pi.state.params
+
+    N = model_pi.N
+    if model_dd.N != N:
+        raise ValueError(
+            f"DD ({model_dd.N}) and PI ({N}) checkpoints disagree on state "
+            "dimension N; the 7-way comparison assumes a shared L96 system."
+        )
+
+    # Route B / additive need Q_fine (PI-only, per the "(only applies to
+    # PI)" scoping of these strategies).
+    P0_sigma = config.kf.get("P0_sigma", 1.0)
+    Q0_sigma = config.kf.get("Q0_sigma", P0_sigma)
+    DT_FINE = float(config.kf.get("dt_fine", dt_window))
+    steps_per_window = steps_per_window_exact(dt_window, DT_FINE)
+    Q_coarse = jnp.eye(N) * Q0_sigma ** 2
+    Q_fine = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
+
+    # ── Build the EnKF fns for each propagator ──────────────────────────
+    predict_fn_mult_dd, update_fn_mult_dd = model_dd.make_enkf_fns(params_dd, N_ens=N_ens)
+    predict_fn_rtpp_dd, update_fn_rtpp_dd = model_dd.make_rtpp_enkf_fns(params_dd, N_ens=N_ens)
+
+    predict_fn_mult_pi, update_fn_mult_pi = model_pi.make_enkf_fns(params_pi, N_ens=N_ens)
+    predict_fn_rb, update_fn_rb = model_pi.make_route_b_enkf_fns(params_pi, N_ens=N_ens)
+    predict_fn_rtpp_pi, update_fn_rtpp_pi = model_pi.make_rtpp_enkf_fns(params_pi, N_ens=N_ens)
+
+    strategies = [
+        dict(key="dd_mult", label="DD + Mult. Infl.", kind="standard",
+             propagator="dd", predict_fn=predict_fn_mult_dd, update_fn=update_fn_mult_dd,
+             alpha_fine=alpha_fine_dd),
+        dict(key="pi_mult", label="PI + Mult. Infl.", kind="standard",
+             propagator="pi", predict_fn=predict_fn_mult_pi, update_fn=update_fn_mult_pi,
+             alpha_fine=alpha_fine_pi),
+        dict(key="pi_additive", label="PI + Additive Infl.", kind="route_b",
+             propagator="pi", predict_fn=predict_fn_rb, update_fn=update_fn_rb,
+             Q0=Q_fine, alpha=additive_alpha, beta=0.0, n_quad=n_quad_rb),
+        dict(key="pi_route_b_residual", label="PI + Route B (residual only)", kind="route_b",
+             propagator="pi", predict_fn=predict_fn_rb, update_fn=update_fn_rb,
+             Q0=Q_fine, alpha=0.0, beta=beta_rb, n_quad=n_quad_rb),
+        dict(key="pi_route_b_full", label="PI + Route B (alpha+beta)", kind="route_b",
+             propagator="pi", predict_fn=predict_fn_rb, update_fn=update_fn_rb,
+             Q0=Q_fine, alpha=alpha_rb, beta=beta_rb, n_quad=n_quad_rb),
+        dict(key="dd_rtpp", label="DD + RTPP", kind="rtpp",
+             propagator="dd", predict_fn=predict_fn_rtpp_dd, update_fn=update_fn_rtpp_dd,
+             alpha_fine=alpha_fine_rtpp, alpha_rtpp=alpha_rtpp_dd),
+        dict(key="pi_rtpp", label="PI + RTPP", kind="rtpp",
+             propagator="pi", predict_fn=predict_fn_rtpp_pi, update_fn=update_fn_rtpp_pi,
+             alpha_fine=alpha_fine_rtpp, alpha_rtpp=alpha_rtpp_pi),
+    ]
+    propagators = {
+        "dd": (model_dd, params_dd),
+        "pi": (model_pi, params_pi),
+    }
+    return strategies, propagators, N, t_star_window
+
+def run_7way_comparison(config, workdir: str, test_h5_path: str | None = None, n_bins: int = 10) -> str:
+    """
+    Runs the 7-way EnKF strategy evaluation:
+      DD+Mult, PI+Mult, PI+Additive, PI+RouteB(residual), PI+RouteB(full),
+      DD+RTPP, PI+RTPP -- and writes every comparison figure.
+
+    Returns the path of the `figures/comparisons` directory written by
+    `plot_comparisons`.
+    """
+    os.makedirs(workdir, exist_ok=True)
+
+    # ── EnKF / inflation configuration ──────────────────────────────────
+    N_ens = config.kf.get("N_ens", 50)
+
+    alpha_coarse_dd = config.kf.get("inflation_factor_dd", 1.05)
+    alpha_coarse_pi = config.kf.get("inflation_factor_pi", 1.05)
+
+    alpha_rb = config.kf.get("route_b_alpha", 1.0)     # floor term, full Route B strategy
+    beta_rb = config.kf.get("route_b_beta", 5.0)        # residual term, shared by residual + full
+    n_quad_rb = config.kf.get("route_b_n_quad", 3)
+    # Not in your original 6-field list -- needed because the pure-additive
+    # strategy needs its own alpha value distinct from route_b_alpha (which
+    # is already claimed by the full Route B strategy). Swap for a literal
+    # `additive_alpha = 3.0` if you'd rather not add this config key.
+    additive_alpha = config.kf.get("route_b_additive_alpha", 3.0)
+
+    alpha_rtpp_dd = config.kf.get("rtpp_alpha_dd", 0.5)
+    alpha_rtpp_pi = config.kf.get("rtpp_alpha_pi", 0.5)
+    alpha_fine_rtpp = config.kf.get("rtpp_alpha_fine", 1.0)
+
+    DT_WINDOW = float(config.get("dt_window", 0.25))
+    DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
+    steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
+    alpha_fine_dd = scale_inflation_for_fine_steps(alpha_coarse_dd, steps_per_window)
+    alpha_fine_pi = scale_inflation_for_fine_steps(alpha_coarse_pi, steps_per_window)
+
+    logging.info(
+        "Building 7-way strategy set: DD+Mult / PI+Mult / PI+Additive / "
+        "PI+RouteB(residual) / PI+RouteB(full) / DD+RTPP / PI+RTPP ..."
+    )
+    strategies, propagators, N, t_star_window = build_default_7way_strategies(
+        config, N_ens,
+        alpha_fine_dd, alpha_fine_pi,
+        alpha_rb, beta_rb, additive_alpha, n_quad_rb,
+        alpha_rtpp_dd, alpha_rtpp_pi,
+        alpha_fine_rtpp=alpha_fine_rtpp,
+    )
+
+    logging.info(
+        "Stage 1/2: evaluate_filters — running all 7 strategies on shared "
+        "data and writing the results HDF5 ..."
+    )
+    h5_path = evaluate_filters(
+        config=config,
+        workdir=workdir,
+        strategies=strategies,
+        propagators=propagators,
+        t_star_window=t_star_window,
+        test_h5_path=test_h5_path,
+    )
+    logging.info(f"  wrote {h5_path}")
+
+    logging.info(f"Stage 2/2: plot_comparisons — reading {h5_path} and writing figures ...")
+    save_dir = plot_comparisons(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
+    logging.info(f"  wrote figures to {save_dir}")
+
+    return save_dir

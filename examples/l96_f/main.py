@@ -66,10 +66,8 @@ def main(argv):
     elif FLAGS.config.mode == "run_route_b_inflation_sweep":
             eval.run_route_b_inflation_sweep(FLAGS.config, FLAGS.workdir)
 
-    
-    
-    
-    
+    elif FLAGS.config.mode == "run_7way_comparison":
+        eval.run_7way_comparison(FLAGS.config, FLAGS.workdir)
 
 if __name__ == "__main__":
     flags.mark_flags_as_required(["config", "workdir"])

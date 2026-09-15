@@ -2,23 +2,20 @@ import ml_collections
 import jax.numpy as jnp
 
 def get_config():
+    # Config 1 but init weights 10:1 and using causal training
     config = ml_collections.ConfigDict()
-    config.mode = "run_4way_comparison"
+    config.mode = "run_7way_comparison"
 
     # Weights & Biases
-    # 
+    # Base for inflation tunning
     config.wandb = wandb = ml_collections.ConfigDict()
-    wandb.project       = "KS-W1"
-    wandb.name_pi       = "base_pi_2"
-    wandb.ckpt_name_pi  = "base_pi_2" 
-    wandb.name_dd       = "base_dd_1"
-    wandb.ckpt_name_dd  = "base_dd_1" 
-    wandb.name_hy       = "base_hybrid_050"
-    wandb.ckpt_name_hy  = "base_hybrid_050" 
-
-    
-    wandb.name          = "compare_4way"
-    wandb.ckpt_name     = "compare_4way"
+    wandb.project       = "L96-F"
+    wandb.name_pi       = "test_pi_1" 
+    wandb.ckpt_name_pi  = "test_pi_1"
+    wandb.name_dd       = "test_dd_1"
+    wandb.ckpt_name_dd  = "test_dd_1"
+    wandb.name          = "test_pi_1"
+    wandb.ckpt_name     = "test_pi_1"
     wandb.tag = None
 
     # Arch 
@@ -27,12 +24,11 @@ def get_config():
     arch.num_branch_layers = 5
     arch.num_trunk_layers = 5
     arch.hidden_dim = 1024
-    arch.branch_input_dim = 256
-    # trunk_input_dim = config.input_dim - branch_input_dim
-    arch.out_dim = 256
+    arch.branch_input_dim = 40
+    arch.out_dim = 40
     arch.activation = "tanh"
     arch.periodicity = None
-    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 2, "embed_dim": 1024})
+    arch.fourier_emb = ml_collections.ConfigDict({"embed_scale": 10, "embed_dim": 1024})
     arch.reparam = ml_collections.ConfigDict(
         {"type": "weight_fact", "mean": 0.5, "stddev": 0.1}
     )
@@ -44,9 +40,9 @@ def get_config():
     optim.beta1 = 0.9
     optim.beta2 = 0.999
     optim.eps = 1e-8
-    optim.learning_rate = 1e-4
+    optim.learning_rate = 1e-3
     optim.decay_rate = 0.9
-    optim.decay_steps = 5_000 
+    optim.decay_steps = 2_500 
     optim.decay_schedule = "Exponential"
 
     # Training (Windowed Logic)
@@ -54,22 +50,18 @@ def get_config():
     training.max_steps = 150_000
     training.batch_size_per_device = 100
     training.use_cartesian_prod = True
-    training.dd_data_percentage = 0.01
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0})#ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
-    
-    weighting.max_weight = 100.0#2_000_000.0
-    weighting.warmup_steps = 500
 
     # Causal Weighting
     weighting.use_causal = False
     weighting.causal_tol = 0.02
-    weighting.num_chunks = 10
+    weighting.num_chunks = 8
 
     # KF settings
     config.kf = kf = ml_collections.ConfigDict()
@@ -83,8 +75,8 @@ def get_config():
     kf.dynamic_vars    = False 
     kf.batch_l2_size   = 100
 
-    kf.dt_fine = 0.02
-    kf.dt_obs  = 1.0
+    kf.dt_fine = 0.005
+    kf.dt_obs  = 0.25
     # dt_fine must divide dt_obs and dt_window
 
     # Multiplicative Inflation
@@ -94,17 +86,25 @@ def get_config():
     kf.inflation_factor_list = [1.00, 1.02, 1.04, 1.06, 1.08, 1.10, 1.15, 1.20, 1.30]
 
     # Route B & Additive Inflation
-    kf.route_b_alpha        = 0.0
-    kf.route_b_beta         = 45.0
+    kf.route_b_alpha        = 1.0
+    kf.route_b_beta         = 50.0
     kf.Q0_sigma             = 0.3
     kf.route_b_n_quad       = 3
     kf.inflation_alpha_list = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
-    kf.route_b_beta_list = [35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0]
+    kf.route_b_beta_list = [0.0, 50.0, 100.0, 150.0, 250.0, 400.0, 600.0, 1000.0]
 
     # RTPP
-    kf.rtpp_alpha      = 0.5
+    kf.rtpp_alpha      = 0.35
     kf.rtpp_alpha_fine = 1.0
-    kf.rtpp_alpha_list = [0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    kf.rtpp_alpha_list = [0.3, 0.325, 0.35, 0.375, 0.4, 0.425, 0.45]
+
+    config.kf.inflation_factor_dd = 1.075
+    config.kf.inflation_factor_pi = 1.08
+    config.kf.route_b_alpha = 1.0        # full Route B strategy's floor term
+    config.kf.route_b_beta = 50.0        # shared by residual-only + full Route B
+    config.kf.route_b_additive_alpha = 3.0 
+    config.kf.rtpp_alpha_dd = 0.35
+    config.kf.rtpp_alpha_pi = 0.325
 
     # Logging
     config.logging = logging = ml_collections.ConfigDict()
@@ -121,21 +121,21 @@ def get_config():
     saving.save_every_steps = 10000
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
-    saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
-    saving.total_plots = 2
+    saving.restore_checkpoint_path = "test_1/ckpt/udon_model"
+    saving.total_plots = 5
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
-    eval.windows            = 300
+    eval.windows            = 500
     eval.trajectory_windows = 200
-    eval.num_ics            = 500
-    eval.dt_integration     = 0.02
+    eval.num_ics            = 300
+    eval.dt_integration     = 0.005
 
     # Input shape (t is the only input)
-    config.input_dim = 256 + 1
+    config.input_dim = 41
 
     # Training window size
-    config.dt_window = 1.0
+    config.dt_window = 0.25
 
     # Integer for PRNG random seed.s
     config.seed = 42
