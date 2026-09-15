@@ -4000,23 +4000,35 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     logging.info(f"Initiating batched rollout across all {num_ics} test trajectories...")
 
     u_current_batch = u_test[:, 0, :]               # (num_ics, N)
-    x_pred_list = []
+    x_pred_list = []   # host-side (numpy) chunks -- keeps GPU memory O(1 window)
 
     rollout_windows = min(test_windows, (num_test_pts - 1) // pts_pw)
     for w in range(rollout_windows):
-        pred_window = predict_batch(u_current_batch)    # (num_ics, pts_pw+1, N)
+        pred_window = predict_batch(u_current_batch)    # (num_ics, pts_pw+1, N), on device
 
-        # Avoid duplicating the overlapping boundary states between windows
-        if w == 0:
-            x_pred_list.append(pred_window)
-        else:
-            x_pred_list.append(pred_window[:, 1:, :])
-
+        # Advance the autoregressive state from the device array first...
         u_current_batch = pred_window[:, -1, :]
 
-    x_pred_full = jnp.concatenate(x_pred_list, axis=1)
+        # ...then copy this window to host immediately. This is the fix:
+        # `pred_window` was previously appended to x_pred_list as a *device*
+        # array. That list is a local variable, so it stays alive for the
+        # rest of the function (Python doesn't free it just because later
+        # code stops using it) -- by the time we reached the error stats we
+        # were holding all `rollout_windows` per-window buffers AND the
+        # concatenated x_pred_full AND the full u_test tensor on the GPU
+        # simultaneously. That's what exhausted the allocator on what looked
+        # like a trivial 18MB request: it's cumulative retention/fragmentation
+        # from the whole rollout, not the norm op itself.
+        chunk = np.asarray(pred_window if w == 0 else pred_window[:, 1:, :])
+        x_pred_list.append(chunk)
+        del pred_window, chunk
+
+    x_pred_full = np.concatenate(x_pred_list, axis=1)   # host array
+    del x_pred_list
     n_pts = x_pred_full.shape[1]
-    u_ref = u_test[:, :n_pts, :]
+
+    u_ref = np.asarray(u_test[:, :n_pts, :])   # copy what's needed to host...
+    del u_test                                  # ...then free the (large) device tensor
     t_ax = t_ax[:n_pts]
 
     # ── 4. Individual trajectory plots ──────────────────────────────────
@@ -4030,8 +4042,8 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
 
         _plot_trajectory_summary(
             t_ax=t_ax,
-            x_true=np.array(u_ref[ic_idx]),
-            x_est=np.array(x_pred_full[ic_idx]),
+            x_true=u_ref[ic_idx],
+            x_est=x_pred_full[ic_idx],
             ic_idx=ic_idx,
             test_windows=rollout_windows,
             pts_pw=pts_pw,
@@ -4044,11 +4056,11 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     logging.info("--- Computing Batch L2 Error Statistics ---")
 
     err = x_pred_full - u_ref
-    norm_err = jnp.linalg.norm(err, axis=-1)
-    norm_ref = jnp.linalg.norm(u_ref, axis=-1)
+    norm_err = np.linalg.norm(err, axis=-1)
+    norm_ref = np.linalg.norm(u_ref, axis=-1)
     l2_rel_per_traj_time = norm_err / (norm_ref + 1e-12)
 
-    overall_mean_l2 = np.mean(np.array(l2_rel_per_traj_time), axis=0)
+    overall_mean_l2 = np.mean(l2_rel_per_traj_time, axis=0)
 
     batch_save_path = os.path.join(
         workdir, "figures", config.wandb.name, "batch_l2_error_analysis.pdf"
@@ -4061,4 +4073,3 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     )
 
     logging.info(f"Batch L2 error plot saved to: {batch_save_path}")
-    
