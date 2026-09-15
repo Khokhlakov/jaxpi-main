@@ -95,7 +95,7 @@ def get_config():
 
     # Route B & Additive Inflation
     kf.route_b_alpha        = 0.0
-    kf.route_b_beta         = 45.0
+    kf.route_b_beta         = 1.0
     kf.Q0_sigma             = 0.3
     kf.route_b_n_quad       = 3
     kf.inflation_alpha_list = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
@@ -122,12 +122,12 @@ def get_config():
     saving.num_keep_ckpts = 3
     saving.restore_checkpoint = False
     saving.restore_checkpoint_path = "sep_test_15/ckpt/udon_model"
-    saving.total_plots = 2
+    saving.total_plots = 1
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
-    eval.windows            = 300
-    eval.trajectory_windows = 200
+    eval.windows            = 100#300
+    eval.trajectory_windows = 100#200
     eval.num_ics            = 500
     eval.dt_integration     = 0.02
 
