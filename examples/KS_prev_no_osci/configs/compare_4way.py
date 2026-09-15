@@ -3,14 +3,14 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    config.mode = "evaluate"
+    config.mode = "run_4way_comparison"
 
     # Weights & Biases
     # 
     config.wandb = wandb = ml_collections.ConfigDict()
     wandb.project       = "KS-W1"
-    wandb.name          = "base_hybrid_050"
-    wandb.ckpt_name     = "base_hybrid_050" 
+    wandb.name          = "base_pi"
+    wandb.ckpt_name     = "base_pi" 
     wandb.tag = None
 
     # Arch 
@@ -46,12 +46,12 @@ def get_config():
     training.max_steps = 150_000
     training.batch_size_per_device = 100
     training.use_cartesian_prod = True
-    training.dd_data_percentage = 0.5
+    training.dd_data_percentage = 0.01
 
     # Weighting
     config.weighting = weighting = ml_collections.ConfigDict()
     weighting.scheme = "grad_norm"
-    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0, "data_loss":1.0})#ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
+    weighting.init_weights = ml_collections.ConfigDict({"ics": 100.0, "res": 1.0})#ml_collections.ConfigDict({"ics": 100.0, "res": 1.0}) 
     weighting.momentum = 0.9
     weighting.update_every_steps = 500
     

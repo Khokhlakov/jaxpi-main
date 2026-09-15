@@ -80,6 +80,9 @@ class KSUDON(ForwardIVP):
 
         # Spatial grid size == branch/trunk output width.
         self.N = N
+        # Physical domain length, mirrored from the solver so that eval.py
+        # can read `model.L` uniformly across KSUDON / KSUDON_DD / Hybrid.
+        self.L = L
 
         # Reference solver instance: only its spectral operators are used
         # below (L_op, _dealias, _nonlinear_term, k_xi, c_x, c_u). `dt` is
@@ -195,8 +198,12 @@ class KSUDON(ForwardIVP):
         Returns:
             propagator: Callable[(N,), float -> (N,)]
         """
-        def propagator(u: jnp.ndarray, t: float) -> jnp.ndarray:
-            t_vec = jnp.array([t])  # t is a static Python float -> constant array
+        def propagator(u: jnp.ndarray, t) -> jnp.ndarray:
+            # `t` may be a plain Python float (open-loop rollouts) or a traced
+            # scalar (run_enkf_smoother carries the in-window step index
+            # through a lax.scan); atleast_1d handles both without retracing
+            # on every distinct float.
+            t_vec = jnp.atleast_1d(jnp.asarray(t))
             return self.x_net(params, u, t_vec).reshape(self.N)
 
         return propagator
@@ -215,7 +222,7 @@ class KSUDON(ForwardIVP):
             ekf_state = predict(ekf_state, Q)
             ekf_state, K = update(ekf_state, y_obs, H, R)
         """
-        from examples.KS.kf import make_ekf
+        from examples.KS_prev_no_osci.kf import make_ekf
         propagator_vt = self.make_surrogate_propagator(params)  # (u, t) -> u
         # Fix t=dt so the EKF always linearises over exactly one fine step.
         propagator    = lambda u: propagator_vt(u, dt)          # (u,) -> (N,)
@@ -254,9 +261,62 @@ class KSUDON(ForwardIVP):
             predict, update = model.make_enkf_fns(params, N_ens=50)
             # Then call run_enkf_smoother with dt_fine and dt_window.
         """
-        from examples.KS.kf import make_enkf
+        from examples.KS_prev_no_osci.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)  # (u, t) -> u
         return make_enkf(propagator, self.N, N_ens)
+
+    def make_residual_fn(self, params) -> Callable:
+        """
+        Closure over trained ``params`` exposing the PDE residual with the
+        SAME (u, t) calling convention as ``make_surrogate_propagator``: u
+        is the (N,) window IC (the initial spatial profile), t is the
+        in-window query time.
+
+        This is exactly ``r_net`` -- rho = v_tau - (L_op v_hat + N(v_hat)),
+        the same residual already used in the physics loss -- reused here at
+        inference time. No gradient is taken w.r.t. params; only the jacfwd
+        already inside ``r_net`` (w.r.t. t) and the FFT-based spatial
+        derivatives are exercised.
+
+        Used by Route B (``kf.make_route_b_enkf``) to turn the surrogate's
+        own physics-consistency into flow-dependent process-noise inflation.
+        """
+        def residual(u: jnp.ndarray, t) -> jnp.ndarray:
+            t_vec = jnp.atleast_1d(jnp.asarray(t))
+            return self.r_net(params, u, t_vec)
+        return residual
+
+    def make_route_b_enkf_fns(self, params, N_ens: int = 50):
+        """
+        Route B (residual-scaled covariance) EnKF predict/update pair.
+        See ``kf.make_route_b_enkf`` for the forecast-step math.
+
+        Only defined here (on the physics-informed model): ``KSUDON_DD``
+        has no PDE residual (no ``r_net``, since it's a purely data-driven
+        fit) and so cannot drive Route B's physics-based inflation -- use
+        the multiplicative ``make_enkf_fns`` for it instead. ``KSUDON_Hybrid``
+        inherits this method, and legitimately so: it keeps the physics loss
+        and therefore ``r_net``.
+        """
+        from examples.KS_prev_no_osci.kf import make_route_b_enkf
+        propagator = self.make_surrogate_propagator(params)
+        residual = self.make_residual_fn(params)
+        return make_route_b_enkf(
+            propagator_fn=propagator,
+            residual_fn=residual,
+            N=self.N,
+            N_ens=N_ens,
+        )
+
+    def make_rtpp_enkf_fns(self, params, N_ens: int = 50):
+        """
+        Relaxation-to-Prior-Perturbations EnKF predict/update pair; the
+        predict step is shared with ``make_enkf_fns``, only the update
+        differs (see ``kf.make_rtpp_enkf``).
+        """
+        from examples.KS_prev_no_osci.kf import make_rtpp_enkf
+        propagator = self.make_surrogate_propagator(params)
+        return make_rtpp_enkf(propagator, self.N, N_ens)
 
     @partial(jit, static_argnums=(0,))
     def compute_l2_error(self, params, u_test_batch, x_test_batch):
@@ -374,8 +434,12 @@ class KSUDON_DD(ForwardIVP):
         Returns:
             propagator: Callable[(N,), float -> (N,)]
         """
-        def propagator(u: jnp.ndarray, t: float) -> jnp.ndarray:
-            t_vec = jnp.array([t])  # t is a static Python float -> constant array
+        def propagator(u: jnp.ndarray, t) -> jnp.ndarray:
+            # `t` may be a plain Python float (open-loop rollouts) or a traced
+            # scalar (run_enkf_smoother carries the in-window step index
+            # through a lax.scan); atleast_1d handles both without retracing
+            # on every distinct float.
+            t_vec = jnp.atleast_1d(jnp.asarray(t))
             return self.x_net(params, u, t_vec).reshape(self.N)
 
         return propagator
@@ -394,7 +458,7 @@ class KSUDON_DD(ForwardIVP):
             ekf_state = predict(ekf_state, Q)
             ekf_state, K = update(ekf_state, y_obs, H, R)
         """
-        from examples.KS.kf import make_ekf
+        from examples.KS_prev_no_osci.kf import make_ekf
         propagator_vt = self.make_surrogate_propagator(params)  # (u, t) -> u
         # Fix t=dt so the EKF always linearises over exactly one fine step.
         propagator    = lambda u: propagator_vt(u, dt)          # (u,) -> (N,)
@@ -431,9 +495,22 @@ class KSUDON_DD(ForwardIVP):
             predict, update = model.make_enkf_fns(params, N_ens=50)
             # Then call run_enkf_smoother with dt_fine and dt_window.
         """
-        from examples.KS.kf import make_enkf
+        from examples.KS_prev_no_osci.kf import make_enkf
         propagator = self.make_surrogate_propagator(params)  # (u, t) -> u
         return make_enkf(propagator, self.N, N_ens)
+
+    def make_rtpp_enkf_fns(self, params, N_ens: int = 50):
+        """
+        RTPP EnKF predict/update pair for the data-driven surrogate.
+
+        RTPP needs no PDE residual -- it reshapes the posterior ensemble
+        anomalies, nothing more -- so unlike Route B it is available on the
+        DD model too. That is what lets `build_rtpp_sweep_strategies` cross
+        its relaxation-factor sweep with both propagators.
+        """
+        from examples.KS_prev_no_osci.kf import make_rtpp_enkf
+        propagator = self.make_surrogate_propagator(params)
+        return make_rtpp_enkf(propagator, self.N, N_ens)
 
     @partial(jit, static_argnums=(0,))
     def compute_l2_error(self, params, u_test_batch, x_test_batch):

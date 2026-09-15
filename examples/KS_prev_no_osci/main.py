@@ -36,8 +36,17 @@ def main(argv):
     elif FLAGS.config.mode == "train_dd":
         train.train_and_evaluate_dd(FLAGS.config, FLAGS.workdir)
 
+    elif FLAGS.config.mode == "train_and_evaluate_hybrid":
+        train.train_and_evaluate_hybrid(FLAGS.config, FLAGS.workdir)
+
     elif FLAGS.config.mode == "eval":
         eval.evaluate(FLAGS.config, FLAGS.workdir)
+
+    elif FLAGS.config.mode == "eval_dd":
+            eval.evaluate(FLAGS.config, FLAGS.workdir)
+
+    elif FLAGS.config.mode == "eval_hybrid":
+            eval.evaluate(FLAGS.config, FLAGS.workdir)
 
     elif FLAGS.config.mode == "eval_dd_vs_pi":
         eval.evaluate_dd_vs_pi(FLAGS.config, FLAGS.workdir)
@@ -47,9 +56,12 @@ def main(argv):
         
     elif FLAGS.config.mode == "eval_enkf_dd_vs_pi_vs_num":
         eval.evaluate_enkf_dd_vs_pi_vs_num(FLAGS.config, FLAGS.workdir)
+        
+    elif FLAGS.config.mode == "run_4way_comparison":
+        eval.run_4way_comparison(FLAGS.config, FLAGS.workdir)
 
-    elif FLAGS.config.mode == "train_and_evaluate_hybrid":
-        train.train_and_evaluate_hybrid(FLAGS.config, FLAGS.workdir)
+
+        
 
     
 
