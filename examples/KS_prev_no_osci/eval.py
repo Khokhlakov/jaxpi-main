@@ -1810,6 +1810,66 @@ def _save_pdf_pages(figs, save_path, dpi=300):
         for fig in figs:
             pdf.savefig(fig, bbox_inches="tight", dpi=dpi)
             plt.close(fig)
+
+
+def _window_average(t_axis: np.ndarray, values: np.ndarray, dt_window: float):
+    """
+    Bucket a (t_axis, values) curve into non-overlapping windows of width
+    `dt_window` (assumed to start at t_axis[0]) and return the per-window
+    mean time and mean value.
+ 
+    Used to turn a per-fine-timestep curve (e.g. the L2-vs-time curves)
+    into a per-time-window curve for a decluttered comparison page, the
+    same way the calibration/ERF/RMSE plots already work in window- or
+    observation-indexed units rather than raw fine timesteps.
+    """
+    t_axis = np.asarray(t_axis, dtype=float)
+    values = np.asarray(values, dtype=float)
+    t0 = float(t_axis[0])
+    win_idx = np.floor((t_axis - t0) / dt_window + 1e-9).astype(int)
+    uniq = np.unique(win_idx)
+    # Window-center times, purely for plotting on a continuous time axis.
+    w_t = t0 + (uniq + 0.5) * dt_window
+    w_v = np.array([np.nanmean(values[win_idx == w]) for w in uniq])
+    return w_t, w_v
+ 
+ 
+# ═══════════════════════════════════════════════════════════════════════
+# Used by the individual-trajectory snapshot selection
+# ═══════════════════════════════════════════════════════════════════════
+def _snapshot_window_indices(t_ax: np.ndarray, dt_window: float) -> np.ndarray:
+    """
+    Choose which fine-timestep indices of `t_ax` to use as spatial-profile
+    snapshots, based on WINDOW-BOUNDARY times rather than uniform spacing:
+ 
+      * the first 20 windows' limits:   t = 0, 1, 2, ..., 20   (x dt_window)
+      * 10-window blocks, repeating with a 50-window gap between them
+        (i.e. a new block starts every 60 windows), starting at window 70:
+        t = 70..80, 130..140, 190..200, ...  (x dt_window)
+      * the last 20 windows' limits of the run
+ 
+    Overlaps between these three groups (e.g. a short run where the
+    periodic blocks run into the final-20 region) are deduplicated
+    automatically. Returns the sorted, deduplicated indices into `t_ax`
+    nearest each of those times.
+    """
+    t_ax = np.asarray(t_ax, dtype=float)
+    t_min, t_max = float(t_ax[0]), float(t_ax[-1])
+    n_windows = int(round((t_max - t_min) / dt_window))
+ 
+    win_idx = set(range(0, min(20, n_windows) + 1))          # first 20 window limits
+ 
+    start = 70
+    while start <= n_windows:                                 # periodic 10-window blocks
+        win_idx.update(range(start, min(start + 10, n_windows) + 1))
+        start += 60                                           # 10-window span + 50-window gap
+ 
+    win_idx.update(range(max(0, n_windows - 20), n_windows + 1))  # last 20 window limits
+ 
+    times = sorted(t_min + w * dt_window for w in win_idx if 0 <= w <= n_windows)
+    idx = np.unique(np.array([int(np.argmin(np.abs(t_ax - t))) for t in times]))
+    return idx
+
 # ─────────────────────────────────────────────────────────────────────────
 # Shared ranking helper for the "best strategies only" companion pages
 # ─────────────────────────────────────────────────────────────────────────
@@ -1927,34 +1987,47 @@ def _pick_probe_points(N, obs_points, n_probes):
 # 1. Individual-trajectory plot (single strategy vs ground truth)
 # ─────────────────────────────────────────────────────────────────────────
 def _plot_trajectory_individual(
-    t_ax: np.ndarray,          # (T,)   time axis
-    x_true: np.ndarray,        # (T, N) ground-truth field
-    x_est: np.ndarray,         # (T, N) strategy's EnKF mean
-    x_std: np.ndarray | None,  # (T, N) strategy's ensemble std, or None
+    t_ax: np.ndarray,
+    x_true: np.ndarray,
+    x_est: np.ndarray,
+    x_std: np.ndarray,
     ic_idx: int,
     strategy_label: str,
-    l2_time_avg: float | None,
+    l2_time_avg: float,
     save_path: str,
-    x_grid: np.ndarray | None = None,
-    dt_window: float | None = None,
-    obs_coords=None,           # iterable of (grid_idx, t_obs, y_obs)
-    n_probes: int = 6,
-    n_snapshots: int = 8,
+    x_grid: np.ndarray = None,
+    dt_window: float = None,
+    obs_coords=None,
+    n_probes: int = 10,     # 5 obs + 5 unobs
+    n_snapshots: int = 8,   # fallback only; overridden by the window scheme when dt_window is set
 ) -> None:
     """
-    Trajectory-summary PDF for ONE strategy on ONE IC.
-
-    Layout
-    ------
-      row 0            truth / estimate / difference space-time heatmaps
-      row 1            left: relative L2 and mean |error| vs time;
-                       right: RMSE vs RMS ensemble spread vs time
-      probe rows       `n_probes` single-grid-point time series (observed
-                       points and gaps, see `_pick_probe_points`) with the
-                       +/-1 sigma band and the assimilated observations
-      snapshot rows    `n_snapshots` spatial profiles (truth vs estimate,
-                       +/-1 sigma band) at evenly spaced times, with the
-                       observations assimilated at that time overlaid
+    Trajectory-summary PDF for ONE strategy on ONE IC, now written as a
+    2-page PDF:
+ 
+      page 1
+        row 0            error/spread time series (relative L2, mean
+                         |error|, RMSE vs. ensemble spread)
+        probe rows       `n_probes` single-grid-point time series (now 10
+                         by default: 5 observed + 5 unobserved, evenly
+                         spaced -- 2 more of each than before)
+        snapshot rows     spatial profiles (truth vs. estimate, ±1σ band)
+                         at window-boundary times: the first 20 windows,
+                         then 10-window blocks every 60 windows (50-window
+                         gap) starting at window 70, then the last 20
+                         windows (see `_snapshot_window_indices`); falls
+                         back to `n_snapshots` evenly-spaced snapshots if
+                         `dt_window` is not given.
+ 
+      page 2             the three space-time heatmaps -- reference truth,
+                         ensemble mean, and (estimate - truth) -- stacked
+                         VERTICALLY instead of side-by-side. The
+                         "observed x" markers on the difference heatmap
+                         are dots instead of tick lines, plus a second
+                         dot-scatter showing the actual observation times
+                         of ONE representative observed grid point (a
+                         vertical strip of dots), to show how densely
+                         that point was sampled in time.
     """
     x_true = np.asarray(x_true)
     x_est = np.asarray(x_est)
@@ -1962,14 +2035,13 @@ def _plot_trajectory_individual(
     T, N = x_true.shape
     if x_grid is None:
         x_grid = np.arange(N, dtype=float)
-
+ 
     diff = x_est - x_true
     mean_abs_err = np.abs(diff).mean(axis=1)
     rmse_t = np.sqrt(np.mean(diff ** 2, axis=1))
     rel_l2_t = np.linalg.norm(diff, axis=1) / (np.linalg.norm(x_true, axis=1) + 1e-12)
     spread_t = (np.sqrt(np.mean(x_std ** 2, axis=1)) if x_std is not None else None)
-
-    # ── Window-boundary times ──────────────────────────────────────────
+ 
     t_min, t_max = float(t_ax[0]), float(t_ax[-1])
     if dt_window is not None and dt_window > 0:
         first_k = int(np.floor(t_min / dt_window)) + 1
@@ -1978,76 +2050,39 @@ def _plot_trajectory_individual(
         )
     else:
         window_boundaries = np.array([])
-
+ 
     obs_by_point, obs_by_time, obs_points = _index_observations(obs_coords)
     probes, obs_set = _pick_probe_points(N, obs_points, n_probes)
     n_probes = len(probes)
-
-    # Snapshot times, deduplicated: short runs (few fine steps) would
-    # otherwise repeat the same index several times and draw identical
-    # panels.
-    snap_idx = np.unique(np.linspace(0, T - 1, min(n_snapshots, T)).astype(int))
+ 
+    # ── Window-boundary snapshot selection instead of linspace ─
+    if dt_window is not None and dt_window > 0:
+        snap_idx = _snapshot_window_indices(t_ax, dt_window)
+    else:
+        snap_idx = np.unique(np.linspace(0, T - 1, min(n_snapshots, T)).astype(int))
     n_snapshots = len(snap_idx)
-
-    # ── Figure & GridSpec ────────────────────────────────────────────────
-    probe_cols, snap_cols = 2, 4
-    probe_rows = int(np.ceil(n_probes / probe_cols))
-    snap_rows = int(np.ceil(n_snapshots / snap_cols))
-
-    heat_h, metric_h, probe_h, snap_h = 4.0, 2.6, 1.9, 2.0
-    fig_h = heat_h + metric_h + probe_rows * probe_h + snap_rows * snap_h + 1.0
-    fig = plt.figure(figsize=(16, fig_h))
-    gs = gridspec.GridSpec(
-        nrows=2 + probe_rows + snap_rows, ncols=12, figure=fig,
-        height_ratios=[heat_h, metric_h] + [probe_h] * probe_rows + [snap_h] * snap_rows,
-        hspace=0.75, wspace=0.55,
-    )
-
+ 
     TRUTH_COLOR = "#37474F"
     EST_COLOR, EST_BAND = "#2196F3", "#90CAF9"
     OBS_COLOR = "#E53935"
-
-    # ── Row 0: space-time heatmaps ───────────────────────────────────────
-    extent = [float(x_grid[0]), float(x_grid[-1]), t_min, t_max]
-    vmax = float(np.max(np.abs(x_true)))
-    ax_t = fig.add_subplot(gs[0, 0:4])
-    ax_e = fig.add_subplot(gs[0, 4:8], sharey=ax_t)
-    ax_d = fig.add_subplot(gs[0, 8:12], sharey=ax_t)
-
-    im_t = ax_t.imshow(x_true, aspect="auto", extent=extent, origin="lower",
-                       cmap="viridis", vmin=-vmax, vmax=vmax)
-    ax_t.set_title("Reference truth", fontsize=11, fontweight="bold")
-    ax_t.set_ylabel("Time  t", fontsize=10)
-    ax_t.set_xlabel("x", fontsize=10)
-    fig.colorbar(im_t, ax=ax_t, fraction=0.046, pad=0.04)
-
-    im_e = ax_e.imshow(x_est, aspect="auto", extent=extent, origin="lower",
-                       cmap="viridis", vmin=-vmax, vmax=vmax)
-    ax_e.set_title(f"{strategy_label}: ensemble mean", fontsize=11, fontweight="bold")
-    ax_e.set_xlabel("x", fontsize=10)
-    ax_e.tick_params(labelleft=False)
-    fig.colorbar(im_e, ax=ax_e, fraction=0.046, pad=0.04)
-
-    dmax = float(np.max(np.abs(diff))) or 1.0
-    im_d = ax_d.imshow(diff, aspect="auto", extent=extent, origin="lower",
-                       cmap="RdBu_r", vmin=-dmax, vmax=dmax)
-    ax_d.set_title("Estimate − truth", fontsize=11, fontweight="bold")
-    ax_d.set_xlabel("x", fontsize=10)
-    ax_d.tick_params(labelleft=False)
-    fig.colorbar(im_d, ax=ax_d, fraction=0.046, pad=0.04)
-
-    # Mark the observed grid points along the bottom of the truth panel --
-    # with a static network this immediately shows which stripes of the
-    # difference panel are "free" and which the filter had to infer.
-    if obs_points and len(obs_points) < N:
-        ax_d.scatter(x_grid[np.asarray(obs_points)],
-                     np.full(len(obs_points), t_min), marker="|", s=18,
-                     color=OBS_COLOR, clip_on=False, zorder=6,
-                     label="observed x")
-        ax_d.legend(fontsize=7, loc="upper right", framealpha=0.7)
-
-    # ── Row 1: error and spread time series ──────────────────────────────
-    ax_err = fig.add_subplot(gs[1, 0:6])
+ 
+    # ═════════════════════ PAGE 1: metrics / probes / snapshots ════════
+    probe_cols, snap_cols = 2, 4
+    probe_rows = int(np.ceil(n_probes / probe_cols))
+    snap_rows = int(np.ceil(n_snapshots / snap_cols))
+ 
+    metric_h, probe_h, snap_h = 2.6, 1.9, 2.0
+    # NOTE: fig_h no longer includes heat_h -- heatmaps moved to page 2.
+    fig_h = metric_h + probe_rows * probe_h + snap_rows * snap_h + 1.0
+    fig = plt.figure(figsize=(16, fig_h))
+    gs = gridspec.GridSpec(
+        nrows=1 + probe_rows + snap_rows, ncols=12, figure=fig,
+        height_ratios=[metric_h] + [probe_h] * probe_rows + [snap_h] * snap_rows,
+        hspace=0.75, wspace=0.55,
+    )
+ 
+    # ── row 0: error and spread time series (was row 1) ─────────────────
+    ax_err = fig.add_subplot(gs[0, 0:6])
     ax_err.plot(t_ax, rel_l2_t, color="#E53935", linewidth=1.2,
                 label="Relative L2 error")
     ax_err.plot(t_ax, mean_abs_err, color="#1E88E5", linewidth=1.0,
@@ -2061,8 +2096,8 @@ def _plot_trajectory_individual(
     ax_err.set_title(f"Error vs time{l2_str}", fontsize=11, fontweight="bold")
     ax_err.legend(fontsize=8)
     ax_err.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
-
-    ax_sp = fig.add_subplot(gs[1, 6:12])
+ 
+    ax_sp = fig.add_subplot(gs[0, 6:12])
     ax_sp.plot(t_ax, rmse_t, color="#FF8A65", linewidth=1.2, linestyle="--",
                label="EnKF RMSE")
     if spread_t is not None:
@@ -2076,16 +2111,16 @@ def _plot_trajectory_individual(
     ax_sp.set_title("Spread vs skill (this trajectory)", fontsize=11, fontweight="bold")
     ax_sp.legend(fontsize=8)
     ax_sp.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
-
-    # ── Probe rows: single-grid-point time series ────────────────────────
+ 
+    # ── probe rows (row offset now 1, was 2) ─────────────────────────────
     for i, p in enumerate(probes):
-        row = 2 + i // probe_cols
+        row = 1 + i // probe_cols
         col0 = (i % probe_cols) * 6
         ax = fig.add_subplot(gs[row, col0:col0 + 6])
-
+ 
         for wb in window_boundaries:
             ax.axvline(x=wb, color="#78909C", linestyle="--", linewidth=0.5, alpha=0.35)
-
+ 
         ax.plot(t_ax, x_true[:, p], color=TRUTH_COLOR, linewidth=0.9, label="Truth")
         ax.plot(t_ax, x_est[:, p], color=EST_COLOR, linewidth=0.9, linestyle="--",
                 label=strategy_label)
@@ -2098,34 +2133,33 @@ def _plot_trajectory_individual(
             ot, ov = zip(*obs_by_point[p])
             ax.scatter(ot, ov, marker="x", s=14, linewidths=0.6,
                        color=OBS_COLOR, zorder=5, label="Observation")
-
+ 
         tag = "observed" if p in obs_set else "gap"
         ax.set_title(f"x = {x_grid[p]:.2f}  (grid point {p}, {tag})",
                      fontsize=9, pad=2)
         ax.tick_params(labelsize=7)
         ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5)
         ax.set_ylabel("u", fontsize=8)
-        if row == 2 + probe_rows - 1:
+        if row == 1 + probe_rows - 1:
             ax.set_xlabel("t", fontsize=8)
         if i == 0:
             ax.legend(fontsize=6.5, loc="upper right", handlelength=1.2,
                       framealpha=0.7, ncol=2)
-
-    # ── Snapshot rows: spatial profiles ──────────────────────────────────
-    dt_fine = float(t_ax[1] - t_ax[0]) if T > 1 else 0.0
+ 
+    # ── snapshot rows (row offset now 1 + probe_rows, was 2 + probe_rows) ─
     for i, ti in enumerate(snap_idx):
-        row = 2 + probe_rows + i // snap_cols
+        row = 1 + probe_rows + i // snap_cols
         col0 = (i % snap_cols) * 3
         ax = fig.add_subplot(gs[row, col0:col0 + 3])
-
+ 
         ax.plot(x_grid, x_true[ti], color=TRUTH_COLOR, linewidth=1.2, label="Truth")
         ax.plot(x_grid, x_est[ti], color=EST_COLOR, linewidth=1.2, linestyle="--",
                 label="Est.")
         if x_std is not None:
             ax.fill_between(x_grid, x_est[ti] - x_std[ti], x_est[ti] + x_std[ti],
                             color=EST_BAND, alpha=0.30, linewidth=0, label="±1σ")
-
-        # Observations assimilated at (or within half a fine step of) this time.
+ 
+        dt_fine = float(t_ax[1] - t_ax[0]) if T > 1 else 0.0
         if obs_by_time and dt_fine > 0:
             t_snap = float(t_ax[ti])
             near = min(obs_by_time, key=lambda tt: abs(tt - t_snap))
@@ -2133,7 +2167,7 @@ def _plot_trajectory_individual(
                 pts, vals = zip(*obs_by_time[near])
                 ax.scatter(x_grid[np.asarray(pts)], vals, marker="x", s=12,
                            linewidths=0.6, color=OBS_COLOR, zorder=5, label="Obs")
-
+ 
         ax.set_title(f"t = {t_ax[ti]:.3g}", fontsize=9, pad=2)
         ax.tick_params(labelsize=7)
         ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5)
@@ -2144,53 +2178,113 @@ def _plot_trajectory_individual(
         if i == 0:
             ax.legend(fontsize=6.5, loc="upper right", handlelength=1.2,
                       framealpha=0.7, ncol=2)
-
+ 
     fig.suptitle(
         f"KS trajectory summary — IC {ic_idx}  |  {strategy_label}",
         fontsize=14, fontweight="bold", y=1.001,
     )
-    _save(fig, save_path, dpi=140)
-    logging.info(
-        f"Individual trajectory plot (IC {ic_idx}, {strategy_label}) saved to: {save_path}"
+ 
+    # ═════════════════ PAGE 2: heatmaps, stacked vertically
+    extent = [float(x_grid[0]), float(x_grid[-1]), t_min, t_max]
+    vmax = float(np.max(np.abs(x_true)))
+    dmax = float(np.max(np.abs(diff))) or 1.0
+ 
+    fig2 = plt.figure(figsize=(6.5, 12.5))
+    gs2 = gridspec.GridSpec(3, 1, figure=fig2, hspace=0.32)
+ 
+    ax_t2 = fig2.add_subplot(gs2[0, 0])
+    ax_e2 = fig2.add_subplot(gs2[1, 0], sharex=ax_t2)
+    ax_d2 = fig2.add_subplot(gs2[2, 0], sharex=ax_t2)
+ 
+    im_t = ax_t2.imshow(x_true, aspect="auto", extent=extent, origin="lower",
+                        cmap="viridis", vmin=-vmax, vmax=vmax)
+    ax_t2.set_title("Reference truth", fontsize=11, fontweight="bold")
+    ax_t2.set_ylabel("Time  t", fontsize=10)
+    fig2.colorbar(im_t, ax=ax_t2, fraction=0.046, pad=0.04)
+    plt.setp(ax_t2.get_xticklabels(), visible=False)
+ 
+    im_e = ax_e2.imshow(x_est, aspect="auto", extent=extent, origin="lower",
+                        cmap="viridis", vmin=-vmax, vmax=vmax)
+    ax_e2.set_title(f"{strategy_label}: ensemble mean", fontsize=11, fontweight="bold")
+    ax_e2.set_ylabel("Time  t", fontsize=10)
+    fig2.colorbar(im_e, ax=ax_e2, fraction=0.046, pad=0.04)
+    plt.setp(ax_e2.get_xticklabels(), visible=False)
+ 
+    im_d = ax_d2.imshow(diff, aspect="auto", extent=extent, origin="lower",
+                        cmap="RdBu_r", vmin=-dmax, vmax=dmax)
+    ax_d2.set_title("Estimate − truth", fontsize=11, fontweight="bold")
+    ax_d2.set_xlabel("x", fontsize=10)
+    ax_d2.set_ylabel("Time  t", fontsize=10)
+    fig2.colorbar(im_d, ax=ax_d2, fraction=0.046, pad=0.04)
+ 
+    # -- Dots instead of tick lines for "which x are observed"
+    if obs_points and len(obs_points) < N:
+        ax_d2.scatter(x_grid[np.asarray(obs_points)],
+                      np.full(len(obs_points), t_min), marker="o", s=10,
+                      color=OBS_COLOR, clip_on=False, zorder=6,
+                      label="observed x")
+ 
+    # -- temporal density of ONE representative observed grid point
+    if obs_points:
+        rep_point = int(obs_points[len(obs_points) // 2])
+        if rep_point in obs_by_point:
+            rep_t, _rep_y = zip(*obs_by_point[rep_point])
+            ax_d2.scatter(
+                np.full(len(rep_t), x_grid[rep_point]), rep_t,
+                marker="o", s=6, color=OBS_COLOR, alpha=0.55,
+                edgecolors="white", linewidths=0.3, zorder=7,
+                label=f"obs density @ x={x_grid[rep_point]:.2f}",
+            )
+    if obs_points and len(obs_points) < N:
+        ax_d2.legend(fontsize=7, loc="upper right", framealpha=0.7)
+ 
+    fig2.suptitle(
+        f"KS heatmaps — IC {ic_idx}  |  {strategy_label}",
+        fontsize=13, fontweight="bold", y=1.0,
     )
+    fig2.tight_layout(rect=[0, 0, 1, 0.97])
+ 
+    _save_pdf_pages([fig, fig2], save_path, dpi=140)
+    logging.info(
+        f"Individual trajectory plot (IC {ic_idx}, {strategy_label}, 2-page PDF: "
+        f"metrics/probes/snapshots + heatmaps) saved to: {save_path}"
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # 2a. EnKF vs open-loop, time-mean relative L2 (curve-count-agnostic;
 #     shared by the pairwise and bulk entry points)
 # ─────────────────────────────────────────────────────────────────────────
 def _plot_l2_per_timestep(
-    curves: dict[str, tuple[np.ndarray, np.ndarray]],  # label -> (t_axis, l2_array)
+    curves: dict,             # label -> (t_axis, l2_array)
     title: str,
     save_path: str,
-    colors: dict[str, str] | None = None,
+    colors: dict = None,
+    dt_window: float = None,  # required to draw the two windowed pages
 ) -> None:
     """
     Plot average L2 error continuously across fine time stamps, as a
     multi-page PDF:
-
-      page 1 -- every curve in `curves`.
-      page 2 -- the same plot with the pure-propagator open-loop curves
-        (any label ending in "open-loop") omitted, so the filtered-strategy
-        curves aren't dwarfed by the open-loop curves' much larger error
-        scale. For KS this page is close to mandatory: an unfiltered
-        surrogate rollout saturates at relative L2 ~ 1 within a couple of
-        Lyapunov times, several orders above a working filter.
-      pages 3-4 -- duplicates of pages 1 and 2 restricted to the (at most)
-        `TOP_K_BEST` filtered strategies with the LOWEST time-mean relative
-        L2, with the open-loop references kept on the first of the two for
-        scale. Both are skipped when there are no more than `TOP_K_BEST`
-        filtered curves to begin with, since the pages would just repeat
-        pages 1-2.
+ 
+      page 1 -- every curve in `curves`.                                  (unchanged)
+      page 2 -- open-loop curves omitted.                                 (unchanged)
+      pages 3-4 -- best-TOP_K_BEST filtered strategies only.              (unchanged)
+      page 5 --- same as page 1, but every curve is averaged into
+        dt_window-wide time buckets, and each legend entry reports that
+        strategy's overall (all-time, full-resolution) mean relative L2.
+      page 6 -- same as page 5, with open-loop curves omitted, like
+        page 2. Pages 5-6 are skipped if `dt_window` is not given.
     """
     default_colors = ["#2196F3", "#FF5722", "#4CAF50", "#9C27B0"]
     open_loop_labels = {label for label in curves if label.endswith("open-loop")}
     filtered_curves = {k: v for k, v in curves.items() if k not in open_loop_labels}
-
+ 
     def _draw(curve_subset, subtitle):
         fig, ax = plt.subplots(figsize=(9, 5.5))
         for i, (label, (t_axis, l2_arr)) in enumerate(curve_subset.items()):
             color = (colors or {}).get(label, default_colors[i % len(default_colors)])
             ax.plot(t_axis, l2_arr, linewidth=1.1, label=label, color=color)
-
+ 
         ax.set_yscale("log")
         ax.set_xlabel("Time (t)", fontsize=12)
         ax.set_ylabel("Mean relative L2 error (log scale)", fontsize=12)
@@ -2199,15 +2293,14 @@ def _plot_l2_per_timestep(
         ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
         fig.tight_layout()
         return fig
-
+ 
     figs = [_draw(curves, title)]
     if open_loop_labels and filtered_curves:
         figs.append(_draw(
             filtered_curves,
             title + "\n(pure-propagator open-loop curves omitted)",
         ))
-
-    # -- Best-performing strategies only (lowest time-mean relative L2) --
+ 
     if len(filtered_curves) > TOP_K_BEST:
         best, scores = _rank_by_mean(
             {label: l2_arr for label, (_, l2_arr) in filtered_curves.items()},
@@ -2227,11 +2320,42 @@ def _plot_l2_per_timestep(
             best_curves,
             title + best_note + "\n(pure-propagator open-loop curves omitted)",
         ))
-
+ 
+    # ── pages 5-6: window-averaged versions of pages 1-2 ──────────────
+    if dt_window is not None and dt_window > 0:
+ 
+        def _draw_windowed(curve_subset, subtitle):
+            fig, ax = plt.subplots(figsize=(9, 5.5))
+            for i, (label, (t_axis, l2_arr)) in enumerate(curve_subset.items()):
+                color = (colors or {}).get(label, default_colors[i % len(default_colors)])
+                t_axis = np.asarray(t_axis)
+                l2_arr = np.asarray(l2_arr)
+                w_t, w_l2 = _window_average(t_axis, l2_arr, dt_window)
+                finite = l2_arr[np.isfinite(l2_arr)]
+                overall_avg = float(finite.mean()) if finite.size else float("nan")
+                ax.plot(w_t, w_l2, linewidth=1.2, marker="o", markersize=3,
+                        color=color, label=f"{label}  (overall avg={overall_avg:.3g})")
+            ax.set_yscale("log")
+            ax.set_xlabel("Time (t)  [window-averaged]", fontsize=12)
+            ax.set_ylabel("Mean relative L2 error (log scale)", fontsize=12)
+            ax.set_title(subtitle, fontsize=13)
+            ax.legend(fontsize=8, ncol=(2 if len(curve_subset) > 5 else 1))
+            ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+            fig.tight_layout()
+            return fig
+ 
+        figs.append(_draw_windowed(curves, title + "\n(window-averaged)"))
+        if open_loop_labels and filtered_curves:
+            figs.append(_draw_windowed(
+                filtered_curves,
+                title + "\n(window-averaged; pure-propagator open-loop curves omitted)",
+            ))
+ 
     _save_pdf_pages(figs, save_path)
     logging.info(
         f"L2-vs-open-loop comparison plot ({len(figs)}-page PDF) saved to: {save_path}"
     )
+
 # ─────────────────────────────────────────────────────────────────────────
 # Bulk (all-strategies-at-once) comparison plots
 # ─────────────────────────────────────────────────────────────────────────
@@ -2294,26 +2418,26 @@ def _plot_calibration_bulk(
     label_of,
     window_idx: np.ndarray,
     dt_window: float,
-    spread_window_of: dict,   # key -> (n_window,) sim-time-mean RMS spread
-    rmse_window_of: dict,     # key -> (n_window,) sim-time-mean EnKF RMSE
-    spread_raw_of: dict,      # key -> raw (IC, window) spread pairs, flattened
-    rmse_raw_of: dict,        # key -> raw (IC, window) RMSE pairs, flattened
+    spread_window_of: dict,
+    rmse_window_of: dict,
+    spread_raw_of: dict,
+    rmse_raw_of: dict,
     colors: dict,
     title: str,
     save_path: str,
     n_bins: int = 10,
 ) -> None:
     """
-    Single calibration PDF covering every strategy at once:
-
-      * one small row per strategy, stacked vertically, each pairing
-        that strategy's own RMS ensemble spread and EnKF RMSE
-        (simulation time) on the SAME axes -- S small line plots
-        instead of two "every strategy overlaid" panels, so a given
-        strategy's own spread/RMSE relationship stays legible even when
-        S is large.
-      * a final row with the pooled binned spread-skill scatter, shown
-        in both linear and log/log axes, side by side.
+    Calibration, written as a 2-page PDF covering every strategy:
+ 
+      page 1 -- one small row per strategy pairing that
+        strategy's own RMS ensemble spread and EnKF RMSE, plus the pooled
+        binned spread-skill scatter (linear + log/log).
+      page 2 -- |RMS ensemble sigma - EnKF RMSE| vs. window index,
+        every strategy overlaid on ONE set of axes (like the binned
+        spread-skill panel on page 1, rather than the per-strategy small
+        multiples), with each strategy's overall time-mean absolute
+        difference shown in its legend entry and in a summary textbox.
     """
     S = len(strategy_keys)
     row_h = 1.15
@@ -2323,16 +2447,13 @@ def _plot_calibration_bulk(
     gs = gridspec.GridSpec(
         S + 1, 2, height_ratios=[row_h] * S + [bin_row_h], hspace=0.65, wspace=0.3,
     )
-
-    # -- One row per strategy: spread + RMSE paired on the same axes ----
+ 
+    # -- One row per strategy: spread + RMSE paired on the same axes ---- (unchanged)
     ax_prev = None
     for i, key in enumerate(strategy_keys):
         ax = fig.add_subplot(gs[i, :], sharex=ax_prev)
         ax_prev = ax
         c = colors[key]
-        # Marker-free lines: with many windows the per-point markers just
-        # merged into a solid band and hid the curve shape. The solid /
-        # dashed linestyle still separates spread from RMSE.
         ax.plot(window_idx, spread_window_of[key],
                 linewidth=1.0, linestyle="-", color=c, label="RMS ensemble σ")
         ax.plot(window_idx, rmse_window_of[key],
@@ -2348,11 +2469,11 @@ def _plot_calibration_bulk(
             plt.setp(ax.get_xticklabels(), visible=False)
         else:
             ax.set_xlabel("Window index", fontsize=9)
-
-    # -- Final row: pooled binned spread-skill, linear + log/log --------
+ 
+    # -- Final row: pooled binned spread-skill, linear + log/log -------- (unchanged)
     ax_lin = fig.add_subplot(gs[S, 0])
     ax_log = fig.add_subplot(gs[S, 1])
-
+ 
     binned = {}
     lim_hi, lim_lo = 0.0, np.inf
     for key in strategy_keys:
@@ -2366,10 +2487,7 @@ def _plot_calibration_bulk(
             lim_lo = min(lim_lo, float(pos_vals.min()))
     lim_hi *= 1.1
     lim_lo = lim_lo / 1.5 if np.isfinite(lim_lo) else lim_hi * 1e-3
-
-    # Error bars get busy fast with many strategies pooled on one axes;
-    # fade just the bars/caps as S grows while keeping the trend line and
-    # markers fully opaque, so shapes stay readable.
+ 
     eb_alpha = max(0.25, 0.9 - 0.12 * S)
     for ax, log_scale in ((ax_lin, False), (ax_log, True)):
         lo = lim_lo if log_scale else 0.0
@@ -2386,7 +2504,7 @@ def _plot_calibration_bulk(
                 cap.set_alpha(eb_alpha)
             for barcol in container[2]:
                 barcol.set_alpha(eb_alpha)
-
+ 
         ax.set_xlabel("RMS ensemble spread (RMSS)", fontsize=10)
         ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
         if log_scale:
@@ -2400,20 +2518,49 @@ def _plot_calibration_bulk(
             ax.set_ylim(0, lim_hi)
             ax.set_aspect("equal", adjustable="box")
             ax.set_title(f"Binned spread-skill (linear, {n_bins}-bin)", fontsize=10.5)
-
+ 
     ax_lin.set_ylabel("RMSE of ensemble mean", fontsize=10)
     ax_lin.legend(fontsize=6.5, ncol=(2 if S > 4 else 1))
-
+ 
     fig.suptitle(
         f"{title}\n(window index × dt_window={dt_window:g} = simulation time)",
         fontsize=13, y=1.0,
     )
     _tight_layout(fig, rect=[0.04, 0, 1, 1 - 0.85 / fig_h])
-    _save(fig, save_path)
-    logging.info(
-        f"Bulk calibration plot ({S} strategies, stacked small-multiples) saved to: {save_path}"
+ 
+    # Page 2: |spread - RMSE| over time, all strategies overlaid
+    fig2, ax2 = plt.subplots(figsize=(9.5, 5.5))
+    avg_abs_diff = {}
+    for key in strategy_keys:
+        diff_t = np.abs(np.asarray(spread_window_of[key]) - np.asarray(rmse_window_of[key]))
+        avg_abs_diff[key] = float(np.nanmean(diff_t))
+        ax2.plot(window_idx, diff_t, linewidth=1.1, color=colors[key],
+                 label=f"{label_of[key]}  (avg={avg_abs_diff[key]:.3g})")
+    ax2.set_yscale("log")
+    ax2.set_xlabel("Window index", fontsize=11)
+    ax2.set_ylabel("|RMS ensemble σ − EnKF RMSE|  (log scale)", fontsize=11)
+    ax2.set_title(
+        f"Spread–skill absolute difference over time — {title}\n"
+        f"(window index × dt_window={dt_window:g} = simulation time)",
+        fontsize=12,
     )
-
+    ax2.legend(fontsize=7.5, ncol=(2 if S > 5 else 1))
+    ax2.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+ 
+    summary_txt = "\n".join(f"{label_of[k]}: {avg_abs_diff[k]:.3g}" for k in strategy_keys)
+    ax2.text(
+        1.02, 0.5, "Overall avg |Δ|:\n" + summary_txt, transform=ax2.transAxes,
+        fontsize=7, va="center", ha="left",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.85, edgecolor="#cccccc"),
+    )
+    fig2.tight_layout(rect=[0, 0, 0.82, 1])
+ 
+    _save_pdf_pages([fig, fig2], save_path)
+    logging.info(
+        f"Bulk calibration plot (2-page PDF: {S} strategies, stacked small-multiples + "
+        f"spread-skill abs-diff) saved to: {save_path}"
+    )
+ 
 
 # ─────────────────────────────────────────────────────────────────────────
 # 3b. Error Reduction Factor, ALL strategies on one PDF
@@ -2428,60 +2575,48 @@ def _plot_erf_bulk(
     n_traj: int,
     title: str,
     save_path: str,
-    show_bands: bool | None = None,
+    show_bands: bool = None,
 ) -> None:
-    """
-    ERF comparison for every strategy on ONE set of axes, written as a
-    multi-page PDF:
-
-      page 1 -- every strategy.
-      page 2 -- the same axes restricted to the (at most) `TOP_K_BEST`
-        strategies with the GREATEST time-mean ERF. Skipped when there are
-        no more than `TOP_K_BEST` strategies.
-
-    +/-1 sigma bands are auto-dropped once there are more than 4
-    strategies, since overlapping fills stop conveying anything once they
-    stack that deep -- evaluated per page, so the decluttered second page
-    usually gets its bands back.
-    """
+    """Same 1-2 page structure as before; each legend entry now also
+    reports that strategy's time-mean ERF."""
     S = len(strategy_keys)
-
+ 
     def _draw(keys, subtitle):
         n = len(keys)
         bands = (n <= 4) if show_bands is None else show_bands
         band_alpha = 0.15 if n <= 3 else 0.08
-
+ 
         fig, ax = plt.subplots(figsize=(10, 5.5))
         for key in keys:
             c = colors[key]
             mean, std = erf_mean_of[key], erf_std_of[key]
+            avg_erf = float(np.nanmean(mean))          
             ax.plot(obs_times, mean, color=c, linewidth=1.1, marker="o", markersize=2.2,
-                    label=label_of[key])
+                    label=f"{label_of[key]}  (avg={avg_erf:.3g})")
             if bands:
                 ax.fill_between(obs_times, mean - std, mean + std, color=c,
                                 alpha=band_alpha, linewidth=0)
-
+ 
         ax.set_yscale("log")
         ax.axhline(y=1.0, color="#37474F", linestyle="--", linewidth=1.1,
                    label="ERF = 1  (no reduction)")
-
+ 
         ax.set_xlabel("Observation time  t", fontsize=12)
         ax.set_ylabel("Error Reduction Factor  (prior RMSE / posterior RMSE)", fontsize=11)
         ax.set_title(f"{subtitle}  (n = {n_traj} trajectories)", fontsize=13)
         ax.legend(fontsize=8, ncol=(2 if n > 5 else 1))
         ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
-
+ 
         if not bands:
             ax.text(0.99, 0.02, "±1σ bands omitted for legibility (n strategies > 4)",
                     transform=ax.transAxes, fontsize=7.5, ha="right", va="bottom",
                     color="#666666", style="italic")
-
+ 
         fig.tight_layout()
         return fig
-
+ 
     figs = [_draw(strategy_keys, title)]
-
-    # -- Best-performing strategies only (greatest time-mean ERF) -------
+ 
     if S > TOP_K_BEST:
         best, scores = _rank_by_mean(
             erf_mean_of, keys=strategy_keys, largest=True, k=TOP_K_BEST,
@@ -2491,7 +2626,7 @@ def _plot_erf_bulk(
             best,
             f"{title}\nBest {len(best)} strategies by mean ERF: {ranking}",
         ))
-
+ 
     _save_pdf_pages(figs, save_path)
     logging.info(
         f"Bulk ERF plot ({S} strategies, {len(figs)}-page PDF) saved to: {save_path}"
@@ -2513,32 +2648,28 @@ def _plot_rmse_bulk(
     title: str,
     save_path: str,
 ) -> None:
-    """
-    Prior/posterior RMSE for every strategy, split into two side-by-side
-    panels (prior, posterior) rather than 2*S lines on one axes; both
-    panels share a y-axis and a single strategy-color legend.
-
-    Written as a multi-page PDF:
-
-      page 1 -- every strategy.
-      page 2 -- the same two panels restricted to the (at most)
-        `TOP_K_BEST` strategies with the LOWEST time-mean POSTERIOR RMSE.
-        Both panels are filtered by that single posterior ranking, so the
-        prior panel still shows where those same strategies started from.
-    """
+    """Same 1-2 page structure as before; each legend entry (on both the
+    prior and posterior panels, separately) now also reports that
+    strategy's time-mean RMSE for that panel's metric."""
     S = len(strategy_keys)
-
+ 
     def _draw(keys, subtitle):
         n = len(keys)
         fig, (ax_prior, ax_post) = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
-
+ 
         for key in keys:
             c = colors[key]
-            ax_prior.plot(obs_times, prior_mean_of[key], color=c, linewidth=1.1,
-                          marker="o", markersize=2.2, label=label_of[key])
-            ax_post.plot(obs_times, post_mean_of[key], color=c, linewidth=1.1,
-                         marker="o", markersize=2.2, label=label_of[key])
-
+            prior_vals = np.asarray(prior_mean_of[key])
+            post_vals = np.asarray(post_mean_of[key])
+            prior_avg = float(np.nanmean(prior_vals))
+            post_avg = float(np.nanmean(post_vals))
+            ax_prior.plot(obs_times, prior_vals, color=c, linewidth=1.1,
+                          marker="o", markersize=2.2,
+                          label=f"{label_of[key]}  (avg={prior_avg:.3g})")
+            ax_post.plot(obs_times, post_vals, color=c, linewidth=1.1,
+                         marker="o", markersize=2.2,
+                         label=f"{label_of[key]}  (avg={post_avg:.3g})")
+ 
         for ax, panel_title in ((ax_prior, "Prior RMSE"), (ax_post, "Posterior RMSE")):
             ax.axhline(y=sigma_obs, color="#4CAF50", linestyle=":", linewidth=1.2,
                        label=f"σ_obs = {sigma_obs}")
@@ -2548,16 +2679,16 @@ def _plot_rmse_bulk(
             ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
         ax_prior.set_ylabel("RMSE  (log scale)", fontsize=11)
         plt.setp(ax_post.get_yticklabels(), visible=False)
-
+ 
         ax_prior.legend(fontsize=8, ncol=(2 if n > 4 else 1))
-
+        ax_post.legend(fontsize=8, ncol=(2 if n > 4 else 1))
+ 
         fig.suptitle(f"{subtitle}  (n = {n_traj} trajectories)", fontsize=13, y=1.0)
         fig.tight_layout(rect=[0, 0, 1, 0.96])
         return fig
-
+ 
     figs = [_draw(strategy_keys, title)]
-
-    # -- Best-performing strategies only (lowest mean posterior RMSE) ---
+ 
     if S > TOP_K_BEST:
         best, scores = _rank_by_mean(
             post_mean_of, keys=strategy_keys, largest=False, k=TOP_K_BEST,
@@ -2567,7 +2698,7 @@ def _plot_rmse_bulk(
             best,
             f"{title}\nBest {len(best)} strategies by mean posterior RMSE: {ranking}",
         ))
-
+ 
     _save_pdf_pages(figs, save_path)
     logging.info(
         f"Bulk prior/posterior RMSE plot ({S} strategies, {len(figs)}-page PDF) "
@@ -2880,6 +3011,7 @@ def plot_group(h5_paths: list, save_dir: str, title_tag: str, n_bins: int = 10) 
         title=f"EnKF vs open-loop: mean relative L2 per timestep — {title_tag}  (B={B})",
         save_path=os.path.join(save_dir, "l2.pdf"),
         colors=curve_colors,
+        dt_window=g["dt_window"],
     )
 
     _plot_rmse_bulk(
