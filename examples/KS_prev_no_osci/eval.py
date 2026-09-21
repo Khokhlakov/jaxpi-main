@@ -2046,7 +2046,7 @@ def _plot_trajectory_individual(
     if dt_window is not None and dt_window > 0:
         first_k = int(np.floor(t_min / dt_window)) + 1
         window_boundaries = np.arange(
-            0, t_max + 1e-12 * dt_window, dt_window
+            first_k * dt_window, t_max + 1e-12 * dt_window, dt_window
         )
     else:
         window_boundaries = np.array([])
