@@ -2,6 +2,24 @@
 gen_data.py — Lorenz-96 data generation for a physics-informed DeepONet
               with forcing parameter F treated as a learnable network input.
 
+Usage
+-----
+    python gen_data.py                       # defaults (same as before)
+    python gen_data.py --num_ics 100 --M 50 --L 20
+    python gen_data.py --train_file_pi out/pi.h5 --train_file_dd out/dd.h5 \
+                       --test_file out/test.h5
+
+Optional parameters (all have defaults; running with none reproduces the
+original behaviour):
+    --num_ics        Number of trajectories                  (default 500)
+    --L              Test trajectory length [in windows]     (default 320)
+    --M              Training windows per trajectory         (default 500)
+    --F_low          Lower bound of forcing F ~ U[F_low, F_high] (default 5.0)
+    --F_high         Upper bound of forcing F ~ U[F_low, F_high] (default 9.0)
+    --train_file_pi  Output path, physics-informed train set (default ./l96_forcing_train.h5)
+    --train_file_dd  Output path, data-driven train set      (default ./l96_forcing_train_dd.h5)
+    --test_file      Output path, test set                   (default ./l96_forcing_test.h5)
+
 Design
 ------
 * F is sampled independently per trajectory from U[F_low, F_high].
@@ -12,7 +30,7 @@ Design
 
 Output files
 ------------
-examples/l96_forcing/data/l96_forcing_train.h5
+l96_forcing_train.h5
     u            : (num_ics·M, N+1)  float32  — states [u, F] pooled across
                                                  all trajectories and windows;
                                                  every row is an initial condition
@@ -20,7 +38,7 @@ examples/l96_forcing/data/l96_forcing_train.h5
     t_boundaries : (M,)              float32  — window-start times relative to
                                                 end of burn-in
 
-examples/l96_forcing/data/l96_forcing_test.h5
+l96_forcing_test.h5
     u  : (num_ics, num_test_pts, N)  float32  — dense test trajectories
     F  : (num_ics,)                  float32  — per-trajectory F values
     t  : (num_test_pts,)             float32  — times relative to M·window_size
@@ -38,27 +56,70 @@ Note: the state at burn_time + M·ws belongs exclusively to the test set;
 
 import os
 import time
+import argparse
 import numpy as np
 from scipy.integrate import solve_ivp
 import h5py
 
 
+# ── Command-line Arguments ─────────────────────────────────────────────────────
+
+def _positive_int(value):
+    ivalue = int(value)
+    if ivalue < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer (got {value})")
+    return ivalue
+
+
+_default_dir = os.getcwd()
+
+parser = argparse.ArgumentParser(
+    description="Generate Lorenz-96 training/test data with variable forcing F."
+)
+parser.add_argument('--num_ics', '--num-ics', type=_positive_int, default=500,
+                    help="Number of trajectories (default: 500)")
+parser.add_argument('--L', type=_positive_int, default=320,
+                    help="Test trajectory length in windows (default: 320)")
+parser.add_argument('--M', type=_positive_int, default=500,
+                    help="Training windows per trajectory (default: 500)")
+parser.add_argument('--F_low', '--F-low', type=float, default=5.0,
+                    help="Lower bound of the forcing distribution (default: 5.0)")
+parser.add_argument('--F_high', '--F-high', type=float, default=9.0,
+                    help="Upper bound of the forcing distribution (default: 9.0)")
+parser.add_argument('--train_file_pi', '--train-file-pi',
+                    default=os.path.join(_default_dir, 'l96_forcing_train.h5'),
+                    help="Output path for the physics-informed training file "
+                         "(default: ./l96_forcing_train.h5)")
+parser.add_argument('--train_file_dd', '--train-file-dd',
+                    default=os.path.join(_default_dir, 'l96_forcing_train_dd.h5'),
+                    help="Output path for the data-driven training file "
+                         "(default: ./l96_forcing_train_dd.h5)")
+parser.add_argument('--test_file', '--test-file',
+                    default=os.path.join(_default_dir, 'l96_forcing_test.h5'),
+                    help="Output path for the test file "
+                         "(default: ./l96_forcing_test.h5)")
+args = parser.parse_args()
+
+if args.F_low > args.F_high:
+    parser.error(f"--F_low ({args.F_low}) must not exceed --F_high ({args.F_high})")
+
+
 # ── Configurable Parameters ────────────────────────────────────────────────────
 
-N           = 40       
-num_ics     = 500  
-F_low       = 5.0
-F_high      = 9.0
+N           = 40
+num_ics     = args.num_ics
+F_low       = args.F_low
+F_high      = args.F_high
 
-M           = 500      # Training windows per trajectory
+M           = args.M   # Training windows per trajectory
 M_pi        = 1 * M    # PI training windows
 window_size = 0.25     # Window duration [time units]
-L           = 320      # Test trajectory length [in windows]
+L           = args.L   # Test trajectory length [in windows]
 
-burn_time   = 15.0     
-dt          = 0.005    
+burn_time   = 15.0
+dt          = 0.005
 
-SEED        = 42       
+SEED        = 42
 
 # ── Derived Quantities ─────────────────────────────────────────────────────────
 
@@ -83,12 +144,14 @@ def lorenz96(t, u, N, F):
 
 # ── Output Paths ───────────────────────────────────────────────────────────────
 
-data_dir   = os.getcwd()
-os.makedirs(data_dir, exist_ok=True)
+train_file_pi = args.train_file_pi
+train_file_dd = args.train_file_dd
+test_file     = args.test_file
 
-train_file_pi = os.path.join(data_dir, 'l96_forcing_train.h5')
-train_file_dd = os.path.join(data_dir, 'l96_forcing_train_dd.h5')
-test_file     = os.path.join(data_dir, 'l96_forcing_test.h5')
+# Make sure the parent directory of every output file exists
+for _path in (train_file_pi, train_file_dd, test_file):
+    _dir = os.path.dirname(os.path.abspath(_path))
+    os.makedirs(_dir, exist_ok=True)
 
 
 # ── Sample Forcing Values ──────────────────────────────────────────────────────
@@ -108,17 +171,17 @@ t_train_abs = burn_time + np.arange(M_pi * pts_pw + 1, dtype=np.float64) * dt
 # Test Phase: Starts at (M + 1) * ws
 t_test_abs = burn_time + (M_pi + 1) * window_size + np.arange(L * pts_pw + 1, dtype=np.float64) * dt
 
-t_combined = np.concatenate([t_train_abs, t_test_abs])   
+t_combined = np.concatenate([t_train_abs, t_test_abs])
 
 # Relative test times for storage (t=0 ↔ physical time (M+1)·window_size)
 t_test_rel = np.linspace(0.0, L * window_size, num_test_pts, dtype=np.float32)
 
 # ── Pre-allocate Output Arrays ─────────────────────────────────────────────────
 
-# PI: 21 boundary states per trajectory (0, ws, 2ws, ..., M*ws)
+# PI: M+1 boundary states per trajectory (0, ws, 2ws, ..., M*ws)
 u_pi_bounds = np.zeros((num_ics, M_pi + 1, N), dtype=np.float32)
 
-# DD: 20 windows per trajectory, 51 states per window
+# DD: M windows per trajectory, 51 states per window
 u_dd_windows = np.zeros((num_ics, M, pts_pw + 1, N), dtype=np.float32)
 
 # Test: Dense test trajectories
@@ -168,10 +231,10 @@ for i in range(num_ics):
 
     # sol.y shape: (N, len(t_combined))
     len_train = len(t_train_abs)
-    
+
     # 1. Split the continuous output back into Train and Test segments
-    u_train_dense = sol.y[:, :len_train].T.astype(np.float32) # Shape: (1001, N)
-    u_test_dense  = sol.y[:, len_train:].T.astype(np.float32) # Shape: (1001, N)
+    u_train_dense = sol.y[:, :len_train].T.astype(np.float32) # Shape: (M*50+1, N)
+    u_test_dense  = sol.y[:, len_train:].T.astype(np.float32) # Shape: (L*50+1, N)
 
     # 2. Extract Sparse PI states (every pts_pw index)
     idx_bounds = np.arange(0, len_train, pts_pw)
