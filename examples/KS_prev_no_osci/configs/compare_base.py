@@ -3,7 +3,7 @@ import jax.numpy as jnp
 
 def get_config():
     config = ml_collections.ConfigDict()
-    config.mode = "run_4way_comparison"
+    config.mode = "run_comparison"
 
     # Weights & Biases
     # 
