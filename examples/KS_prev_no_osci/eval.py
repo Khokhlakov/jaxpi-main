@@ -1,24 +1,137 @@
 """
-Modular filter evaluation for the DeepONet + EnKF Kuramoto-Sivashinsky pipeline.
+Modular filter evaluation and comparison for the DeepONet + EnKF
+Kuramoto-Sivashinsky pipeline.
 
-KS translation of ``examples.l96_f.eval``. Same two-stage split:
+KS translation of ``examples.l96_f.eval`` (same design, three surrogates
+instead of two).
 
-    1. `evaluate_filters(...)`  -- runs every requested filtering strategy
-       on the SAME data (same ICs, same noisy-observation draws, same
-       initial ensembles) and stores every number a downstream plotting
-       function could need into a single HDF5 file, keyed by
-       `config.wandb.name`.
+ONE entry point, `run_comparison(config, workdir)`, replaces the earlier
+family of `run_3way_comparison` / `run_4way_comparison` /
+`run_mult_inflation_sweep` / `run_add_inflation_sweep` /
+`run_rtpp_inflation_sweep` / `run_route_b_inflation_sweep` functions (and
+`plot_comparisons`, `plot_comparisons_bulk`, `plot_equilibrium_variance`).
+What is evaluated and what is plotted is described entirely by the
+configuration file.
 
-    2. `plot_comparisons` / `plot_comparisons_bulk` /
-       `plot_equilibrium_variance` later read that HDF5 file and draw the
-       figures: individual trajectories, RMSE with spread, calibration,
-       Error Reduction Factor (ERF), batch time-mean L2 error, and the
-       steady-state equilibrium-variance diagnostic.
+Configuration
+-------------
+Three keys under `config.eval`. Example 1 -- compare specific strategies::
 
-`evaluate_filters` takes an arbitrary list of strategy specifications, so
-new filters can be added or removed without touching the evaluation code.
-`build_default_3way_strategies` reconstructs the classic DD-mult /
-PI-mult / PI-RouteB set.
+    config.eval.test_data_name = "ks_test_data"      # -> data/ks_test_data.h5
+
+    config.eval.strategies = {
+        "dd_mult": dict(surrogate="DD", inflation="multiplicative",
+                        params=dict(inflation_factor=1.05)),
+        "pi_mult": dict(surrogate="PI", inflation="multiplicative",
+                        params=dict(inflation_factor=1.10)),
+        "hy_mult": dict(surrogate="HY", inflation="multiplicative",
+                        params=dict(inflation_factor=1.10)),
+        "pi_add":  dict(surrogate="PI", inflation="additive",
+                        params=dict(alpha=0.5)),
+        "hy_rb":   dict(surrogate="HY", inflation="route_b",
+                        params=dict(alpha=0.0, beta=1.0)),
+        "dd_rtpp": dict(surrogate="DD", inflation="rtpp",
+                        params=dict(alpha_rtpp=0.5)),
+    }
+
+    config.eval.plot_groups = [
+        ["dd_mult", "pi_mult", "hy_mult"],   # one collection, all three on every figure
+        ["pi_add", "hy_rb", "dd_rtpp"],
+        ["hy_rb"],                           # a collection with a single strategy
+    ]
+
+Example 2 -- parameter sweeps (any parameter given as a list; `plot_groups` is
+then ignored)::
+
+    config.eval.strategies = {
+        "dd_mult": dict(surrogate="DD", inflation="multiplicative",
+                        params=dict(inflation_factor=[1.00, 1.02, 1.05, 1.10])),
+        "hy_mult": dict(surrogate="HY", inflation="multiplicative",
+                        params=dict(inflation_factor=[1.00, 1.02, 1.05, 1.10])),
+        "pi_rb":   dict(surrogate="PI", inflation="route_b",
+                        params=dict(alpha=0.0, beta=[1e-2, 1e-1, 1.0, 10.0])),
+    }
+
+Strategy entries (one per identifying name):
+
+    surrogate   "DD" (data-driven DeepONet), "PI" (physics-informed DeepONet)
+                or "HY" / "hybrid" (PI + a fraction of DD). The checkpoint of
+                each surrogate that is actually used is read from
+                `config.wandb.name_dd` / `name_pi` / `name_hy`.
+    inflation   "multiplicative", "additive", "route_b" or "rtpp".
+                "additive" and "route_b" need the PDE residual (`r_net`), which
+                the data-driven DD surrogate does not have, so DD + additive /
+                Route B is rejected up front. Multiplicative and RTPP run on
+                every surrogate.
+    params      depends on the inflation type:
+
+        multiplicative   inflation_factor            (> 0; coarse, per-window factor)
+        additive         alpha                       (>= 0; constant floor alpha*Q0,
+                                                      i.e. Route B with beta = 0)
+        route_b          alpha, beta                 (>= 0; scale = alpha + beta*||rho||^2)
+        rtpp             alpha_rtpp                  (in [0, 1]; relaxation factor)
+                         alpha_fine   (optional, default 1.0; multiplicative
+                                       inflation in RTPP's predict step, used as given)
+
+Every parameter listed above may be a scalar or a list. A list of n values
+triggers n evaluations (see "Sweeps"). Anything not listed here (N_ens,
+sigma_obs, P0_sigma, P0_corr_len, Q0_sigma, Q0_corr_len, route_b_n_quad,
+dt_fine, ...) is still read from `config.kf` / `config.eval` exactly as before
+and is shared by every strategy.
+
+The per-scheme knobs the old runners read from `config.kf` (`inflation_factor`,
+`inflation_factor_list`, `inflation_alpha_list`, `route_b_alpha`,
+`route_b_beta`, `route_b_beta_list`, `rtpp_alpha`, `rtpp_alpha_list`,
+`rtpp_alpha_fine`, `compare_propagators`, `sweep_propagators*`) are NO LONGER
+read: their values now live in `config.eval.strategies`. Likewise
+`config.wandb.name` no longer names the results file.
+
+Test data
+---------
+`config.eval.test_data_name` (default "ks_test_data") names the test set:
+`<config.training.data_dir>/<name>.h5` (`data_dir` defaults to "data"). A
+trailing ".h5" in the name is accepted. The same lookup is used by the
+unfiltered `evaluate`.
+
+Evaluation and output files
+---------------------------
+Each (strategy, parameter version) is evaluated independently and written to
+its own HDF5 file in `workdir`:
+
+    <name>.h5                    strategy without a parameter list
+    <name>_ver_<i>.h5            i-th value of a parameter list (1-based)
+    <name>_ver_<i>_<j>.h5        Route B sweeps: i-th alpha value, j-th beta value
+
+Route B is always indexed by BOTH parameters. If only one of alpha/beta is a
+list, the other is treated as a one-element list (index 1); if both are lists,
+every (alpha, beta) combination is evaluated (a full grid).
+
+If the file for a name already exists it is NOT recomputed (a partial file is
+never left behind: results are written to a temporary file and renamed on
+success), and the pipeline goes straight to plotting. A warning is logged if
+the stored parameters/settings differ from the current config; delete the
+file to force a re-run.
+
+All strategies see the same initial conditions, observation noise draws and
+initial ensembles (they are derived from `config.training.seed` only), so
+files evaluated at different times remain directly comparable as long as the
+shared settings are unchanged.
+
+Plotting
+--------
+    * Individual-trajectory PDFs are unchanged: one per (IC, strategy file),
+      written to `<workdir>/figures/individual_trajectories/`.
+    * `config.eval.plot_groups` is a list of lists of identifying names (or a
+      dict {group_name: [names]} to choose the folder names). Each inner list
+      yields one collection of figures in which those strategies are overlaid
+      on the same axes -- calibration, ERF, L2 vs open-loop, prior/posterior
+      RMSE and equilibrium variance -- written to
+      `<workdir>/figures/comparisons/<group_name>/`. A list with a single
+      name plots just that strategy.
+    * Sweeps: if ANY strategy has a parameter list, `plot_groups` is ignored
+      and one collection per identifying name is written instead, overlaying
+      every parameter version of that strategy (a strategy without a list gets
+      a collection containing just itself).
 
 What is KS-specific (read this before porting anything else from l96_f)
 =======================================================================
@@ -38,13 +151,13 @@ What is KS-specific (read this before porting anything else from l96_f)
    time-differencing RK4 scheme whose coefficients are precomputed for one
    fixed `dt`, so the truth can only be sampled on multiples of that step:
    `DT_FINE` must be an exact integer multiple of the data `dt` (enforced
-   by `steps_per_fine_exact`). `_ks_truth_batch` below advances the
+   by `steps_per_fine_exact`). `_make_ks_truth_batch` below advances the
    spectral solver on the GPU, batched over ICs, and returns real-space
    states on the filter's fine grid.
 
-   The batch pass reuses the dense trajectories already stored in
-   `ks_test_data.h5` (saved at every solver step by `gen_data.py`) rather
-   than re-integrating -- same trajectories, read by stride.
+   The batch pass reuses the dense trajectories already stored in the test
+   file (saved at every solver step by `gen_data.py`) rather than
+   re-integrating -- same trajectories, read by stride.
 
 3. **The state is a field, so the per-variable plots change shape.**
    L96's individual-trajectory PDF draws one time-series panel per state
@@ -62,8 +175,12 @@ What is KS-specific (read this before porting anything else from l96_f)
    accordingly, and Route B's `beta` in particular needs its own
    calibration: the KS residual involves fourth-order spatial derivatives
    summed over 256 grid points, so `||rho||^2` lives on a completely
-   different scale from L96's. Run `run_route_b_inflation_sweep` before
-   trusting any inherited default.
+   different scale from L96's. Sweep `beta` with a wide logarithmic list
+   (e.g. `beta=[0.0, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0]`) and read
+   `batch/strategies/<key>/route_b_scale_mean` out of the results files --
+   that is the realised `alpha + beta*||rho||^2` per fine step -- before
+   trusting any inherited default. Keep a `beta = 0.0` entry: it recovers
+   whatever `alpha` alone gives.
 
 5. **Spatially correlated P0/Q0 are available.** White noise on a 256-point
    grid is dominated by the wavenumbers KS damps hardest, so a diagonal P0
@@ -72,19 +189,23 @@ What is KS-specific (read this before porting anything else from l96_f)
    units as `L`; roughly one KS cell, ~4-9 for L=64) to draw the initial
    ensemble from a smooth Gaussian-correlated covariance instead. The
    default is 0.0, which reproduces the L96 diagonal behaviour exactly.
+   `config.kf.Q0_corr_len` does the same for the Route B / additive `Q0`
+   (defaulting to `P0_corr_len`).
 
 HDF5 layout written by `evaluate_filters`
 ------------------------------------------
-    /meta                                   (attrs only, plus datasets)
+    /meta                                   (attrs, plus datasets where noted)
         N, L, dt_data                        -- grid size, domain length, solver dt
         dt_window, dt_fine, dt_obs
         sigma_obs, P0_sigma, P0_corr_len, N_ens, obs_every_n, m
         num_ics_traj, num_ics_batch, trajectory_windows, batch_windows
+        test_data                            -- basename of the test-data file used
         obs_indices                          -- dataset, (m,) int, if static
         x_grid                               -- dataset, (N,) physical coordinates
-        strategy_keys, strategy_labels        -- ordered, parallel string arrays
+        strategy_keys, strategy_labels        -- string datasets (one entry per file)
         strategy_propagator                   -- which propagator each strategy uses
         strategy_kind                         -- "standard" | "route_b" | "rtpp"
+        strategy_config_json                  -- the config entry that produced the file
 
     /trajectories/t_fine                     (T_fine,)
     /trajectories/ic_{i}
@@ -120,6 +241,9 @@ HDF5 layout written by `evaluate_filters`
         reference/eqvar_mean                 (N,)
         reference/eqvar_std                  (N,)
 
+    `{key}` is the file stem (e.g. "pi_mult_ver_2"). Files written by this
+    module hold exactly one strategy, but the plotting code reads any number.
+
     Equilibrium (climatological/attractor) variance
     -------------------------------------------------
     For a dense state trajectory of B ICs x T time steps x N grid points,
@@ -136,16 +260,20 @@ HDF5 layout written by `evaluate_filters`
 """
 
 import os
+import re
+import json
+import hashlib
+import dataclasses
+import itertools
+import colorsys
+import warnings
+
 from absl import logging
 import ml_collections
 import jax
 import jax.numpy as jnp
 import numpy as np
 import h5py
-
-import itertools
-import colorsys
-import warnings
 
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
@@ -171,7 +299,6 @@ from examples.KS_prev_no_osci.kf import (
     run_enkf_smoother_rtpp,
 )
 from data.gen_data import KuramotoSivashinskyAdvanced
-
 
 # ─────────────────────────────────────────────────────────────────────────
 # Multi-GPU batch execution helper
@@ -293,14 +420,24 @@ def _auto_ic_chunk(B, n_devices, bytes_per_ic, budget_bytes):
         chunk = (chunk // n_devices) * n_devices   # avoid pmap padding waste
     return max(chunk, 1)
 
-
 # ─────────────────────────────────────────────────────────────────────────
 # Dataset / model loading
 # ─────────────────────────────────────────────────────────────────────────
 
-def _default_test_path(config) -> str:
+def resolve_test_h5_path(config) -> str:
+    """
+    `config.eval.test_data_name` -> `<data_dir>/<name>.h5`.
+
+    `data_dir` is `config.training.data_dir` (default "data") and the name
+    defaults to "ks_test_data"; a trailing ".h5" in the name is accepted
+    and stripped. This is the single place the test set is named, shared
+    by `evaluate_filters`, `run_comparison` and the unfiltered `evaluate`.
+    """
     data_dir = config.training.get("data_dir", "data") if "training" in config else "data"
-    return os.path.join(data_dir, "ks_test_data.h5")
+    name = str(config.eval.get("test_data_name", "ks_test_data"))
+    if name.endswith(".h5"):
+        name = name[:-3]
+    return os.path.join(data_dir, f"{name}.h5")
 
 
 def _read_test_meta(test_h5_path: str) -> dict:
@@ -436,8 +573,6 @@ def _make_ks_truth_batch(solver, steps_per_fine: int, n_fine: int):
         return traj                                    # (n_fine, N)
 
     return jax.jit(jax.vmap(single))
-
-
 # ─────────────────────────────────────────────────────────────────────────
 # Strategy specification
 # ─────────────────────────────────────────────────────────────────────────
@@ -569,183 +704,36 @@ def build_batched_filters(
         in_axes=(0, 0, 0, None, None),
         static_broadcasted_argnums=(3, 4),
     )
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Default 3-way strategy set (DD-mult / PI-mult / PI-RouteB)
-# ─────────────────────────────────────────────────────────────────────────
-
-def build_default_3way_strategies(config, N_ens, alpha_fine, Q_fine,
-                                  alpha_rb, beta_rb, n_quad_rb, grid):
-    """
-    Loads the PI and DD checkpoints named in `config.wandb.name_pi` /
-    `config.wandb.name_dd` and builds the classic 3 strategies:
-
-        dd_mult    -- data-driven propagator + multiplicative inflation
-        pi_mult    -- physics-informed propagator + multiplicative inflation
-        pi_route_b -- physics-informed propagator + Route B inflation
-
-    Returns (strategies, propagators, N, t_star_window).
-    """
-    _, _, t_star_window = _window_grid(config, grid)
-
-    model_pi, params_pi = _load_ks_model(config, "pi", t_star_window, grid)
-    model_dd, params_dd = _load_ks_model(config, "dd", t_star_window, grid)
-    N = model_pi.N
-    assert model_dd.N == N, (
-        f"DD checkpoint grid size ({model_dd.N}) != PI checkpoint grid size "
-        f"({N}); can't share a strategy/propagator set across them."
-    )
-
-    predict_fn_dd, update_fn_dd = model_dd.make_enkf_fns(params_dd, N_ens=N_ens)
-    predict_fn_pi, update_fn_pi = model_pi.make_enkf_fns(params_pi, N_ens=N_ens)
-    predict_fn_rb, update_fn_rb = model_pi.make_route_b_enkf_fns(params_pi, N_ens=N_ens)
-
-    strategies = [
-        dict(key="dd_mult", label="DD + Mult. Infl.", kind="standard",
-             propagator="dd", predict_fn=predict_fn_dd, update_fn=update_fn_dd,
-             alpha_fine=alpha_fine),
-        dict(key="pi_mult", label="PI + Mult. Infl.", kind="standard",
-             propagator="pi", predict_fn=predict_fn_pi, update_fn=update_fn_pi,
-             alpha_fine=alpha_fine),
-        dict(key="pi_route_b", label="PI + Route B Infl.", kind="route_b",
-             propagator="pi", predict_fn=predict_fn_rb, update_fn=update_fn_rb,
-             Q0=Q_fine, alpha=alpha_rb, beta=beta_rb, n_quad=n_quad_rb),
-    ]
-    propagators = {
-        "dd": (model_dd, params_dd),
-        "pi": (model_pi, params_pi),
-    }
-    return strategies, propagators, N, t_star_window
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Default 4-way strategy set, crossed with the propagators: for each
-# propagator in `propagator_kinds`, the same 4 inflation schemes are run,
-# so differences ACROSS inflation schemes (at fixed propagator) isolate
-# the inflation choice, and differences ACROSS propagators (at fixed
-# inflation scheme) isolate the surrogate choice (unlike the 3-way set,
-# which conflates the two by swapping both DD vs PI and mult vs Route B
-# at once).
-# ─────────────────────────────────────────────────────────────────────────
-
-def build_default_4way_strategies(
-    config, N_ens, alpha_fine, alpha_rb, beta_rb, n_quad_rb, alpha_rtpp,
-    grid, alpha_fine_rtpp: float = 1.0, propagator_kinds=("pi", "hy"),
-):
-    """
-    Builds the 4-way inflation-strategy comparison set, crossed with each
-    propagator in `propagator_kinds` (default: the physics-informed "pi"
-    checkpoint named in `config.wandb.name_pi` and the hybrid "hy"
-    checkpoint named in `config.wandb.name_hy`; "dd" has no PDE residual
-    so it can't run Route B / additive inflation and is not a valid entry
-    here):
-
-        1. <kind>_mult     -- standard multiplicative inflation (`make_enkf`).
-        2. <kind>_route_b  -- Route B: residual-scaled additive inflation,
-                              scale = alpha_rb + beta_rb * ||rho||^2
-                              (`make_route_b_enkf`).
-        3. <kind>_additive -- plain additive inflation, obtained from the
-                              SAME Route B machinery with the flow-dependent
-                              term zeroed out (beta=0.0), leaving only the
-                              constant alpha_rb * Q0 floor.
-        4. <kind>_rtpp     -- Relaxation-to-Prior Perturbations
-                              (`make_rtpp_enkf`). `alpha_fine_rtpp` controls
-                              the (optional, shared) multiplicative
-                              inflation in RTPP's predict step; it defaults
-                              to 1.0 so `alpha_rtpp` (the relaxation factor,
-                              in [0, 1]) is the only active inflation
-                              mechanism for this strategy.
-
-    With the default two-propagator set this produces an 8-way comparison
-    (4 inflation schemes x {PI, Hybrid}); pass `propagator_kinds=("pi",)`
-    to recover the original PI-only 4-way comparison.
-
-    Note that (2) and (3), for the SAME propagator, differ ONLY in beta,
-    so a flat gap between them is the cleanest available read on whether
-    Route B's physics-driven term is doing anything for KS at the beta you
-    passed in.
-
-    Returns (strategies, propagators, N, t_star_window).
-    """
-    dt_window, _, t_star_window = _window_grid(config, grid)
-
-    loaded = {}
-    N = None
-    for kind in propagator_kinds:
-        if kind == "dd":
-            raise ValueError(
-                "'dd' has no PDE residual (r_net), so it cannot run Route "
-                "B / additive inflation and is not eligible for the 4-way "
-                "comparison. Use 'pi' and/or 'hy' in propagator_kinds."
-            )
-        model, params = _load_ks_model(config, kind, t_star_window, grid)
-        loaded[kind] = (model, params)
-        if N is None:
-            N = model.N
-        assert model.N == N, (
-            f"'{kind}' checkpoint grid size ({model.N}) != {N}; can't share a "
-            "strategy/propagator set across them."
-        )
-
-    # Route B / additive both need Q_fine.
-    P0_sigma = config.kf.get("P0_sigma", 0.5)
-    Q0_sigma = config.kf.get("Q0_sigma", P0_sigma)
-    Q0_corr_len = config.kf.get("Q0_corr_len", config.kf.get("P0_corr_len", 0.0))
-    DT_FINE = float(config.kf.get("dt_fine", dt_window))
-    steps_per_window = steps_per_window_exact(dt_window, DT_FINE)
-    Q_coarse = build_cov(N, grid["L"], Q0_sigma, Q0_corr_len)
-    Q_fine = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
-
-    label_of_kind = {"pi": "PI", "hy": "Hybrid"}
-
-    strategies = []
-    for kind in propagator_kinds:
-        model, params = loaded[kind]
-        label = label_of_kind.get(kind, kind.upper())
-
-        predict_fn_mult, update_fn_mult = model.make_enkf_fns(params, N_ens=N_ens)
-        predict_fn_rb, update_fn_rb = model.make_route_b_enkf_fns(params, N_ens=N_ens)
-        predict_fn_rtpp, update_fn_rtpp = model.make_rtpp_enkf_fns(params, N_ens=N_ens)
-
-        strategies.extend([
-            dict(key=f"{kind}_mult", label=f"{label} + Mult. Infl.", kind="standard",
-                 propagator=kind, predict_fn=predict_fn_mult, update_fn=update_fn_mult,
-                 alpha_fine=alpha_fine),
-            dict(key=f"{kind}_route_b", label=f"{label} + Route B Infl.", kind="route_b",
-                 propagator=kind, predict_fn=predict_fn_rb, update_fn=update_fn_rb,
-                 Q0=Q_fine, alpha=alpha_rb, beta=beta_rb, n_quad=n_quad_rb),
-            dict(key=f"{kind}_additive", label=f"{label} + Additive Infl.", kind="route_b",
-                 propagator=kind, predict_fn=predict_fn_rb, update_fn=update_fn_rb,
-                 Q0=Q_fine, alpha=alpha_rb, beta=0.0, n_quad=n_quad_rb),
-            dict(key=f"{kind}_rtpp", label=f"{label} + RTPP", kind="rtpp",
-                 propagator=kind, predict_fn=predict_fn_rtpp, update_fn=update_fn_rtpp,
-                 alpha_fine=alpha_fine_rtpp, alpha_rtpp=alpha_rtpp),
-        ])
-
-    return strategies, loaded, N, t_star_window
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Main entry point -- filtered evaluation
-# ─────────────────────────────────────────────────────────────────────────
-
 def evaluate_filters(
     config: ml_collections.ConfigDict,
-    workdir: str,
-    strategies: list[dict] | None = None,
-    propagators: dict | None = None,
-    t_star_window=None,
+    strategies: list[dict],
+    propagators: dict,
+    t_star_window,
+    out_path: str,
     test_h5_path: str | None = None,
 ) -> str:
     """
-    Runs every strategy on shared data and writes one HDF5 results file.
+    Runs every strategy in `strategies` on the SAME data (same ICs, noisy
+    observation draws and initial ensembles) and writes everything the
+    plotting stage needs to ONE HDF5 file at `out_path` (layout: see the
+    module docstring). `run_comparison` calls this with a single strategy
+    per file; passing several still works and stores them all in one file.
+
+    `test_h5_path` defaults to `<data_dir>/<config.eval.test_data_name>.h5`.
+    Results are written to `<out_path>.partial` and renamed only once the
+    file is complete, so an interrupted run never leaves a half-written
+    file that a later run would mistake for a finished evaluation.
 
     Memory-chunked over ICs and (optionally) over strategy groups; see
     `config.eval.ic_chunk`, `config.eval.strategy_chunk` and
     `config.eval.device_budget_gb`. KS dense outputs are 6.4x larger per
     time step than L96's, so the automatic chunk sizing matters more here
     -- if you hit OOM, lower `device_budget_gb` first.
+
+    Note that the per-scheme inflation knobs are NOT read here: every
+    inflation parameter travels inside the strategy specs built by
+    `_Surrogates.make_spec` (so a sweep is just several specs), and only
+    the settings shared by every strategy are read from `config.kf`.
     """
     # ── EnKF / observation configuration ───────────────────────────────
     obs_every_n = config.kf.get("obs_every_n", 4)
@@ -754,13 +742,6 @@ def evaluate_filters(
     P0_corr_len = float(config.kf.get("P0_corr_len", 0.0))
     dynamic_vars = config.kf.get("dynamic_vars", False)
     N_ens = config.kf.get("N_ens", 50)
-    alpha_coarse = config.kf.get("inflation_factor", 1.05)
-
-    alpha_rb = config.kf.get("route_b_alpha", 1.0)
-    beta_rb = config.kf.get("route_b_beta", 1.0)
-    Q0_sigma = config.kf.get("Q0_sigma", P0_sigma)
-    Q0_corr_len = float(config.kf.get("Q0_corr_len", P0_corr_len))
-    n_quad_rb = config.kf.get("route_b_n_quad", 3)
 
     specify_obs_idx = config.kf.get("specify_obs_idx", False)
     obs_idx_list = config.kf.get("obs_idx_list", None)
@@ -772,7 +753,7 @@ def evaluate_filters(
 
     # ── 1. Dataset metadata and time grids ─────────────────────────────
     if test_h5_path is None:
-        test_h5_path = _default_test_path(config)
+        test_h5_path = resolve_test_h5_path(config)
     grid = _read_test_meta(test_h5_path)
     N_grid, L_dom, dt_data = grid["N"], grid["L"], grid["dt"]
 
@@ -783,7 +764,6 @@ def evaluate_filters(
     # The reference solver can only be sampled on multiples of its own dt.
     steps_per_fine = steps_per_fine_exact(DT_FINE, dt_data)
     steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
-    alpha_fine = scale_inflation_for_fine_steps(alpha_coarse, steps_per_window)
 
     logging.info(
         f"JAX sees {n_devices} local device(s): {jax.local_devices()}"
@@ -801,18 +781,17 @@ def evaluate_filters(
     eqvar_burn_in_frac = config.eval.get("eqvar_burn_in_frac", 0.5)
 
     # ── 2. Strategies ──────────────────────────────────────────────────
+    # P0 is shared by every strategy (Q0 is not: it is a Route B / additive
+    # hyperparameter and travels inside the individual strategy specs).
     P0 = build_cov(N_grid, L_dom, P0_sigma, P0_corr_len)
-    Q_coarse = build_cov(N_grid, L_dom, Q0_sigma, Q0_corr_len)
-    Q_fine = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
 
-    if strategies is None or propagators is None:
-        strategies, propagators, N, t_star_window = build_default_3way_strategies(
-            config, N_ens, alpha_fine, Q_fine, alpha_rb, beta_rb, n_quad_rb, grid,
-        )
-    else:
-        N = next(iter(propagators.values()))[0].N
-        if t_star_window is None:
-            t_star_window = t_star_default
+    if not strategies:
+        raise ValueError("evaluate_filters: `strategies` must be a non-empty list.")
+    if not propagators:
+        raise ValueError("evaluate_filters: `propagators` is required.")
+    N = next(iter(propagators.values()))[0].N
+    if t_star_window is None:
+        t_star_window = t_star_default
 
     assert N == N_grid, (
         f"Checkpoint grid size ({N}) != test-dataset grid size ({N_grid}). "
@@ -1194,10 +1173,10 @@ def evaluate_filters(
                 )
 
     # ── 6. Write everything to HDF5 ────────────────────────────────────
-    out_path = os.path.join(workdir, f"{config.wandb.name}.h5")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    tmp_path = out_path + ".partial"
 
-    with h5py.File(out_path, "w") as f:
+    with h5py.File(tmp_path, "w") as f:
         meta = f.create_group("meta")
         meta.attrs["N"] = N
         meta.attrs["L"] = L_dom
@@ -1215,6 +1194,7 @@ def evaluate_filters(
         meta.attrs["num_ics_batch"] = B
         meta.attrs["trajectory_windows"] = trajectory_windows
         meta.attrs["batch_windows"] = batch_windows
+        meta.attrs["test_data"] = os.path.basename(test_h5_path)
         meta.create_dataset("obs_indices", data=np.array(obs_indices))
         meta.create_dataset("x_grid", data=x_grid)
         meta.create_dataset(
@@ -1232,6 +1212,13 @@ def evaluate_filters(
         meta.create_dataset(
             "strategy_propagator",
             data=np.array([s["propagator"] for s in strategies], dtype=h5py.string_dtype()),
+        )
+        meta.create_dataset(
+            "strategy_config_json",
+            data=np.array(
+                [json.dumps(s.get("config", {}), sort_keys=True) for s in strategies],
+                dtype=h5py.string_dtype(),
+            ),
         )
 
         traj_grp = f.create_group("trajectories")
@@ -1285,46 +1272,474 @@ def evaluate_filters(
             og.create_dataset("eqvar_mean", data=rec["eqvar_mean"])
             og.create_dataset("eqvar_std", data=rec["eqvar_std"])
 
+    os.replace(tmp_path, out_path)          # publish only a fully written file
     logging.info(f"evaluate_filters: wrote all evaluation data to {out_path}")
     return out_path
+# ─────────────────────────────────────────────────────────────────────────
+# Strategy configuration:  config.eval.strategies  ->  list of jobs
+# ─────────────────────────────────────────────────────────────────────────
+
+# Canonical surrogate tokens. KS has three (L96 has two): the hybrid
+# checkpoint is PI plus a fraction of DD, and is spelled "HY" or "hybrid".
+SURROGATES = ("dd", "pi", "hy")
+
+# Accepted spellings -> canonical token.
+_SURROGATE_ALIASES = {
+    "dd": "dd", "data_driven": "dd", "datadriven": "dd",
+    "pi": "pi", "physics_informed": "pi", "physicsinformed": "pi",
+    "hy": "hy", "hybrid": "hy",
+}
+
+# Per inflation type: which EnKF machinery it uses (`kind`), which params are
+# required, which are optional (with defaults), and which may be lists.
+_INFLATION_SCHEMA = {
+    "multiplicative": dict(
+        kind="standard", required=("inflation_factor",), optional={},
+        sweepable=("inflation_factor",),
+    ),
+    "additive": dict(
+        kind="route_b", required=("alpha",), optional={},
+        sweepable=("alpha",),
+    ),
+    "route_b": dict(
+        kind="route_b", required=("alpha", "beta"), optional={},
+        sweepable=("alpha", "beta"),
+    ),
+    "rtpp": dict(
+        kind="rtpp", required=("alpha_rtpp",), optional={"alpha_fine": 1.0},
+        sweepable=("alpha_rtpp",),
+    ),
+}
+
+# Inflation schemes that need the PDE residual `r_net` (Route B's
+# flow-dependent scale, and the additive scheme that shares its machinery).
+# The data-driven surrogate has no residual, so those combinations are
+# rejected while parsing the config rather than after the checkpoints have
+# been loaded and earlier jobs have already run.
+_RESIDUAL_INFLATIONS = ("additive", "route_b")
+
+# (inflation, param) -> (predicate, description of the valid range)
+_PARAM_RANGES = {
+    ("multiplicative", "inflation_factor"): (lambda v: v > 0, "> 0"),
+    ("additive", "alpha"): (lambda v: v >= 0, ">= 0"),
+    ("route_b", "alpha"): (lambda v: v >= 0, ">= 0"),
+    ("route_b", "beta"): (lambda v: v >= 0, ">= 0"),
+    ("rtpp", "alpha_rtpp"): (lambda v: 0.0 <= v <= 1.0, "in [0, 1]"),
+    ("rtpp", "alpha_fine"): (lambda v: v > 0, "> 0"),
+}
+
+# EnKF-closure factory on the model, per `kind`.
+_CLOSURE_METHOD = {
+    "standard": "make_enkf_fns",
+    "route_b": "make_route_b_enkf_fns",
+    "rtpp": "make_rtpp_enkf_fns",
+}
+
+_SURROGATE_LABEL = {"dd": "DD", "pi": "PI", "hy": "Hybrid"}
+_INFLATION_LABEL = {
+    "multiplicative": "Mult. Infl.", "additive": "Add. Infl.",
+    "route_b": "Route B", "rtpp": "RTPP",
+}
+
+# Identifying names become file names, and ConfigDict rejects dots in keys.
+_NAME_RE = re.compile(r"[A-Za-z0-9_\-]+")
 
 
-"""
-Plotting stage for the modular DeepONet + EnKF Kuramoto-Sivashinsky
-evaluation pipeline.
+def _plain(obj):
+    """ConfigDict / FrozenConfigDict -> plain nested dict; anything else unchanged."""
+    return obj.to_dict() if hasattr(obj, "to_dict") else obj
 
-Reads the HDF5 file written by `evaluate_filters` -- keyed only by strategy
-`key`/`label`, so it works for an arbitrary number of strategies -- and
-writes:
 
-    1. Individual-trajectory PDFs
-       One PDF per (IC, strategy): space-time heatmaps of truth, estimate
-       and difference; error/spread time series; a few fixed-probe time
-       series (observed grid points vs gaps); and profile snapshots with
-       the +/-1 sigma ensemble band and assimilated observations.
+def _is_seq(v) -> bool:
+    # FrozenConfigDict turns lists into tuples; configs may also hold arrays.
+    return isinstance(v, (list, tuple, np.ndarray))
 
-       This is where the KS version departs most from L96's. L96 draws one
-       time-series panel per state variable, which is both readable (40
-       variables) and meaningful (the variables are separate dynamical
-       quantities). At N=256 grid points that layout would be 128 rows of
-       near-identical curves, and it would also hide the thing that
-       actually matters for a field: whether the analysis is good
-       *between* the observed points. Heatmaps + snapshots show that
-       directly.
 
-    2. Pairwise batch-comparison PDFs (`plot_comparisons`)
-       For every unordered pair of strategies (A, B) -- C(S, 2) pairs --
-       four PDFs: calibration, ERF, EnKF-vs-open-loop L2, and prior/
-       posterior RMSE.
+def _norm_token(s) -> str:
+    """'Route B' / 'route-b' / 'ROUTE_B' -> 'route_b'."""
+    return re.sub(r"[\s\-]+", "_", str(s).strip().lower())
 
-    3. Bulk batch-comparison PDFs (`plot_comparisons_bulk`)
-       Exactly four PDFs total, each overlaying every strategy -- the
-       right choice for the inflation sweeps, where S gets large.
 
-    4. Equilibrium-variance PDF (`plot_equilibrium_variance`)
-       Per-grid-point steady-state variance of truth, each propagator's
-       open-loop rollout, and every filtered strategy.
-"""
+@dataclasses.dataclass(frozen=True)
+class _StrategyDef:
+    """One validated entry of `config.eval.strategies` (params may hold lists)."""
+    name: str
+    surrogate: str          # "dd" | "pi" | "hy"
+    inflation: str          # key of _INFLATION_SCHEMA
+    params: dict            # param -> float | list[float], schema order, defaults filled in
+
+
+@dataclasses.dataclass(frozen=True)
+class _Job:
+    """One evaluation = one HDF5 file: a strategy at one concrete parameter value."""
+    name: str               # identifying name from the config
+    stem: str               # file stem: `name`, `name_ver_i` or `name_ver_i_j`
+    surrogate: str
+    inflation: str
+    params: dict            # scalars only
+    version: tuple | None   # 1-based indices of the swept parameters; None if not swept
+    label: str
+
+    def config_dict(self) -> dict:
+        return dict(surrogate=self.surrogate, inflation=self.inflation,
+                    params=dict(self.params))
+
+
+def _check_number(v, where: str, inflation: str, param: str) -> float:
+    if isinstance(v, (bool, np.bool_)) or not isinstance(v, (int, float, np.integer, np.floating)):
+        raise TypeError(f"{where}: parameter '{param}' must be a number (or a list of "
+                        f"numbers), got {v!r}.")
+    f = float(v)
+    ok, desc = _PARAM_RANGES[(inflation, param)]
+    if not np.isfinite(f) or not ok(f):
+        raise ValueError(f"{where}: parameter '{param}' must be {desc}, got {f:g}.")
+    return f
+
+
+def _parse_strategy_entry(name, entry) -> _StrategyDef:
+    where = f"config.eval.strategies['{name}']"
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        raise ValueError(f"{where}: identifying names become file names and may only "
+                         "contain letters, digits, '_' and '-'.")
+    if not isinstance(entry, dict):
+        raise TypeError(f"{where} must be a dict with keys 'surrogate', 'inflation', "
+                        f"'params'; got {type(entry).__name__}.")
+    expected = {"surrogate", "inflation", "params"}
+    if set(entry) != expected:
+        raise ValueError(f"{where}: expected exactly the keys {sorted(expected)}, "
+                         f"got {sorted(entry)}.")
+
+    surrogate = _SURROGATE_ALIASES.get(_norm_token(entry["surrogate"]), None)
+    if surrogate is None:
+        raise ValueError(f"{where}: surrogate must be 'DD', 'PI' or 'HY'/'hybrid', "
+                         f"got {entry['surrogate']!r}.")
+
+    inflation = _norm_token(entry["inflation"])
+    if inflation not in _INFLATION_SCHEMA:
+        raise ValueError(f"{where}: inflation must be one of {sorted(_INFLATION_SCHEMA)}, "
+                         f"got {entry['inflation']!r}.")
+    schema = _INFLATION_SCHEMA[inflation]
+
+    # DD has no PDE residual (`r_net`), so it cannot drive Route B's
+    # flow-dependent scale -- nor the additive scheme, which runs on the same
+    # machinery. Reject here, before any checkpoint is loaded.
+    if surrogate == "dd" and inflation in _RESIDUAL_INFLATIONS:
+        raise ValueError(
+            f"{where}: the data-driven surrogate has no PDE residual (r_net), so it "
+            f"cannot run '{inflation}' inflation (Route B and additive share that "
+            "machinery). Use surrogate 'PI' or 'HY', or inflation 'multiplicative' "
+            "or 'rtpp' with 'DD'."
+        )
+
+    raw = entry["params"]
+    if not isinstance(raw, dict):
+        raise TypeError(f"{where}['params'] must be a dict, got {type(raw).__name__}.")
+    allowed = tuple(schema["required"]) + tuple(schema["optional"])
+    unknown = set(raw) - set(allowed)
+    if unknown:
+        raise ValueError(f"{where}: unknown parameter(s) {sorted(unknown)} for "
+                         f"inflation '{inflation}'; allowed: {list(allowed)}.")
+    missing = set(schema["required"]) - set(raw)
+    if missing:
+        raise ValueError(f"{where}: missing required parameter(s) {sorted(missing)} for "
+                         f"inflation '{inflation}'.")
+
+    params = {}
+    for p in allowed:                                   # schema order -> stable JSON / labels
+        if p not in raw:
+            params[p] = float(schema["optional"][p])
+            continue
+        v = raw[p]
+        if _is_seq(v):
+            if p not in schema["sweepable"]:
+                raise ValueError(f"{where}: parameter '{p}' cannot be a list.")
+            if len(v) == 0:
+                raise ValueError(f"{where}: parameter '{p}' is an empty list.")
+            params[p] = [_check_number(x, where, inflation, p) for x in v]
+        else:
+            params[p] = _check_number(v, where, inflation, p)
+    return _StrategyDef(name=name, surrogate=surrogate, inflation=inflation, params=params)
+
+
+def parse_strategy_config(config) -> dict:
+    """Validate `config.eval.strategies` -> {name: _StrategyDef}, in the config's order."""
+    raw = _plain(config.eval.get("strategies", None))
+    if not raw:
+        raise ValueError(
+            "config.eval.strategies is missing or empty. Expected e.g. "
+            "{'hy_mult': dict(surrogate='HY', inflation='multiplicative', "
+            "params=dict(inflation_factor=1.05))}."
+        )
+    if not isinstance(raw, dict):
+        raise TypeError("config.eval.strategies must be a dict keyed by identifying name, "
+                        f"got {type(raw).__name__}.")
+    return {name: _parse_strategy_entry(name, entry) for name, entry in raw.items()}
+
+
+def _make_label(surrogate: str, inflation: str, params: dict) -> str:
+    if inflation == "multiplicative":
+        ptxt = f"α={params['inflation_factor']:g}"
+    elif inflation == "additive":
+        ptxt = f"α={params['alpha']:g}"
+    elif inflation == "route_b":
+        ptxt = f"α={params['alpha']:g}, β={params['beta']:g}"
+    else:  # rtpp
+        ptxt = f"α={params['alpha_rtpp']:g}"
+        if params["alpha_fine"] != 1.0:
+            ptxt += f", α_fine={params['alpha_fine']:g}"
+    return f"{_SURROGATE_LABEL[surrogate]} + {_INFLATION_LABEL[inflation]} ({ptxt})"
+
+
+def expand_jobs(defs: dict) -> list:
+    """
+    One `_Job` per HDF5 file. A strategy without a parameter list gives one
+    job named `<name>`; with a list (n values) it gives n jobs `<name>_ver_<i>`.
+    Route B is indexed by both parameters, `<name>_ver_<i>_<j>` (alpha index,
+    beta index); a scalar next to a list counts as a one-element list, and two
+    lists give every (alpha, beta) combination.
+    """
+    jobs, stem_owner = [], {}
+    for d in defs.values():
+        schema = _INFLATION_SCHEMA[d.inflation]
+        swept = [p for p in schema["sweepable"] if _is_seq(d.params[p])]
+
+        if not swept:
+            versions = [(None, dict(d.params))]
+        else:
+            axes = schema["sweepable"] if d.inflation == "route_b" else tuple(swept)
+            grids = [
+                [(p, i, v) for i, v in enumerate(
+                    d.params[p] if _is_seq(d.params[p]) else [d.params[p]], start=1)]
+                for p in axes
+            ]
+            versions = []
+            for combo in itertools.product(*grids):
+                params = dict(d.params)
+                for p, _, v in combo:
+                    params[p] = v
+                versions.append((tuple(i for _, i, _ in combo), params))
+
+        for version, params in versions:
+            stem = d.name if version is None else f"{d.name}_ver_" + "_".join(map(str, version))
+            if stem in stem_owner:
+                raise ValueError(
+                    f"Output-name collision: '{stem_owner[stem]}' and '{d.name}' would both "
+                    f"write '{stem}.h5'. Rename one of the strategies."
+                )
+            stem_owner[stem] = d.name
+            jobs.append(_Job(
+                name=d.name, stem=stem, surrogate=d.surrogate, inflation=d.inflation,
+                params=params, version=version,
+                label=_make_label(d.surrogate, d.inflation, params),
+            ))
+    return jobs
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Surrogate loading / EnKF closures / strategy specs
+# ─────────────────────────────────────────────────────────────────────────
+
+class _Surrogates:
+    """
+    Lazily loads the DD / PI / Hybrid checkpoints and builds their EnKF
+    closures.
+
+    Each surrogate is loaded at most once, and each (surrogate, kind) closure
+    pair is built at most once, however many parameter versions use it:
+    inflation parameters are runtime scalars carried in the strategy spec, not
+    baked into the closures, so a sweep costs no extra model calls.
+
+    The spectral operators of the PI and Hybrid models are built from the test
+    dataset's own (N, L, dt) rather than from class defaults, which is why
+    `grid` (from `_read_test_meta`) is required here -- the same `grid` also
+    fixes the single-window time axis `t_star_window` every surrogate is
+    queried on, and the shape of the Route B / additive `Q0`.
+    """
+
+    def __init__(self, config, N_ens: int, grid: dict):
+        self.config = config
+        self.N_ens = N_ens
+        self.grid = grid
+        dt_window, _, t_star_window = _window_grid(config, grid)
+        self.dt_window = dt_window
+        self.t_star_window = t_star_window
+        self._models = {}      # surrogate -> (model, params)
+        self._fns = {}         # (surrogate, kind) -> (predict_fn, update_fn)
+        self._Q0 = None        # built once, shared by every Route B / additive spec
+        self.N = None
+
+    def propagator(self, surrogate: str):
+        if surrogate not in self._models:
+            self._models[surrogate] = _load_ks_model(
+                self.config, surrogate, self.t_star_window, self.grid
+            )
+            N = self._models[surrogate][0].N
+            if self.N is None:
+                self.N = N
+            elif N != self.N:
+                raise ValueError(
+                    f"The {_SURROGATE_LABEL[surrogate]} checkpoint has grid size {N}, "
+                    f"but an earlier one has {self.N}; every surrogate compared here "
+                    "must share one KS grid."
+                )
+        return self._models[surrogate]
+
+    def enkf_fns(self, surrogate: str, kind: str):
+        if (surrogate, kind) not in self._fns:
+            model, params = self.propagator(surrogate)
+            method = _CLOSURE_METHOD[kind]
+            factory = getattr(model, method, None)
+            if factory is None:
+                raise NotImplementedError(
+                    f"The {_SURROGATE_LABEL[surrogate]} surrogate ({type(model).__name__}) "
+                    f"does not expose `{method}`, which is needed for the '{kind}' "
+                    "EnKF variant. Implement it on the model or use another surrogate."
+                )
+            self._fns[(surrogate, kind)] = factory(params, N_ens=self.N_ens)
+        return self._fns[(surrogate, kind)]
+
+    def Q0_fine(self):
+        """
+        The per-fine-step additive covariance shared by every Route B /
+        additive strategy: a `Q0_sigma`-scaled (optionally spatially
+        correlated) covariance on the KS grid, divided down so that
+        accumulating it over one window reproduces the coarse `Q0`.
+        """
+        if self._Q0 is None:
+            cfg = self.config
+            P0_sigma = cfg.kf.get("P0_sigma", 0.5)
+            Q0_sigma = cfg.kf.get("Q0_sigma", P0_sigma)
+            Q0_corr_len = float(
+                cfg.kf.get("Q0_corr_len", cfg.kf.get("P0_corr_len", 0.0))
+            )
+            dt_fine = float(cfg.kf.get("dt_fine", self.dt_window))
+            steps_per_window = steps_per_window_exact(self.dt_window, dt_fine)
+            Q_coarse = build_cov(
+                self.grid["N"], self.grid["L"], Q0_sigma, Q0_corr_len
+            )
+            self._Q0 = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
+        return self._Q0
+
+    def make_spec(self, job: _Job) -> dict:
+        """The `evaluate_filters` strategy dict for one job."""
+        cfg = self.config
+        kind = _INFLATION_SCHEMA[job.inflation]["kind"]
+        predict_fn, update_fn = self.enkf_fns(job.surrogate, kind)
+        spec = dict(
+            key=job.stem, label=job.label, kind=kind, propagator=job.surrogate,
+            predict_fn=predict_fn, update_fn=update_fn, config=job.config_dict(),
+        )
+        p = job.params
+
+        dt_fine = float(cfg.kf.get("dt_fine", self.dt_window))
+        steps_per_window = steps_per_window_exact(self.dt_window, dt_fine)
+
+        if job.inflation == "multiplicative":
+            spec["alpha_fine"] = scale_inflation_for_fine_steps(
+                p["inflation_factor"], steps_per_window)
+        elif job.inflation == "rtpp":
+            spec["alpha_fine"] = p["alpha_fine"]
+            spec["alpha_rtpp"] = p["alpha_rtpp"]
+        else:  # additive / route_b share the Route B machinery
+            spec["Q0"] = self.Q0_fine()
+            spec["n_quad"] = cfg.kf.get("route_b_n_quad", 3)
+            spec["alpha"] = p["alpha"]
+            spec["beta"] = 0.0 if job.inflation == "additive" else p["beta"]
+        return spec
+
+
+def _shared_settings(config) -> dict:
+    """The config-derived settings stored in every file's /meta (mirrors the
+    defaults `evaluate_filters` uses); compared against cached files."""
+    dt_window = float(config.get("dt_window", 1.0))
+    return dict(
+        N_ens=int(config.kf.get("N_ens", 50)),
+        sigma_obs=float(config.kf.get("sigma_obs", 0.1)),
+        P0_sigma=float(config.kf.get("P0_sigma", 0.5)),
+        P0_corr_len=float(config.kf.get("P0_corr_len", 0.0)),
+        obs_every_n=int(config.kf.get("obs_every_n", 4)),
+        dt_window=dt_window,
+        dt_fine=float(config.kf.get("dt_fine", dt_window)),
+        dt_obs=float(config.kf.get("dt_obs", dt_window)),
+        trajectory_windows=int(config.eval.get("trajectory_windows", 20)),
+        batch_windows=int(config.eval.get("windows", 20)),
+    )
+
+
+def _py(x):
+    """numpy scalar -> plain Python value (for readable messages)."""
+    return x.item() if isinstance(x, np.generic) else x
+
+
+def _same_value(a, b) -> bool:
+    try:
+        return bool(np.isclose(float(a), float(b)))
+    except (TypeError, ValueError):
+        return a == b
+
+
+def _warn_if_stale(path: str, job: _Job, settings: dict) -> None:
+    """A cached file is reused as-is (by design); just say so if it looks outdated."""
+    problems = []
+    with h5py.File(path, "r") as f:
+        meta = f["meta"]
+        if "strategy_config_json" in meta:
+            stored = json.loads(_decode(meta["strategy_config_json"][:])[0])
+            if stored != json.loads(json.dumps(job.config_dict())):
+                problems.append(f"strategy config differs (file: {stored}, "
+                                f"config: {job.config_dict()})")
+        else:
+            problems.append("file has no stored strategy config")
+        for k, v in settings.items():
+            if k in meta.attrs and not _same_value(meta.attrs[k], v):
+                problems.append(f"{k}: file={_py(meta.attrs[k])!r}, config={v!r}")
+    if problems:
+        logging.warning(
+            f"{path} already exists and will NOT be re-evaluated, but it looks out of date "
+            f"relative to the current config: {'; '.join(problems)}. "
+            "Delete the file to force a re-run."
+        )
+
+
+def _evaluate_pending(config, jobs: list, h5_path_of: dict) -> None:
+    """Evaluate every job whose HDF5 file does not exist yet."""
+    settings = _shared_settings(config)
+    pending = []
+    for job in jobs:
+        path = h5_path_of[job.stem]
+        if os.path.exists(path):
+            logging.info(f"'{job.stem}': {path} exists -- skipping evaluation.")
+            _warn_if_stale(path, job, settings)
+        else:
+            pending.append(job)
+    if not pending:
+        logging.info("All requested evaluation files already exist; nothing to evaluate.")
+        return
+
+    test_h5_path = resolve_test_h5_path(config)
+    if not os.path.exists(test_h5_path):
+        raise FileNotFoundError(
+            f"Test data '{test_h5_path}' not found (from config.eval.test_data_name = "
+            f"{config.eval.get('test_data_name', 'ks_test_data')!r})."
+        )
+    grid = _read_test_meta(test_h5_path)
+
+    # Load the needed surrogates and build EVERY closure/spec up front, so an
+    # unsupported combination (e.g. a surrogate without a Route B closure)
+    # fails immediately instead of after earlier jobs have already run.
+    surrogates = _Surrogates(config, N_ens=settings["N_ens"], grid=grid)
+    specs = [(job, surrogates.make_spec(job)) for job in pending]
+
+    for i, (job, spec) in enumerate(specs, start=1):
+        logging.info(f"Evaluating {i}/{len(specs)}: '{job.stem}'  [{job.label}] ...")
+        evaluate_filters(
+            config=config,
+            strategies=[spec],
+            propagators={job.surrogate: surrogates.propagator(job.surrogate)},
+            t_star_window=surrogates.t_star_window,
+            out_path=h5_path_of[job.stem],
+            test_h5_path=test_h5_path,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1395,8 +1810,6 @@ def _save_pdf_pages(figs, save_path, dpi=300):
         for fig in figs:
             pdf.savefig(fig, bbox_inches="tight", dpi=dpi)
             plt.close(fig)
-
-
 # ─────────────────────────────────────────────────────────────────────────
 # Shared ranking helper for the "best strategies only" companion pages
 # ─────────────────────────────────────────────────────────────────────────
@@ -1455,8 +1868,6 @@ def _rank_by_mean(metric_of, keys=None, largest=False, k=TOP_K_BEST):
 
     order = [key for _, key in sorted(sortable, key=lambda item: item[0])]
     return order[:max(0, int(k))], scores
-
-
 # ─────────────────────────────────────────────────────────────────────────
 # Observation bookkeeping for the trajectory plots
 # ─────────────────────────────────────────────────────────────────────────
@@ -1742,8 +2153,6 @@ def _plot_trajectory_individual(
     logging.info(
         f"Individual trajectory plot (IC {ic_idx}, {strategy_label}) saved to: {save_path}"
     )
-
-
 # ─────────────────────────────────────────────────────────────────────────
 # 2a. EnKF vs open-loop, time-mean relative L2 (curve-count-agnostic;
 #     shared by the pairwise and bulk entry points)
@@ -1823,367 +2232,6 @@ def _plot_l2_per_timestep(
     logging.info(
         f"L2-vs-open-loop comparison plot ({len(figs)}-page PDF) saved to: {save_path}"
     )
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# 2b. Calibration (pairwise): spread-vs-RMSE timeseries + binned scatter
-# ─────────────────────────────────────────────────────────────────────────
-def _plot_calibration_pair(
-    window_idx: np.ndarray,
-    dt_window: float,
-    spread_a: np.ndarray, rmse_a: np.ndarray,
-    spread_b: np.ndarray, rmse_b: np.ndarray,
-    spread_a_raw: np.ndarray, rmse_a_raw: np.ndarray,
-    spread_b_raw: np.ndarray, rmse_b_raw: np.ndarray,
-    label_a: str, label_b: str,
-    title: str,
-    save_path: str,
-    n_bins: int = 10,
-) -> None:
-    """
-    Two-panel calibration PDF for one strategy pair:
-      1. RMS ensemble spread vs EnKF RMSE (simulation time), both
-         strategies overlaid on one graph.
-      2. Binned spread-skill scatter for both strategies, pooled over
-         every (IC, window) in the batch, on one graph.
-    """
-    fig = plt.figure(figsize=(9, 10.5))
-    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1.3], hspace=0.5)
-
-    # -- Panel 1: simulation-time spread/RMSE timeseries, both strategies --
-    ax_ts = fig.add_subplot(gs[0])
-    ax_ts.plot(window_idx, spread_a, marker="^", markersize=2.5, linewidth=1.1,
-               linestyle="-", color="#8BC34A", label=f"{label_a} RMS ensemble σ")
-    ax_ts.plot(window_idx, rmse_a, marker="s", markersize=2.5, linewidth=1.1,
-               linestyle="--", color="#FF8A65", label=f"{label_a} EnKF RMSE")
-    ax_ts.plot(window_idx, spread_b, marker="^", markersize=2.5, linewidth=1.1,
-               linestyle="-", color="#4CAF50", label=f"{label_b} RMS ensemble σ")
-    ax_ts.plot(window_idx, rmse_b, marker="s", markersize=2.5, linewidth=1.1,
-               linestyle="--", color="#EC407A", label=f"{label_b} EnKF RMSE")
-    ax_ts.set_yscale("log")
-    ax_ts.set_xlabel("Window index", fontsize=11)
-    ax_ts.set_ylabel("Log scale", fontsize=11)
-    ax_ts.set_title(f"Ensemble spread vs RMSE (simulation time) — {label_a} vs {label_b}",
-                    fontsize=12)
-    ax_ts.legend(fontsize=8.5, ncol=2)
-    ax_ts.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
-
-    ax_time = ax_ts.twiny()
-    ax_time.set_xlim(ax_ts.get_xlim())
-    ax_time.set_xticks(window_idx)
-    ax_time.set_xticklabels([f"{k * dt_window:.3g}" for k in window_idx],
-                            fontsize=7, rotation=45, ha="left")
-    ax_time.set_xlabel("Simulation time  (window × dt)", fontsize=9)
-
-    # -- Panel 2: binned spread-skill scatter, both strategies -----------
-    ax_bin = fig.add_subplot(gs[1])
-    rmss_a_b, rmse_a_b, rmse_a_s, _ = _binned_spread_skill(spread_a_raw, rmse_a_raw, n_bins)
-    rmss_b_b, rmse_b_b, rmse_b_s, _ = _binned_spread_skill(spread_b_raw, rmse_b_raw, n_bins)
-
-    lim_hi = 1.1 * max(rmss_a_b.max(), rmse_a_b.max(), rmss_b_b.max(), rmse_b_b.max())
-    ax_bin.plot([0, lim_hi], [0, lim_hi], linestyle="--", linewidth=1.0,
-                color="#37474F", label="1:1 (perfect calibration)")
-    ax_bin.errorbar(rmss_a_b, rmse_a_b, yerr=rmse_a_s, fmt="o", markersize=3.5,
-                    capsize=2, linewidth=1.0, color="#FF8C00",
-                    label=f"{label_a} ({n_bins}-bin)")
-    ax_bin.errorbar(rmss_b_b, rmse_b_b, yerr=rmse_b_s, fmt="o", markersize=3.5,
-                    capsize=2, linewidth=1.0, color="#2196F3",
-                    label=f"{label_b} ({n_bins}-bin)")
-
-    ax_bin.set_xlim(0, lim_hi)
-    ax_bin.set_ylim(0, lim_hi)
-    ax_bin.set_xlabel("RMS ensemble spread (RMSS)", fontsize=11)
-    ax_bin.set_ylabel("RMSE of ensemble mean", fontsize=11)
-    ax_bin.set_title(
-        f"Binned spread-skill  ({n_bins} equal-population bins, pooled over all "
-        f"ICs × windows) — {label_a} vs {label_b}", fontsize=12,
-    )
-    ax_bin.legend(fontsize=9)
-    ax_bin.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
-    ax_bin.set_aspect("equal", adjustable="box")
-
-    fig.suptitle(title, fontsize=13, y=0.997)
-    _tight_layout(fig, rect=[0, 0, 1, 0.98])
-    _save(fig, save_path)
-    logging.info(f"Calibration comparison plot ({label_a} vs {label_b}) saved to: {save_path}")
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# 2c. Error Reduction Factor (pairwise, one graph)
-# ─────────────────────────────────────────────────────────────────────────
-def _plot_erf_pair(
-    obs_times: np.ndarray,
-    erf_mean_a: np.ndarray, erf_std_a: np.ndarray,
-    erf_mean_b: np.ndarray, erf_std_b: np.ndarray,
-    label_a: str, label_b: str,
-    n_traj: int,
-    title: str,
-    save_path: str,
-) -> None:
-    """ERF comparison for a strategy pair on ONE set of axes: 2 lines +
-    2 light +/-1 sigma bands, plus the ERF=1 reference line."""
-    fig, ax = plt.subplots(figsize=(9, 5))
-
-    series = [
-        (label_a, erf_mean_a, erf_std_a, "#FF8C00", "o"),
-        (label_b, erf_mean_b, erf_std_b, "#2196F3", "s"),
-    ]
-    for label, mean, std, color, marker in series:
-        ax.plot(obs_times, mean, color=color, linewidth=1.2, marker=marker,
-                markersize=2.5, label=f"{label}  (n = {n_traj} trajectories)")
-        ax.fill_between(obs_times, mean - std, mean + std, color=color,
-                        alpha=0.15, linewidth=0)
-
-    ax.set_yscale("log")
-    ax.axhline(y=1.0, color="#37474F", linestyle="--", linewidth=1.1,
-               label="ERF = 1  (no reduction)")
-
-    ax.set_xlabel("Observation time  t", fontsize=12)
-    ax.set_ylabel("Error Reduction Factor  (prior RMSE / posterior RMSE)", fontsize=11)
-    ax.set_title(title, fontsize=13)
-    ax.legend(fontsize=9)
-    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
-
-    fig.tight_layout()
-    _save(fig, save_path)
-    logging.info(f"ERF comparison plot ({label_a} vs {label_b}) saved to: {save_path}")
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# 2d. Prior vs posterior RMSE (pairwise, one graph, no spread bands)
-# ─────────────────────────────────────────────────────────────────────────
-def _plot_rmse_pair(
-    obs_times: np.ndarray,
-    prior_mean_a: np.ndarray, post_mean_a: np.ndarray,
-    prior_mean_b: np.ndarray, post_mean_b: np.ndarray,
-    sigma_obs: float,
-    n_traj: int,
-    label_a: str, label_b: str,
-    title: str,
-    save_path: str,
-) -> None:
-    """Prior/posterior RMSE for a strategy pair on ONE graph (4 lines,
-    no spread bands), plus the sigma_obs measurement-noise reference line."""
-    fig, ax = plt.subplots(figsize=(9, 5.5))
-
-    ax.plot(obs_times, prior_mean_a, color="#0A36C7", linewidth=1.2, marker="o",
-            markersize=2.5, linestyle="-", label=f"{label_a} prior RMSE  (n = {n_traj})")
-    ax.plot(obs_times, post_mean_a, color="#A30005", linewidth=1.2, marker="s",
-            markersize=2.5, linestyle="-", label=f"{label_a} posterior RMSE  (n = {n_traj})")
-    ax.plot(obs_times, prior_mean_b, color="#8E24AA", linewidth=1.2, marker="o",
-            markersize=2.5, linestyle="--", label=f"{label_b} prior RMSE  (n = {n_traj})")
-    ax.plot(obs_times, post_mean_b, color="#EC407A", linewidth=1.2, marker="s",
-            markersize=2.5, linestyle="--", label=f"{label_b} posterior RMSE  (n = {n_traj})")
-
-    ax.axhline(y=sigma_obs, color="#4CAF50", linestyle=":", linewidth=1.2,
-               label=f"Measurement noise  σ_obs = {sigma_obs}")
-
-    ax.set_yscale("log")
-    ax.set_xlabel("Observation time  t", fontsize=11)
-    ax.set_ylabel("RMSE  (log scale)", fontsize=11)
-    ax.set_title(title, fontsize=13)
-    ax.legend(fontsize=8.5, ncol=2)
-    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
-
-    fig.tight_layout()
-    _save(fig, save_path)
-    logging.info(f"Prior/posterior RMSE comparison plot ({label_a} vs {label_b}) saved to: {save_path}")
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Entry point -- pairwise comparisons
-# ─────────────────────────────────────────────────────────────────────────
-def plot_comparisons(h5_path: str, workdir: str | None = None, n_bins: int = 10) -> str:
-    """
-    Reads the HDF5 file written by `evaluate_filters` and generates:
-
-      * one individual-trajectory PDF per (IC, strategy) -- S * P PDFs
-        for S strategies and P trajectory ICs,
-      * four pairwise batch-comparison PDFs per strategy pair -- calibration
-        (2 graphs), ERF (1 graph), EnKF-vs-open-loop L2 (multi-page), and
-        prior/posterior RMSE (1 graph) -- 4 * C(S, 2) PDFs total.
-
-    Output layout (under ``workdir/figures/comparisons/``):
-
-        individual_trajectories/trajectory_ic_<i>_<strategy_key>.pdf
-        calibration_<keyA>_vs_<keyB>.pdf
-        erf_<keyA>_vs_<keyB>.pdf
-        l2_<keyA>_vs_<keyB>.pdf
-        rmse_<keyA>_vs_<keyB>.pdf
-
-    Use `plot_comparisons_bulk` instead for the inflation sweeps: the
-    pairwise count grows as C(S, 2).
-
-    Returns the path of the ``figures/comparisons`` directory written.
-    """
-    if workdir is None:
-        workdir = os.path.dirname(os.path.abspath(h5_path))
-
-    save_dir = os.path.join(workdir, "figures", "comparisons")
-    indiv_dir = os.path.join(save_dir, "individual_trajectories")
-    os.makedirs(indiv_dir, exist_ok=True)
-
-    with h5py.File(h5_path, "r") as f:
-        meta = f["meta"]
-        dt_window = float(meta.attrs["dt_window"])
-        obs_every_n = int(meta.attrs["obs_every_n"])
-        sigma_obs = float(meta.attrs["sigma_obs"])
-        N_ens = int(meta.attrs["N_ens"])
-        num_ics_traj = int(meta.attrs["num_ics_traj"])
-        x_grid = meta["x_grid"][:]
-
-        strategy_keys = _decode(meta["strategy_keys"][:])
-        strategy_labels = _decode(meta["strategy_labels"][:])
-        strategy_propagator = _decode(meta["strategy_propagator"][:])
-        label_of = dict(zip(strategy_keys, strategy_labels))
-        propagator_of = dict(zip(strategy_keys, strategy_propagator))
-
-        if len(strategy_keys) < 2:
-            logging.warning(
-                "plot_comparisons: fewer than 2 strategies found in "
-                f"{h5_path}; individual-trajectory plots will still be "
-                "written, but no pairwise comparison PDFs will be generated."
-            )
-
-        t_fine_traj = f["trajectories/t_fine"][:]
-
-        # ── 1. Individual-trajectory PDFs: one per (IC, strategy) ───────
-        n_traj_pdfs = 0
-        for ic_idx in range(num_ics_traj):
-            ic_grp = f[f"trajectories/ic_{ic_idx}"]
-            x_true = ic_grp["x_true"][:]
-            obs_coords_raw = ic_grp["obs_coords"][:]
-            obs_coords = obs_coords_raw if obs_coords_raw.size else None
-
-            for key in strategy_keys:
-                sg = ic_grp[f"strategies/{key}"]
-                x_est = sg["x_est"][:]
-                x_std = sg["x_std"][:]
-                l2_time_avg = float(sg.attrs["l2_time_avg"])
-
-                save_path = os.path.join(indiv_dir, f"trajectory_ic_{ic_idx}_{key}.pdf")
-                _plot_trajectory_individual(
-                    t_ax=t_fine_traj, x_true=x_true, x_est=x_est, x_std=x_std,
-                    ic_idx=ic_idx, strategy_label=label_of[key],
-                    l2_time_avg=l2_time_avg, save_path=save_path,
-                    x_grid=x_grid, dt_window=dt_window, obs_coords=obs_coords,
-                )
-                n_traj_pdfs += 1
-
-        logging.info(
-            f"plot_comparisons: wrote {n_traj_pdfs} individual trajectory "
-            f"PDFs ({num_ics_traj} ICs × {len(strategy_keys)} strategies) to {indiv_dir}"
-        )
-
-        # ── 2. Batch data needed for pairwise comparisons ────────────────
-        batch = f["batch"]
-        B = int(batch.attrs["B"])
-        obs_times_batch = batch["obs_times"][:]
-        window_idx = batch["window_idx"][:]
-        t_dense_fine = batch["t_dense_fine"][:]
-
-        batch_fields = (
-            "prior_rmse_mean", "post_rmse_mean", "erf_mean", "erf_std",
-            "rmse_window_mean", "spread_window_mean", "rmse_raw", "spread_raw",
-            "l2_dense_mean",
-        )
-        batch_strat = {}
-        for key in strategy_keys:
-            sg = batch[f"strategies/{key}"]
-            batch_strat[key] = {field: sg[field][:] for field in batch_fields}
-
-        open_loop = {}
-        if "open_loop" in batch:
-            for prop_key in batch["open_loop"]:
-                og = batch[f"open_loop/{prop_key}"]
-                open_loop[prop_key] = dict(t=og["t"][:], l2_dense_mean=og["l2_dense_mean"][:])
-
-    # ── 3. Pairwise batch-comparison PDFs ────────────────────────────────
-    strategy_pairs = list(itertools.combinations(strategy_keys, 2))
-    n_comparison_pdfs = 0
-
-    for key_a, key_b in strategy_pairs:
-        label_a, label_b = label_of[key_a], label_of[key_b]
-        pair_name = f"{key_a}_vs_{key_b}"
-        rec_a, rec_b = batch_strat[key_a], batch_strat[key_b]
-
-        # -- Calibration (2 graphs) --------------------------------------
-        _plot_calibration_pair(
-            window_idx=window_idx, dt_window=dt_window,
-            spread_a=rec_a["spread_window_mean"], rmse_a=rec_a["rmse_window_mean"],
-            spread_b=rec_b["spread_window_mean"], rmse_b=rec_b["rmse_window_mean"],
-            spread_a_raw=rec_a["spread_raw"], rmse_a_raw=rec_a["rmse_raw"],
-            spread_b_raw=rec_b["spread_raw"], rmse_b_raw=rec_b["rmse_raw"],
-            label_a=label_a, label_b=label_b,
-            title=(
-                f"Calibration: ensemble spread vs RMSE — {label_a} vs {label_b}\n"
-                f"(B={B} trajectories, N_ens={N_ens})"
-            ),
-            save_path=os.path.join(save_dir, f"calibration_{pair_name}.pdf"),
-            n_bins=n_bins,
-        )
-
-        # -- ERF (1 graph) --------------------------------------------------
-        _plot_erf_pair(
-            obs_times=obs_times_batch,
-            erf_mean_a=rec_a["erf_mean"], erf_std_a=rec_a["erf_std"],
-            erf_mean_b=rec_b["erf_mean"], erf_std_b=rec_b["erf_std"],
-            label_a=label_a, label_b=label_b, n_traj=B,
-            title=(
-                f"EnKF Error Reduction Factor per observation time — {label_a} vs {label_b}\n"
-                f"(B={B} trajectories, N_ens={N_ens}, obs every {obs_every_n}th grid "
-                f"point, σ_obs={sigma_obs})"
-            ),
-            save_path=os.path.join(save_dir, f"erf_{pair_name}.pdf"),
-        )
-
-        # -- EnKF vs open-loop, time-mean relative L2 -----------------------
-        curves, colors = {}, {}
-        used_props = {propagator_of[key_a], propagator_of[key_b]}
-        ol_palette = ["#B0BEC5", "#78909C"]
-        for i, prop_key in enumerate(sorted(used_props)):
-            if prop_key in open_loop:
-                lbl = f"{prop_key} open-loop"
-                curves[lbl] = (open_loop[prop_key]["t"], open_loop[prop_key]["l2_dense_mean"])
-                colors[lbl] = ol_palette[i % len(ol_palette)]
-        curves[label_a] = (t_dense_fine, rec_a["l2_dense_mean"])
-        curves[label_b] = (t_dense_fine, rec_b["l2_dense_mean"])
-        colors[label_a] = "#FF8C00"
-        colors[label_b] = "#2196F3"
-
-        _plot_l2_per_timestep(
-            curves=curves,
-            title=(
-                f"EnKF vs open-loop: mean relative L2 per timestep — "
-                f"{label_a} vs {label_b}  (B={B})"
-            ),
-            save_path=os.path.join(save_dir, f"l2_{pair_name}.pdf"),
-            colors=colors,
-        )
-
-        # -- Prior vs posterior RMSE, no spread bands (1 graph) -----------
-        _plot_rmse_pair(
-            obs_times=obs_times_batch,
-            prior_mean_a=rec_a["prior_rmse_mean"], post_mean_a=rec_a["post_rmse_mean"],
-            prior_mean_b=rec_b["prior_rmse_mean"], post_mean_b=rec_b["post_rmse_mean"],
-            sigma_obs=sigma_obs, n_traj=B, label_a=label_a, label_b=label_b,
-            title=(
-                f"EnKF prior vs posterior RMSE — {label_a} vs {label_b}\n"
-                f"(B={B} trajectories, N_ens={N_ens}, obs every {obs_every_n}th grid "
-                f"point, σ_obs={sigma_obs})"
-            ),
-            save_path=os.path.join(save_dir, f"rmse_{pair_name}.pdf"),
-        )
-
-        n_comparison_pdfs += 4
-
-    logging.info(
-        f"plot_comparisons: wrote {n_comparison_pdfs} pairwise comparison "
-        f"PDFs ({len(strategy_pairs)} pairs × 4 categories) to {save_dir}"
-    )
-    return save_dir
-
-
 # ─────────────────────────────────────────────────────────────────────────
 # Bulk (all-strategies-at-once) comparison plots
 # ─────────────────────────────────────────────────────────────────────────
@@ -2617,65 +2665,25 @@ def _plot_equilibrium_variance_bulk(
     _save(fig, save_path)
     logging.info(f"Bulk equilibrium-variance plot ({S} strategies) saved to: {save_path}")
 
-
 # ─────────────────────────────────────────────────────────────────────────
-# Entry point -- bulk comparisons
+# Individual-trajectory plots: one PDF per (IC, strategy file)
 # ─────────────────────────────────────────────────────────────────────────
-def plot_comparisons_bulk(h5_path: str, workdir: str | None = None, n_bins: int = 10) -> str:
+def plot_individual_trajectories(h5_path: str, indiv_dir: str) -> int:
     """
-    Reads the HDF5 file written by `evaluate_filters` and generates:
-
-      * one individual-trajectory PDF per (IC, strategy) -- S * P PDFs
-        (unchanged from `plot_comparisons`),
-      * exactly FOUR batch-comparison PDFs total, each overlaying every
-        strategy at once: calibration, ERF, EnKF-vs-open-loop L2, and
-        prior/posterior RMSE.
-
-    Output layout (under ``workdir/figures/comparisons_bulk/``):
-
-        individual_trajectories/trajectory_ic_<i>_<strategy_key>.pdf
-        calibration_all.pdf
-        erf_all.pdf
-        l2_all.pdf
-        rmse_all.pdf
-
-    Returns the path of the ``figures/comparisons_bulk`` directory written.
+    Writes `trajectory_ic_<i>_<key>.pdf` into `indiv_dir` for every trajectory
+    IC and every strategy stored in `h5_path`. Returns the number of PDFs.
     """
-    if workdir is None:
-        workdir = os.path.dirname(os.path.abspath(h5_path))
-
-    save_dir = os.path.join(workdir, "figures", "comparisons_bulk")
-    indiv_dir = os.path.join(save_dir, "individual_trajectories")
     os.makedirs(indiv_dir, exist_ok=True)
-
+    n_pdfs = 0
     with h5py.File(h5_path, "r") as f:
         meta = f["meta"]
         dt_window = float(meta.attrs["dt_window"])
-        obs_every_n = int(meta.attrs["obs_every_n"])
-        sigma_obs = float(meta.attrs["sigma_obs"])
-        N_ens = int(meta.attrs["N_ens"])
         num_ics_traj = int(meta.attrs["num_ics_traj"])
         x_grid = meta["x_grid"][:]
-
         strategy_keys = _decode(meta["strategy_keys"][:])
-        strategy_labels = _decode(meta["strategy_labels"][:])
-        strategy_propagator = _decode(meta["strategy_propagator"][:])
-        label_of = dict(zip(strategy_keys, strategy_labels))
-        propagator_of = dict(zip(strategy_keys, strategy_propagator))
-        colors = _strategy_colors(strategy_keys)
-
-        S = len(strategy_keys)
-        if S < 2:
-            logging.warning(
-                "plot_comparisons_bulk: fewer than 2 strategies found in "
-                f"{h5_path}; individual-trajectory plots will still be "
-                "written, but no bulk comparison PDFs will be generated."
-            )
-
+        label_of = dict(zip(strategy_keys, _decode(meta["strategy_labels"][:])))
         t_fine_traj = f["trajectories/t_fine"][:]
 
-        # ── 1. Individual-trajectory PDFs: one per (IC, strategy) ───────
-        n_traj_pdfs = 0
         for ic_idx in range(num_ics_traj):
             ic_grp = f[f"trajectories/ic_{ic_idx}"]
             x_true = ic_grp["x_true"][:]
@@ -2684,1108 +2692,360 @@ def plot_comparisons_bulk(h5_path: str, workdir: str | None = None, n_bins: int 
 
             for key in strategy_keys:
                 sg = ic_grp[f"strategies/{key}"]
-                x_est = sg["x_est"][:]
-                x_std = sg["x_std"][:]
-                l2_time_avg = float(sg.attrs["l2_time_avg"])
-
-                save_path = os.path.join(indiv_dir, f"trajectory_ic_{ic_idx}_{key}.pdf")
                 _plot_trajectory_individual(
-                    t_ax=t_fine_traj, x_true=x_true, x_est=x_est, x_std=x_std,
-                    ic_idx=ic_idx, strategy_label=label_of[key],
-                    l2_time_avg=l2_time_avg, save_path=save_path,
+                    t_ax=t_fine_traj, x_true=x_true, x_est=sg["x_est"][:],
+                    x_std=sg["x_std"][:], ic_idx=ic_idx,
+                    strategy_label=label_of[key],
+                    l2_time_avg=float(sg.attrs["l2_time_avg"]),
+                    save_path=os.path.join(indiv_dir, f"trajectory_ic_{ic_idx}_{key}.pdf"),
                     x_grid=x_grid, dt_window=dt_window, obs_coords=obs_coords,
                 )
-                n_traj_pdfs += 1
+                n_pdfs += 1
+    logging.info(
+        f"plot_individual_trajectories: wrote {n_pdfs} PDF(s) from {h5_path} to {indiv_dir}"
+    )
+    return n_pdfs
 
-        logging.info(
-            f"plot_comparisons_bulk: wrote {n_traj_pdfs} individual trajectory "
-            f"PDFs ({num_ics_traj} ICs x {S} strategies) to {indiv_dir}"
-        )
 
-        # ── 2. Batch data needed for the bulk comparisons ────────────────
-        batch = f["batch"]
-        B = int(batch.attrs["B"])
-        obs_times_batch = batch["obs_times"][:]
-        window_idx = batch["window_idx"][:]
-        t_dense_fine = batch["t_dense_fine"][:]
+# ─────────────────────────────────────────────────────────────────────────
+# Collection plots: several strategy files overlaid on the same axes
+# ─────────────────────────────────────────────────────────────────────────
 
-        batch_fields = (
-            "prior_rmse_mean", "post_rmse_mean", "erf_mean", "erf_std",
-            "rmse_window_mean", "spread_window_mean", "rmse_raw", "spread_raw",
-            "l2_dense_mean",
-        )
-        batch_strat = {}
-        for key in strategy_keys:
-            sg = batch[f"strategies/{key}"]
-            batch_strat[key] = {field: sg[field][:] for field in batch_fields}
+_BATCH_FIELDS = (
+    "prior_rmse_mean", "post_rmse_mean", "erf_mean", "erf_std",
+    "rmse_window_mean", "spread_window_mean", "rmse_raw", "spread_raw",
+    "l2_dense_mean",
+)
 
-        open_loop = {}
-        if "open_loop" in batch:
-            for prop_key in batch["open_loop"]:
-                og = batch[f"open_loop/{prop_key}"]
-                open_loop[prop_key] = dict(t=og["t"][:], l2_dense_mean=og["l2_dense_mean"][:])
+# /meta and /batch attributes that must agree for files to be overlaid: they
+# fix the axes' shapes and the grid / ICs / noise / ensemble the strategies
+# saw. `L` and `dt_data` are KS additions: the domain length and the
+# reference solver's own step, which together decide what the truth even is.
+_CONSISTENCY_ATTRS = (
+    "N", "L", "dt_data", "dt_window", "dt_fine", "dt_obs", "sigma_obs",
+    "P0_sigma", "P0_corr_len", "N_ens", "obs_every_n", "m", "num_ics_traj",
+    "num_ics_batch", "trajectory_windows", "batch_windows",
+)
 
-    if S < 2:
-        return save_dir
 
-    # ── 3. Four bulk comparison PDFs, every strategy overlaid on each ───
+def _read_group(h5_paths: list) -> dict:
+    """
+    Reads the batch-level data of several strategy files into one dict shaped
+    for the `_plot_*_bulk` helpers. Raises if the files were produced with
+    different shared settings (overlaying them would be meaningless).
+    """
+    if not h5_paths:
+        raise ValueError("_read_group: no HDF5 files given.")
+
+    g = dict(strategy_keys=[], label_of={}, propagator_of={}, batch_strat={},
+             eqvar_mean_of={}, eqvar_std_of={}, open_loop={}, open_loop_eqvar={})
+    ref_path, ref_attrs = None, None
+
+    for path in h5_paths:
+        with h5py.File(path, "r") as f:
+            meta, batch = f["meta"], f["batch"]
+            attrs = {k: meta.attrs[k] for k in _CONSISTENCY_ATTRS}
+            attrs["B"] = batch.attrs["B"]
+            attrs["test_data"] = meta.attrs.get("test_data", None)
+
+            if ref_attrs is None:
+                ref_path, ref_attrs = path, attrs
+                g.update(
+                    N=int(attrs["N"]), L=float(attrs["L"]),
+                    dt_window=float(attrs["dt_window"]),
+                    obs_every_n=int(attrs["obs_every_n"]),
+                    sigma_obs=float(attrs["sigma_obs"]),
+                    N_ens=int(attrs["N_ens"]), B=int(attrs["B"]),
+                    obs_times=batch["obs_times"][:], window_idx=batch["window_idx"][:],
+                    t_dense_fine=batch["t_dense_fine"][:],
+                    burn_in_frac=float(batch.attrs["eqvar_burn_in_frac"]),
+                    x_grid=meta["x_grid"][:] if "x_grid" in meta else None,
+                    obs_indices=meta["obs_indices"][:] if "obs_indices" in meta else None,
+                )
+                if "reference" not in batch:
+                    raise KeyError(f"{path} has no 'batch/reference' (equilibrium-variance "
+                                   "data); delete it and re-run to regenerate it.")
+                g["reference_mean"] = batch["reference/eqvar_mean"][:]
+                g["reference_std"] = batch["reference/eqvar_std"][:]
+            else:
+                bad = [k for k in attrs
+                       if attrs[k] is not None and ref_attrs[k] is not None
+                       and not _same_value(attrs[k], ref_attrs[k])]
+                if bad:
+                    raise ValueError(
+                        "Cannot overlay strategies evaluated with different settings: "
+                        + "; ".join(f"{k}: {ref_path}={_py(ref_attrs[k])!r} vs {path}={_py(attrs[k])!r}"
+                                    for k in bad)
+                        + ". Delete the outdated file(s) and re-run."
+                    )
+
+            keys = _decode(meta["strategy_keys"][:])
+            labels = _decode(meta["strategy_labels"][:])
+            props = _decode(meta["strategy_propagator"][:])
+            for key, label, prop in zip(keys, labels, props):
+                if key in g["label_of"]:
+                    raise ValueError(f"Strategy key '{key}' appears in more than one file.")
+                sg = batch[f"strategies/{key}"]
+                if "eqvar_mean" not in sg:
+                    raise KeyError(f"{path} has no equilibrium-variance data for '{key}'; "
+                                   "delete it and re-run to regenerate it.")
+                g["strategy_keys"].append(key)
+                g["label_of"][key] = label
+                g["propagator_of"][key] = prop
+                g["batch_strat"][key] = {fld: sg[fld][:] for fld in _BATCH_FIELDS}
+                g["eqvar_mean_of"][key] = sg["eqvar_mean"][:]
+                g["eqvar_std_of"][key] = sg["eqvar_std"][:]
+
+            if "open_loop" in batch:
+                for prop_key in batch["open_loop"]:
+                    if prop_key in g["open_loop"]:
+                        continue            # same propagator in another file: identical rollout
+                    og = batch[f"open_loop/{prop_key}"]
+                    g["open_loop"][prop_key] = dict(t=og["t"][:], l2_dense_mean=og["l2_dense_mean"][:])
+                    if "eqvar_mean" in og:
+                        g["open_loop_eqvar"][prop_key] = dict(
+                            mean=og["eqvar_mean"][:], std=og["eqvar_std"][:])
+
+    # The L2 plot keys curves (and colors) by label, so labels must be unique.
+    seen = {}
+    for key in g["strategy_keys"]:
+        lbl = g["label_of"][key]
+        if lbl in seen:
+            g["label_of"][key] = f"{lbl} [{key}]"
+            if g["label_of"][seen[lbl]] == lbl:
+                g["label_of"][seen[lbl]] = f"{lbl} [{seen[lbl]}]"
+        else:
+            seen[lbl] = key
+    return g
+
+
+def plot_group(h5_paths: list, save_dir: str, title_tag: str, n_bins: int = 10) -> str:
+    """
+    Overlays every strategy stored in `h5_paths` (any number >= 1) on the same
+    axes and writes five PDFs into `save_dir`:
+
+        calibration.pdf            ensemble spread vs RMSE + binned spread-skill
+        erf.pdf                    Error Reduction Factor per observation time
+        l2.pdf                     EnKF vs open-loop time-mean relative L2
+        rmse.pdf                   prior vs posterior RMSE
+        equilibrium_variance.pdf   per-grid-point equilibrium variance vs reference
+
+    `title_tag` is appended to every figure title to say what is being compared.
+    Returns `save_dir`.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    g = _read_group(h5_paths)
+    keys, label_of, batch_strat = g["strategy_keys"], g["label_of"], g["batch_strat"]
+    colors = _strategy_colors(keys)
+    B, N_ens = g["B"], g["N_ens"]
+    obs_every_n, sigma_obs = g["obs_every_n"], g["sigma_obs"]
+    S = len(keys)
+
     _plot_calibration_bulk(
-        strategy_keys=strategy_keys, label_of=label_of,
-        window_idx=window_idx, dt_window=dt_window,
-        spread_window_of={k: batch_strat[k]["spread_window_mean"] for k in strategy_keys},
-        rmse_window_of={k: batch_strat[k]["rmse_window_mean"] for k in strategy_keys},
-        spread_raw_of={k: batch_strat[k]["spread_raw"] for k in strategy_keys},
-        rmse_raw_of={k: batch_strat[k]["rmse_raw"] for k in strategy_keys},
+        strategy_keys=keys, label_of=label_of,
+        window_idx=g["window_idx"], dt_window=g["dt_window"],
+        spread_window_of={k: batch_strat[k]["spread_window_mean"] for k in keys},
+        rmse_window_of={k: batch_strat[k]["rmse_window_mean"] for k in keys},
+        spread_raw_of={k: batch_strat[k]["spread_raw"] for k in keys},
+        rmse_raw_of={k: batch_strat[k]["rmse_raw"] for k in keys},
         colors=colors,
-        title=(
-            f"Calibration: ensemble spread vs RMSE — all strategies\n"
-            f"(B={B} trajectories, N_ens={N_ens})"
-        ),
-        save_path=os.path.join(save_dir, "calibration_all.pdf"),
+        title=(f"Calibration: ensemble spread vs RMSE — {title_tag}\n"
+               f"(B={B} trajectories, N_ens={N_ens})"),
+        save_path=os.path.join(save_dir, "calibration.pdf"),
         n_bins=n_bins,
     )
 
     _plot_erf_bulk(
-        strategy_keys=strategy_keys, label_of=label_of,
-        obs_times=obs_times_batch,
-        erf_mean_of={k: batch_strat[k]["erf_mean"] for k in strategy_keys},
-        erf_std_of={k: batch_strat[k]["erf_std"] for k in strategy_keys},
+        strategy_keys=keys, label_of=label_of, obs_times=g["obs_times"],
+        erf_mean_of={k: batch_strat[k]["erf_mean"] for k in keys},
+        erf_std_of={k: batch_strat[k]["erf_std"] for k in keys},
         colors=colors, n_traj=B,
-        title=(
-            f"EnKF Error Reduction Factor per observation time — all strategies\n"
-            f"(N_ens={N_ens}, obs every {obs_every_n}th grid point, σ_obs={sigma_obs})"
-        ),
-        save_path=os.path.join(save_dir, "erf_all.pdf"),
+        title=(f"EnKF Error Reduction Factor per observation time — {title_tag}\n"
+               f"(N_ens={N_ens}, obs every {obs_every_n}th grid point, σ_obs={sigma_obs})"),
+        save_path=os.path.join(save_dir, "erf.pdf"),
     )
 
     curves, curve_colors = {}, {}
-    used_props = sorted({propagator_of[k] for k in strategy_keys})
     ol_palette = ["#B0BEC5", "#78909C", "#546E7A"]
-    for i, prop_key in enumerate(used_props):
-        if prop_key in open_loop:
+    for i, prop_key in enumerate(sorted({g["propagator_of"][k] for k in keys})):
+        if prop_key in g["open_loop"]:
             lbl = f"{prop_key} open-loop"
-            curves[lbl] = (open_loop[prop_key]["t"], open_loop[prop_key]["l2_dense_mean"])
+            curves[lbl] = (g["open_loop"][prop_key]["t"], g["open_loop"][prop_key]["l2_dense_mean"])
             curve_colors[lbl] = ol_palette[i % len(ol_palette)]
-    for key in strategy_keys:
-        curves[label_of[key]] = (t_dense_fine, batch_strat[key]["l2_dense_mean"])
+    for key in keys:
+        curves[label_of[key]] = (g["t_dense_fine"], batch_strat[key]["l2_dense_mean"])
         curve_colors[label_of[key]] = colors[key]
-
     _plot_l2_per_timestep(
         curves=curves,
-        title=f"EnKF vs open-loop: mean relative L2 per timestep — all strategies  (B={B})",
-        save_path=os.path.join(save_dir, "l2_all.pdf"),
+        title=f"EnKF vs open-loop: mean relative L2 per timestep — {title_tag}  (B={B})",
+        save_path=os.path.join(save_dir, "l2.pdf"),
         colors=curve_colors,
     )
 
     _plot_rmse_bulk(
-        strategy_keys=strategy_keys, label_of=label_of,
-        obs_times=obs_times_batch,
-        prior_mean_of={k: batch_strat[k]["prior_rmse_mean"] for k in strategy_keys},
-        post_mean_of={k: batch_strat[k]["post_rmse_mean"] for k in strategy_keys},
+        strategy_keys=keys, label_of=label_of, obs_times=g["obs_times"],
+        prior_mean_of={k: batch_strat[k]["prior_rmse_mean"] for k in keys},
+        post_mean_of={k: batch_strat[k]["post_rmse_mean"] for k in keys},
         sigma_obs=sigma_obs, n_traj=B, colors=colors,
-        title=(
-            f"EnKF prior vs posterior RMSE — all strategies\n"
-            f"(N_ens={N_ens}, obs every {obs_every_n}th grid point, σ_obs={sigma_obs})"
-        ),
-        save_path=os.path.join(save_dir, "rmse_all.pdf"),
+        title=(f"EnKF prior vs posterior RMSE — {title_tag}\n"
+               f"(N_ens={N_ens}, obs every {obs_every_n}th grid point, σ_obs={sigma_obs})"),
+        save_path=os.path.join(save_dir, "rmse.pdf"),
     )
 
-    logging.info(
-        f"plot_comparisons_bulk: wrote 4 bulk comparison PDFs "
-        f"({S} strategies each) to {save_dir}"
-    )
-    return save_dir
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Entry point -- equilibrium (climatological/attractor) variance
-# ─────────────────────────────────────────────────────────────────────────
-def plot_equilibrium_variance(
-    h5_path: str, workdir: str | None = None, log_scale: bool = True,
-) -> str:
-    """
-    Reads the HDF5 file written by `evaluate_filters` and writes ONE PDF
-    comparing, per grid point, the long-term equilibrium
-    (climatological/attractor) variance of:
-
-      * the reference/truth trajectory,
-      * each propagator's open-loop, "static" (unfiltered) physics
-        rollout, and
-      * every filtered EnKF strategy in the file,
-
-    overlaid on a single set of axes -- the "static physics vs filtered
-    strategies" steady-state diagnostic. Works for any number of
-    strategies S >= 1 (no pairwise blow-up, since every curve is compared
-    against the one shared reference rather than against every other
-    curve).
-
-    Output: ``<workdir>/figures/comparisons_bulk/equilibrium_variance_all.pdf``
-
-    Returns the path of the ``figures/comparisons_bulk`` directory written.
-    """
-    if workdir is None:
-        workdir = os.path.dirname(os.path.abspath(h5_path))
-
-    save_dir = os.path.join(workdir, "figures", "comparisons_bulk")
-    os.makedirs(save_dir, exist_ok=True)
-
-    with h5py.File(h5_path, "r") as f:
-        meta = f["meta"]
-        N_ens = int(meta.attrs["N_ens"])
-        obs_every_n = int(meta.attrs["obs_every_n"])
-        sigma_obs = float(meta.attrs["sigma_obs"])
-        x_grid = meta["x_grid"][:]
-        obs_indices = meta["obs_indices"][:] if "obs_indices" in meta else None
-
-        strategy_keys = _decode(meta["strategy_keys"][:])
-        strategy_labels = _decode(meta["strategy_labels"][:])
-        label_of = dict(zip(strategy_keys, strategy_labels))
-        colors = _strategy_colors(strategy_keys)
-
-        batch = f["batch"]
-        B = int(batch.attrs["B"])
-
-        missing_eqvar = "reference" not in batch or any(
-            "eqvar_mean" not in batch[f"strategies/{k}"] for k in strategy_keys
-        )
-        if missing_eqvar:
-            raise KeyError(
-                f"{h5_path} has no equilibrium-variance data (missing "
-                "'batch/reference' and/or per-strategy 'eqvar_mean'). "
-                "Re-run evaluate_filters to regenerate the HDF5 file "
-                "before calling plot_equilibrium_variance."
-            )
-
-        burn_in_frac = float(batch.attrs["eqvar_burn_in_frac"])
-        reference_mean = batch["reference/eqvar_mean"][:]
-        reference_std = batch["reference/eqvar_std"][:]
-
-        eqvar_mean_of, eqvar_std_of = {}, {}
-        for key in strategy_keys:
-            sg = batch[f"strategies/{key}"]
-            eqvar_mean_of[key] = sg["eqvar_mean"][:]
-            eqvar_std_of[key] = sg["eqvar_std"][:]
-
-        open_loop_eqvar = {}
-        if "open_loop" in batch:
-            for prop_key in batch["open_loop"]:
-                og = batch[f"open_loop/{prop_key}"]
-                if "eqvar_mean" in og:
-                    open_loop_eqvar[prop_key] = dict(
-                        mean=og["eqvar_mean"][:], std=og["eqvar_std"][:],
-                    )
-
-    save_path = os.path.join(save_dir, "equilibrium_variance_all.pdf")
     _plot_equilibrium_variance_bulk(
-        strategy_keys=strategy_keys, label_of=label_of,
-        eqvar_mean_of=eqvar_mean_of, eqvar_std_of=eqvar_std_of,
-        reference_mean=reference_mean, reference_std=reference_std,
-        open_loop_eqvar=open_loop_eqvar, colors=colors,
-        title=(
-            f"Equilibrium variance — static (open-loop) physics vs filtered "
-            f"strategies\n(B={B} trajectories, N_ens={N_ens}, obs every "
-            f"{obs_every_n}th grid point, σ_obs={sigma_obs}, "
-            f"burn-in={burn_in_frac:.0%} of window discarded)"
-        ),
-        save_path=save_path,
-        x_grid=x_grid,
-        obs_indices=obs_indices,
-        log_scale=log_scale,
+        strategy_keys=keys, label_of=label_of,
+        eqvar_mean_of=g["eqvar_mean_of"], eqvar_std_of=g["eqvar_std_of"],
+        reference_mean=g["reference_mean"], reference_std=g["reference_std"],
+        open_loop_eqvar=g["open_loop_eqvar"], colors=colors,
+        title=(f"Equilibrium variance — static (open-loop) physics vs filtered "
+               f"strategies — {title_tag}\n(B={B} trajectories, N_ens={N_ens}, obs every "
+               f"{obs_every_n}th grid point, σ_obs={sigma_obs}, "
+               f"burn-in={g['burn_in_frac']:.0%} of window discarded)"),
+        save_path=os.path.join(save_dir, "equilibrium_variance.pdf"),
+        x_grid=g["x_grid"], obs_indices=g["obs_indices"],
     )
 
-    logging.info(f"plot_equilibrium_variance: wrote {save_path}")
+    logging.info(f"plot_group: wrote 5 PDFs ({S} strategy file(s)) for '{title_tag}' to {save_dir}")
     return save_dir
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Runner: classic 3-way comparison
-# ─────────────────────────────────────────────────────────────────────────
-"""
-Run the classic 3-way EnKF comparison
-
-    1. DD  propagator + multiplicative inflation
-    2. PI  propagator + multiplicative inflation
-    3. PI  propagator + Route B (residual-scaled additive) inflation
-
-through the two-stage modular pipeline (`evaluate_filters` +
-`plot_comparisons`).
-
-Outputs
--------
-    <workdir>/<config.wandb.name>.h5                       -- evaluate_filters
-    <workdir>/figures/comparisons/individual_trajectories/  -- per-(IC, strategy) PDFs
-    <workdir>/figures/comparisons/calibration_*_vs_*.pdf    -- 3 pairs
-    <workdir>/figures/comparisons/erf_*_vs_*.pdf
-    <workdir>/figures/comparisons/l2_*_vs_*.pdf
-    <workdir>/figures/comparisons/rmse_*_vs_*.pdf
-"""
-
-
-def run_3way_comparison(config, workdir: str, test_h5_path: str | None = None,
-                        n_bins: int = 10) -> str:
-    """
-    Runs the default DD-mult / PI-mult / PI-Route-B 3-way EnKF evaluation
-    and writes every comparison figure.
-
-    Returns the path of the `figures/comparisons` directory written by
-    `plot_comparisons`.
-    """
-    os.makedirs(workdir, exist_ok=True)
-
-    logging.info(
-        "Stage 1/2: evaluate_filters — running DD+mult / PI+mult / "
-        "PI+RouteB on shared data and writing the results HDF5 ..."
-    )
-    h5_path = evaluate_filters(
-        config=config,
-        workdir=workdir,
-        strategies=None,      # None -> build_default_3way_strategies
-        propagators=None,
-        test_h5_path=test_h5_path,
-    )
-    logging.info(f"  wrote {h5_path}")
-
-    logging.info(f"Stage 2/2: plot_comparisons — reading {h5_path} and writing figures ...")
-    save_dir = plot_comparisons(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
-    logging.info(f"  wrote figures to {save_dir}")
-
-    return save_dir
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Runner: 4-way inflation-scheme comparison, crossed with the propagators
-# ─────────────────────────────────────────────────────────────────────────
-"""
-Run a 4-way EnKF covariance-inflation comparison, crossed with the
-propagators that expose a PDE residual (PI and/or Hybrid; "dd" is not
-eligible)
-
-For each propagator in `config.kf.compare_propagators` (default: PI and
-Hybrid, i.e. `["pi", "hy"]`):
-
-    1. <kind> propagator + Multiplicative inflation
-    2. <kind> propagator + Route B (residual-scaled additive) inflation
-    3. <kind> propagator + plain Additive inflation (Route B with the
-       flow-dependent term zeroed out, i.e. beta=0)
-    4. <kind> propagator + Relaxation-to-Prior Perturbations (RTPP)
-
-so differences ACROSS inflation schemes, at fixed propagator, isolate the
-effect of the inflation scheme, while differences ACROSS propagators, at
-fixed inflation scheme, isolate the effect of the surrogate itself. Pass
-`config.kf.compare_propagators = ["pi"]` to recover the original PI-only
-4-way comparison.
-
-Knobs, all read from `config.kf`
---------------------------------
-    compare_propagators -- which propagators to cross the 4 inflation
-                         schemes with. Default `["pi", "hy"]`; "dd" is not
-                         eligible (no PDE residual for Route B/additive).
-    inflation_factor  -- window-level multiplicative inflation (scaled to
-                         a per-fine-step factor internally).
-    route_b_alpha     -- Route B / additive constant floor.
-    route_b_beta      -- Route B flow-dependent coefficient. THIS NEEDS
-                         KS-SPECIFIC CALIBRATION: the KS residual carries
-                         fourth-order spatial derivatives summed over 256
-                         grid points, so ||rho||^2 is nothing like L96's.
-                         Run `run_route_b_inflation_sweep` first, or read
-                         `route_b_scale_mean` out of the results HDF5 to
-                         see the realised alpha + beta*||rho||^2.
-    rtpp_alpha        -- RTPP relaxation factor, in [0, 1]; typical tuned
-                         values are 0.5-0.9.
-    rtpp_alpha_fine   -- multiplicative inflation inside RTPP's (shared)
-                         predict step. Defaults to 1.0 so `rtpp_alpha` is
-                         the only active inflation mechanism, which is what
-                         makes the comparison fair across inflation schemes.
-"""
-
-
-def run_4way_comparison(config, workdir: str, test_h5_path: str | None = None,
-                        n_bins: int = 10) -> str:
-    """
-    Runs the Mult / Route-B / Additive / RTPP inflation-strategy
-    evaluation, crossed with the configured propagators (default PI and
-    Hybrid -- "dd" has no PDE residual and is not eligible), and writes
-    every comparison figure.
-
-    Returns the path of the `figures/comparisons` directory written by
-    `plot_comparisons`.
-    """
-    os.makedirs(workdir, exist_ok=True)
-
-    if test_h5_path is None:
-        test_h5_path = _default_test_path(config)
-    grid = _read_test_meta(test_h5_path)
-
-    # ── EnKF / inflation configuration (mirrors evaluate_filters' own
-    #    reads of config.kf, since we build the strategy set ourselves) ──
-    N_ens = config.kf.get("N_ens", 50)
-    alpha_coarse = config.kf.get("inflation_factor", 1.05)
-    alpha_rb = config.kf.get("route_b_alpha", 1.0)
-    beta_rb = config.kf.get("route_b_beta", 1.0)
-    n_quad_rb = config.kf.get("route_b_n_quad", 3)
-    alpha_rtpp = config.kf.get("rtpp_alpha", 0.5)
-    alpha_fine_rtpp = config.kf.get("rtpp_alpha_fine", 1.0)
-    propagator_kinds = tuple(config.kf.get("compare_propagators", ["pi", "hy"]))
-
-    DT_WINDOW = float(config.get("dt_window", 1.0))
-    DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
-    steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
-    alpha_fine = scale_inflation_for_fine_steps(alpha_coarse, steps_per_window)
-
-    logging.info(
-        f"Building 4-way strategy set (x {list(propagator_kinds)}): "
-        "Mult / RouteB / Additive / RTPP ..."
-    )
-    strategies, propagators, N, t_star_window = build_default_4way_strategies(
-        config, N_ens, alpha_fine, alpha_rb, beta_rb, n_quad_rb, alpha_rtpp,
-        grid, alpha_fine_rtpp=alpha_fine_rtpp, propagator_kinds=propagator_kinds,
-    )
-    if len(strategies) > 12:
-        logging.warning(
-            f"{len(strategies)} strategies -> {len(strategies) * (len(strategies) - 1) // 2} "
-            "pairwise comparison PDFs from plot_comparisons. Consider "
-            "config.kf.compare_propagators = ['pi'] for the original "
-            "PI-only 4-way comparison if that's too many."
-        )
-
-    logging.info(
-        f"Stage 1/2: evaluate_filters — running {len(strategies)} propagator x "
-        "inflation-scheme strategies on shared data and writing the results HDF5 ..."
-    )
-    h5_path = evaluate_filters(
-        config=config,
-        workdir=workdir,
-        strategies=strategies,
-        propagators=propagators,
-        t_star_window=t_star_window,
-        test_h5_path=test_h5_path,
-    )
-    logging.info(f"  wrote {h5_path}")
-
-    logging.info(f"Stage 2/2: plot_comparisons — reading {h5_path} and writing figures ...")
-    save_dir = plot_comparisons(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
-    logging.info(f"  wrote figures to {save_dir}")
-
-    return save_dir
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Multiplicative-inflation-factor sweep, crossed with the propagators
+# config.eval.plot_groups
 # ─────────────────────────────────────────────────────────────────────────
 
-def build_mult_sweep_strategies(config, N_ens, alpha_coarse_list, steps_per_window,
-                                grid, propagator_kinds=("dd", "pi")):
+def _safe_dirname(name: str, max_len: int = 100) -> str:
+    """Shorten over-long auto-generated folder names, keeping them unique."""
+    if len(name) <= max_len:
+        return name
+    return f"{name[:max_len - 9]}_{hashlib.md5(name.encode()).hexdigest()[:8]}"
+
+
+def _normalize_plot_groups(raw, valid_names: list) -> list:
     """
-    Builds a multiplicative-inflation-factor sweep, crossed with each
-    propagator in `propagator_kinds` ("dd", "pi" and/or "hy" -- the
-    hybrid physics-informed + data-driven checkpoint named in
-    `config.wandb.name_hy`, which the KS pipeline trains but L96 has no
-    counterpart for):
+    `config.eval.plot_groups` -> [(folder_name, [names], title_tag)].
 
-        <kind>_mult_a<tag> -- that propagator + multiplicative inflation at
-                              alpha_coarse_list[i] (converted internally to
-                              the fine-step-scaled `alpha_fine`).
-
-    `predict_fn`/`update_fn` are built ONCE per propagator: multiplicative
-    inflation doesn't change the EnKF closure itself, only the `alpha_fine`
-    scalar carried alongside it in the strategy dict. So the sweep is cheap
-    -- no extra model calls or checkpoint loads per alpha, just extra
-    strategy dict entries reusing the same closures.
-
-    Returns (strategies, propagators, N, t_star_window).
+    Accepts a list of lists of identifying names (folders are named by joining
+    the names) or a dict {group_name: [names]}. Every name must be an entry of
+    `config.eval.strategies`.
     """
-    _, _, t_star_window = _window_grid(config, grid)
+    raw = _plain(raw)
+    if raw is None or len(raw) == 0:
+        return []
 
-    loaded, closures = {}, {}
-    N = None
-    for kind in propagator_kinds:
-        model, params = _load_ks_model(config, kind, t_star_window, grid)
-        loaded[kind] = (model, params)
-        closures[kind] = model.make_enkf_fns(params, N_ens=N_ens)
-        if N is None:
-            N = model.N
-        assert model.N == N, (
-            f"'{kind}' checkpoint grid size ({model.N}) != {N}; can't share a "
-            "strategy/propagator set across them."
-        )
+    if isinstance(raw, dict):
+        items = [(str(k), v) for k, v in raw.items()]
+    elif _is_seq(raw):
+        items = [(None, v) for v in raw]
+    else:
+        raise TypeError("config.eval.plot_groups must be a list of lists of names "
+                        f"(or a dict of them), got {type(raw).__name__}.")
 
-    label_of_kind = {"dd": "DD", "pi": "PI", "hy": "Hybrid"}
-
-    strategies = []
-    for alpha_coarse in alpha_coarse_list:
-        alpha_fine = scale_inflation_for_fine_steps(alpha_coarse, steps_per_window)
-        tag = f"{alpha_coarse:g}".replace(".", "p")
-        for kind in propagator_kinds:
-            predict_fn, update_fn = closures[kind]
-            strategies.append(dict(
-                key=f"{kind}_mult_a{tag}",
-                label=f"{label_of_kind.get(kind, kind.upper())} + Mult. Infl. "
-                      f"(\u03b1={alpha_coarse:g})",
-                kind="standard", propagator=kind,
-                predict_fn=predict_fn, update_fn=update_fn,
-                alpha_fine=alpha_fine,
-            ))
-
-    return strategies, loaded, N, t_star_window
-
-
-"""
-Run a multiplicative-inflation-factor calibration sweep
-
-    For every value `alpha` in `config.kf.inflation_factor_list`, and for
-    each propagator in `config.kf.sweep_propagators` (default DD, PI and
-    Hybrid -- "dd", "pi", "hy"), evaluate that propagator + multiplicative
-    inflation @ alpha.
-
-Choosing `config.kf.inflation_factor_list`
-------------------------------------------
-    Values too close to 1.0 risk ensemble collapse / filter divergence
-    over a long smoother run; values too large needlessly inflate the
-    posterior and hurt RMSE. Operational EnKF practice keeps the
-    window-level factor in roughly [1.00, 1.30]. A reasonable first-pass
-    grid bracketing this codebase's own default of 1.05:
-
-        config.kf.inflation_factor_list = [
-            1.00, 1.02, 1.04, 1.06, 1.08, 1.10, 1.15, 1.20, 1.30,
-        ]
-
-    (1.00 is the no-inflation control.) Note the factor is applied
-    per-fine-step as `alpha ** (1/steps_per_window)`, so its effect
-    depends on `dt_fine` -- re-tune after changing it.
-
-    Once the coarse sweep identifies an optimum, re-run a finer sweep
-    bracketing it, e.g. `np.linspace(best - 0.03, best + 0.03, 7)`.
-
-    Use `plot_comparisons_bulk` (as this runner does) rather than
-    `plot_comparisons` for sweeps: the pairwise variant writes
-    4 * C(S, 2) PDFs, which is 306 files for a 9-alpha x 2-propagator set.
-"""
-
-
-def run_mult_inflation_sweep(config, workdir: str, test_h5_path: str | None = None,
-                             n_bins: int = 10) -> str:
-    """
-    Runs the multiplicative-inflation-factor sweep and writes every
-    comparison figure, including the steady-state equilibrium-variance
-    diagnostic.
-
-    Returns the path of the `figures/comparisons_bulk` directory.
-    """
-    os.makedirs(workdir, exist_ok=True)
-
-    if test_h5_path is None:
-        test_h5_path = _default_test_path(config)
-    grid = _read_test_meta(test_h5_path)
-
-    N_ens = config.kf.get("N_ens", 50)
-    propagator_kinds = tuple(config.kf.get("sweep_propagators", ["dd", "pi", "hy"]))
-    alpha_coarse_list = list(config.kf.get(
-        "inflation_factor_list",
-        [1.00, 1.02, 1.04, 1.06, 1.08, 1.10, 1.15, 1.20, 1.30],
-    ))
-    if len(alpha_coarse_list) == 0:
-        raise ValueError("config.kf.inflation_factor_list is empty.")
-    if not all(a > 0 for a in alpha_coarse_list):
-        raise ValueError(
-            f"config.kf.inflation_factor_list must be strictly positive, "
-            f"got {alpha_coarse_list}"
-        )
-
-    DT_WINDOW = float(config.get("dt_window", 1.0))
-    DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
-    steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
-
-    n_strategies = len(propagator_kinds) * len(alpha_coarse_list)
-    logging.info(
-        f"Building Mult.-inflation sweep: {list(propagator_kinds)} x "
-        f"{len(alpha_coarse_list)} inflation factor(s) ({alpha_coarse_list}) "
-        f"-> {n_strategies} strategies ..."
-    )
-    if n_strategies > 12:
-        logging.warning(
-            f"{n_strategies} strategies overlaid on one bulk figure may get "
-            "crowded. Consider a shorter inflation_factor_list for a first "
-            "pass (see module docstring)."
-        )
-
-    strategies, propagators, N, t_star_window = build_mult_sweep_strategies(
-        config, N_ens, alpha_coarse_list, steps_per_window, grid, propagator_kinds,
-    )
-
-    logging.info(
-        f"Stage 1/3: evaluate_filters — running {len(strategies)} propagator x "
-        "alpha strategies on shared data and writing the results HDF5 ..."
-    )
-    h5_path = evaluate_filters(
-        config=config, workdir=workdir, strategies=strategies,
-        propagators=propagators, t_star_window=t_star_window,
-        test_h5_path=test_h5_path,
-    )
-    logging.info(f"  wrote {h5_path}")
-
-    logging.info(f"Stage 2/3: plot_comparisons_bulk — reading {h5_path} ...")
-    save_dir = plot_comparisons_bulk(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
-    logging.info(f"  wrote figures to {save_dir}")
-
-    logging.info("Stage 3/3: plot_equilibrium_variance ...")
-    plot_equilibrium_variance(h5_path=h5_path, workdir=workdir)
-    logging.info(f"  wrote {os.path.join(save_dir, 'equilibrium_variance_all.pdf')}")
-
-    return save_dir
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Pure-additive-inflation-strength sweep: propagators exposing r_net only
-# (PI and/or Hybrid -- "dd" has no PDE residual)
-# ─────────────────────────────────────────────────────────────────────────
-
-def build_add_sweep_strategies(config, N_ens, alpha_list, steps_per_window, grid,
-                               propagator_kinds=("pi", "hy")):
-    """
-    Builds a pure-additive-inflation-strength sweep, crossed with each
-    propagator in `propagator_kinds`, reusing ONE `make_route_b_enkf_fns`
-    closure pair per propagator -- one strategy per (propagator, alpha)
-    pair:
-
-        <kind>_add_a<tag> -- that propagator + Route B inflation with
-                             `beta` pinned to 0.0, i.e. the flow-dependent
-                             `beta * ||rho||^2` term switched off, so the
-                             residual-scaled Route B machinery degenerates
-                             to *pure* additive inflation: a fixed-
-                             covariance process-noise floor `alpha * Q0`
-                             injected every fine step, with
-                             `alpha_list[i]` setting the floor's strength.
-
-    Route B needs the PDE residual, which only the physics-informed
-    `KSUDON` ("pi") and the hybrid `KSUDON_Hybrid` ("hy") expose
-    (`r_net`) -- `KSUDON_DD` doesn't, so "dd" is not a valid entry in
-    `propagator_kinds` here.
-
-    `predict_fn`/`update_fn` are built ONCE per propagator: pinning
-    `beta=0.0` doesn't change the EnKF closure itself, only the scalars
-    carried alongside it in the strategy dict. So the sweep is cheap --
-    no extra model calls or checkpoint loads per alpha, just extra
-    strategy dict entries reusing the same closures.
-
-    `Q0`'s spatial structure comes from `config.kf.Q0_sigma` and
-    `config.kf.Q0_corr_len` (see `kf.periodic_gaussian_cov` for why a
-    correlated Q0 is often the better choice for a field).
-
-    Returns (strategies, propagators, N, t_star_window).
-    """
-    _, _, t_star_window = _window_grid(config, grid)
-
-    loaded, closures = {}, {}
-    N = None
-    for kind in propagator_kinds:
-        if kind == "dd":
-            raise ValueError(
-                "'dd' has no PDE residual (r_net), so it cannot run Route "
-                "B / additive inflation. Use 'pi' and/or 'hy' in "
-                "propagator_kinds."
+    groups, seen = [], set()
+    for gname, members in items:
+        if isinstance(members, (set, frozenset)):
+            members = sorted(members)            # sets have no order; make it deterministic
+        elif isinstance(members, str) or not _is_seq(members):
+            raise TypeError(
+                "config.eval.plot_groups: each group must be a list of names, e.g. "
+                f"[['a', 'b'], ['c']]; got {members!r}. (A single-strategy group is ['c'].)"
             )
-        model, params = _load_ks_model(config, kind, t_star_window, grid)
-        loaded[kind] = (model, params)
-        closures[kind] = model.make_route_b_enkf_fns(params, N_ens=N_ens)
-        if N is None:
-            N = model.N
-        assert model.N == N, (
-            f"'{kind}' checkpoint grid size ({model.N}) != {N}; can't share a "
-            "strategy/propagator set across them."
-        )
+        members = [str(m) for m in members]
+        where = f"config.eval.plot_groups[{gname if gname else members}]"
+        if not members:
+            raise ValueError(f"{where} is empty.")
+        unknown = [m for m in members if m not in valid_names]
+        if unknown:
+            raise ValueError(f"{where}: unknown strategy name(s) {unknown}; "
+                             f"available: {valid_names}.")
+        if len(set(members)) != len(members):
+            raise ValueError(f"{where} lists a strategy more than once.")
 
-    P0_sigma = config.kf.get("P0_sigma", 0.5)
-    Q0_sigma = config.kf.get("Q0_sigma", P0_sigma)
-    Q0_corr_len = float(config.kf.get("Q0_corr_len", config.kf.get("P0_corr_len", 0.0)))
-    n_quad_rb = config.kf.get("route_b_n_quad", 3)
-    Q_coarse = build_cov(N, grid["L"], Q0_sigma, Q0_corr_len)
-    Q_fine = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
+        if tuple(members) in seen:
+            logging.warning(f"{where}: duplicate of an earlier group; skipping.")
+            continue
+        seen.add(tuple(members))
 
-    label_of_kind = {"pi": "PI", "hy": "Hybrid"}
-
-    strategies = []
-    for alpha in alpha_list:
-        tag = f"{alpha:g}".replace(".", "p")
-        for kind in propagator_kinds:
-            predict_fn, update_fn = closures[kind]
-            strategies.append(dict(
-                key=f"{kind}_add_a{tag}",
-                label=f"{label_of_kind.get(kind, kind.upper())} + Add. Infl. "
-                      f"(\u03b1={alpha:g})",
-                kind="route_b", propagator=kind,
-                predict_fn=predict_fn, update_fn=update_fn,
-                Q0=Q_fine, alpha=float(alpha), beta=0.0, n_quad=n_quad_rb,
-            ))
-
-    return strategies, loaded, N, t_star_window
+        if gname is None:
+            joined_vs = " vs ".join(members)
+            folder = _safe_dirname("__".join(members))
+            tag = joined_vs if len(joined_vs) <= 70 else f"{len(members)} strategies"
+        else:
+            if not _NAME_RE.fullmatch(gname):
+                raise ValueError(f"{where}: group names become folder names and may only "
+                                 "contain letters, digits, '_' and '-'.")
+            folder, tag = gname, gname
+        groups.append((folder, members, tag))
+    return groups
 
 
-"""
-Run a pure-additive-inflation-strength sweep, crossed with the propagators
-that expose a PDE residual (PI and/or Hybrid; "dd" is not eligible)
-
-Choosing `config.kf.inflation_alpha_list`
-------------------------------------------
-    Pure additive inflation injects a FIXED-covariance perturbation
-    `alpha * Q0` at every fine step, independent of the current ensemble
-    spread -- unlike multiplicative inflation, which rescales the existing
-    spread and so is a no-op at 1.0. The natural "no correction" control
-    for THIS sweep is therefore `alpha = 0.0`, not 1.0; include it.
-
-    `Q0` itself is `Q0_sigma^2` times either the identity or the
-    correlated kernel (`Q0_corr_len`), fine-step-scaled. A first-pass grid
-    with a 0.0 control and headroom above 1.0:
-
-        config.kf.inflation_alpha_list = [
-            0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0,
-        ]
-
-    Because the stored KS field is nondimensionalised to O(1), `Q0_sigma`
-    around 0.05-0.2 is a more sensible starting point than the L96 configs'
-    0.3 -- the sweep then scales that floor up or down.
-
-    Once the coarse sweep identifies an optimum, re-run a finer sweep
-    bracketing it, e.g. `np.linspace(best - 0.25, best + 0.25, 7)`
-    (clipped at 0).
-"""
-
-
-def run_add_inflation_sweep(config, workdir: str, test_h5_path: str | None = None,
-                            n_bins: int = 10) -> str:
+# ─────────────────────────────────────────────────────────────────────────
+# Main entry point
+# ─────────────────────────────────────────────────────────────────────────
+def run_comparison(config, workdir: str, n_bins: int = 10) -> str:
     """
-    Runs the pure-additive-inflation-strength sweep (Route B with beta
-    pinned to 0.0), crossed with the configured propagators
-    (`config.kf.sweep_propagators_additive`, default PI and Hybrid -- "dd"
-    has no PDE residual and is not eligible), and writes every comparison
-    figure, including the steady-state equilibrium-variance diagnostic.
+    Evaluates every strategy in `config.eval.strategies` (skipping any whose
+    HDF5 file already exists in `workdir`) and writes all figures. See the
+    module docstring for the configuration format and output layout.
 
-    Returns the path of the `figures/comparisons_bulk` directory.
+    Output (under `workdir`):
+
+        <name>.h5 | <name>_ver_<i>.h5 | <name>_ver_<i>_<j>.h5    evaluation data
+        figures/individual_trajectories/trajectory_ic_<i>_<file stem>.pdf
+        figures/comparisons/<collection>/{calibration,erf,l2,rmse,equilibrium_variance}.pdf
+
+    Returns the path of the `figures` directory.
     """
     os.makedirs(workdir, exist_ok=True)
+    figures_dir = os.path.join(workdir, "figures")
 
-    if test_h5_path is None:
-        test_h5_path = _default_test_path(config)
-    grid = _read_test_meta(test_h5_path)
+    # ── Parse and validate everything before any expensive work ─────────
+    defs = parse_strategy_config(config)
+    jobs = expand_jobs(defs)
+    h5_path_of = {job.stem: os.path.join(workdir, f"{job.stem}.h5") for job in jobs}
 
-    N_ens = config.kf.get("N_ens", 50)
-    propagator_kinds = tuple(config.kf.get("sweep_propagators_additive", ["pi", "hy"]))
-    alpha_list = list(config.kf.get(
-        "inflation_alpha_list", [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0],
-    ))
-    if len(alpha_list) == 0:
-        raise ValueError("config.kf.inflation_alpha_list is empty.")
-    if not all(a >= 0 for a in alpha_list):
-        raise ValueError(
-            f"config.kf.inflation_alpha_list must be non-negative, got {alpha_list}"
-        )
-
-    DT_WINDOW = float(config.get("dt_window", 1.0))
-    DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
-    steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
-
-    n_strategies = len(propagator_kinds) * len(alpha_list)
-    logging.info(
-        f"Building Additive-inflation sweep: {list(propagator_kinds)} + pure "
-        f"additive inflation (Route B, beta=0) x {len(alpha_list)} alpha "
-        f"value(s) ({alpha_list}) -> {n_strategies} strategies ..."
-    )
-    if n_strategies > 12:
-        logging.warning(
-            f"{n_strategies} strategies overlaid on one bulk figure may get "
-            "crowded. Consider a shorter inflation_alpha_list or fewer "
-            "propagators for a first pass."
-        )
-
-    strategies, propagators, N, t_star_window = build_add_sweep_strategies(
-        config, N_ens, alpha_list, steps_per_window, grid, propagator_kinds,
-    )
-
-    logging.info(
-        f"Stage 1/3: evaluate_filters — running {len(strategies)} propagator x "
-        "additive-alpha strategies on shared data ..."
-    )
-    h5_path = evaluate_filters(
-        config=config, workdir=workdir, strategies=strategies,
-        propagators=propagators, t_star_window=t_star_window,
-        test_h5_path=test_h5_path,
-    )
-    logging.info(f"  wrote {h5_path}")
-
-    logging.info(f"Stage 2/3: plot_comparisons_bulk — reading {h5_path} ...")
-    save_dir = plot_comparisons_bulk(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
-    logging.info(f"  wrote figures to {save_dir}")
-
-    logging.info("Stage 3/3: plot_equilibrium_variance ...")
-    plot_equilibrium_variance(h5_path=h5_path, workdir=workdir)
-    logging.info(f"  wrote {os.path.join(save_dir, 'equilibrium_variance_all.pdf')}")
-
-    return save_dir
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# RTPP relaxation-factor sweep, crossed with the propagators
-# ─────────────────────────────────────────────────────────────────────────
-
-def build_rtpp_sweep_strategies(config, N_ens, alpha_rtpp_list, alpha_fine_rtpp,
-                                grid, propagator_kinds=("dd", "pi")):
-    """
-    Builds an RTPP relaxation-factor sweep crossed with each propagator in
-    `propagator_kinds`:
-
-        <kind>_rtpp_a<tag> -- that propagator + RTPP at relaxation factor
-                              alpha_rtpp_list[i], with the (shared)
-                              predict-step multiplicative inflation pinned
-                              to `alpha_fine_rtpp` (default 1.0, i.e. off)
-                              so the swept `alpha_rtpp` is the only active
-                              inflation mechanism.
-
-    RTPP needs no PDE residual -- it only reshapes the posterior ensemble
-    anomalies -- so, unlike Route B, it is available on every model class
-    here (`make_rtpp_enkf_fns` is defined on both `KSUDON` and
-    `KSUDON_DD`, and inherited by `KSUDON_Hybrid`).
-
-    `predict_fn`/`update_fn` are built ONCE per propagator and reused
-    across every alpha_rtpp, which is a runtime scalar passed into
-    `run_enkf_smoother_rtpp` per strategy dict rather than baked into the
-    closure.
-
-    Returns (strategies, propagators, N, t_star_window).
-    """
-    _, _, t_star_window = _window_grid(config, grid)
-
-    loaded, closures = {}, {}
-    N = None
-    for kind in propagator_kinds:
-        model, params = _load_ks_model(config, kind, t_star_window, grid)
-        loaded[kind] = (model, params)
-        closures[kind] = model.make_rtpp_enkf_fns(params, N_ens=N_ens)
-        if N is None:
-            N = model.N
-        assert model.N == N, (
-            f"'{kind}' checkpoint grid size ({model.N}) != {N}; can't share a "
-            "strategy/propagator set across them."
-        )
-
-    label_of_kind = {"dd": "DD", "pi": "PI", "hy": "Hybrid"}
-
-    strategies = []
-    for alpha_rtpp in alpha_rtpp_list:
-        tag = f"{alpha_rtpp:g}".replace(".", "p")
-        for kind in propagator_kinds:
-            predict_fn, update_fn = closures[kind]
-            strategies.append(dict(
-                key=f"{kind}_rtpp_a{tag}",
-                label=f"{label_of_kind.get(kind, kind.upper())} + RTPP "
-                      f"(\u03b1={alpha_rtpp:g})",
-                kind="rtpp", propagator=kind,
-                predict_fn=predict_fn, update_fn=update_fn,
-                alpha_fine=alpha_fine_rtpp, alpha_rtpp=alpha_rtpp,
-            ))
-
-    return strategies, loaded, N, t_star_window
-
-
-"""
-Run an RTPP relaxation-factor sweep
-
-Choosing `config.kf.rtpp_alpha_list`
-------------------------------------
-    RTPP relaxes each posterior ensemble perturbation partway back toward
-    its (larger, pre-update) prior perturbation:
-    `x'_post <- (1 - alpha_rtpp) * x'_post + alpha_rtpp * x'_prior`. So
-    `alpha_rtpp = 0` is the "no correction" control (posterior spread used
-    as-is -- the RTPP analogue of additive inflation's `alpha = 0.0`
-    control, NOT multiplicative inflation's 1.0), and `alpha_rtpp = 1`
-    discards the update's spread reduction entirely. Values are only
-    meaningful in [0, 1].
-
-    The relaxation literature (Zhang, Snyder & Sacher 2004; typical
-    operational practice) usually finds tuned values in [0.5, 0.9]. A
-    first-pass grid, denser in that band, with a 0.0 control:
-
-        config.kf.rtpp_alpha_list = [0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-
-    RTPP is a particularly good fit for a field like KS: because it
-    rebuilds the posterior anomalies from the PRIOR anomalies, the restored
-    spread inherits the forecast's own spatial correlation structure
-    instead of the arbitrary structure of a prescribed Q0.
-"""
-
-
-def run_rtpp_inflation_sweep(config, workdir: str, test_h5_path: str | None = None,
-                             n_bins: int = 10) -> str:
-    """
-    Runs the RTPP relaxation-factor sweep, crossed with the configured
-    propagators and with the shared predict-step multiplicative inflation
-    pinned at `config.kf.rtpp_alpha_fine` (default 1.0), and writes every
-    comparison figure including the equilibrium-variance diagnostic.
-
-    Returns the path of the `figures/comparisons_bulk` directory.
-    """
-    os.makedirs(workdir, exist_ok=True)
-
-    if test_h5_path is None:
-        test_h5_path = _default_test_path(config)
-    grid = _read_test_meta(test_h5_path)
-
-    N_ens = config.kf.get("N_ens", 50)
-    propagator_kinds = tuple(config.kf.get("sweep_propagators", ["dd", "pi", "hy"]))
-    alpha_fine_rtpp = config.kf.get("rtpp_alpha_fine", 1.0)
-    alpha_rtpp_list = list(config.kf.get(
-        "rtpp_alpha_list", [0.0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
-    ))
-    if len(alpha_rtpp_list) == 0:
-        raise ValueError("config.kf.rtpp_alpha_list is empty.")
-    if not all(0.0 <= a <= 1.0 for a in alpha_rtpp_list):
-        raise ValueError(
-            f"config.kf.rtpp_alpha_list must lie in [0, 1], got {alpha_rtpp_list}"
-        )
-
-    n_strategies = len(propagator_kinds) * len(alpha_rtpp_list)
-    logging.info(
-        f"Building RTPP sweep: {list(propagator_kinds)} x "
-        f"{len(alpha_rtpp_list)} relaxation factor(s) ({alpha_rtpp_list}) "
-        f"-> {n_strategies} strategies ..."
-    )
-    if n_strategies > 12:
-        logging.warning(
-            f"{n_strategies} strategies overlaid on one bulk figure may get "
-            "crowded. Consider a shorter rtpp_alpha_list for a first pass."
-        )
-
-    strategies, propagators, N, t_star_window = build_rtpp_sweep_strategies(
-        config, N_ens, alpha_rtpp_list, alpha_fine_rtpp, grid, propagator_kinds,
-    )
-
-    logging.info(
-        f"Stage 1/3: evaluate_filters — running {len(strategies)} propagator x "
-        "rtpp_alpha strategies on shared data ..."
-    )
-    h5_path = evaluate_filters(
-        config=config, workdir=workdir, strategies=strategies,
-        propagators=propagators, t_star_window=t_star_window,
-        test_h5_path=test_h5_path,
-    )
-    logging.info(f"  wrote {h5_path}")
-
-    logging.info(f"Stage 2/3: plot_comparisons_bulk — reading {h5_path} ...")
-    save_dir = plot_comparisons_bulk(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
-    logging.info(f"  wrote figures to {save_dir}")
-
-    logging.info("Stage 3/3: plot_equilibrium_variance ...")
-    plot_equilibrium_variance(h5_path=h5_path, workdir=workdir)
-    logging.info(f"  wrote {os.path.join(save_dir, 'equilibrium_variance_all.pdf')}")
-
-    return save_dir
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Route B (modified additive) beta sweep: propagators exposing r_net only
-# (PI and/or Hybrid -- "dd" has no PDE residual)
-# ─────────────────────────────────────────────────────────────────────────
-
-def build_route_b_sweep_strategies(config, N_ens, beta_list, alpha_rb_fixed,
-                                   steps_per_window, grid,
-                                   propagator_kinds=("pi", "hy")):
-    """
-    Builds a Route B beta-sweep, crossed with each propagator in
-    `propagator_kinds`, reusing ONE `make_route_b_enkf_fns` closure pair
-    per propagator -- one strategy per (propagator, beta) pair, all
-    sharing the SAME fixed `alpha_rb_fixed` floor:
-
-        <kind>_route_b_b<tag> -- that propagator + Route B inflation,
-                                 scale = alpha_rb_fixed + beta * ||rho||^2.
-
-    This is the mirror image of `build_add_sweep_strategies`, which pins
-    `beta=0.0` and sweeps the constant floor `alpha`.
-
-    Route B needs the PDE residual, which only the physics-informed
-    `KSUDON` ("pi") and the hybrid `KSUDON_Hybrid` ("hy") expose
-    (`r_net`) -- `KSUDON_DD` doesn't, so "dd" is not a valid entry in
-    `propagator_kinds` here.
-
-    Returns (strategies, propagators, N, t_star_window).
-    """
-    _, _, t_star_window = _window_grid(config, grid)
-
-    loaded, closures = {}, {}
-    N = None
-    for kind in propagator_kinds:
-        if kind == "dd":
-            raise ValueError(
-                "'dd' has no PDE residual (r_net), so it cannot run Route "
-                "B inflation. Use 'pi' and/or 'hy' in propagator_kinds."
+    sweep_mode = any(job.version is not None for job in jobs)
+    raw_groups = config.eval.get("plot_groups", None)
+    if sweep_mode:
+        if raw_groups is not None and len(raw_groups) > 0:
+            logging.warning(
+                "config.eval.plot_groups is ignored because at least one strategy has a "
+                "parameter list; writing one collection per strategy name instead."
             )
-        model, params = _load_ks_model(config, kind, t_star_window, grid)
-        loaded[kind] = (model, params)
-        closures[kind] = model.make_route_b_enkf_fns(params, N_ens=N_ens)
-        if N is None:
-            N = model.N
-        assert model.N == N, (
-            f"'{kind}' checkpoint grid size ({model.N}) != {N}; can't share a "
-            "strategy/propagator set across them."
-        )
-
-    P0_sigma = config.kf.get("P0_sigma", 0.5)
-    Q0_sigma = config.kf.get("Q0_sigma", P0_sigma)
-    Q0_corr_len = float(config.kf.get("Q0_corr_len", config.kf.get("P0_corr_len", 0.0)))
-    n_quad_rb = config.kf.get("route_b_n_quad", 3)
-    Q_coarse = build_cov(N, grid["L"], Q0_sigma, Q0_corr_len)
-    Q_fine = scale_Q_for_fine_steps(Q_coarse, steps_per_window)
-
-    label_of_kind = {"pi": "PI", "hy": "Hybrid"}
-
-    strategies = []
-    for beta in beta_list:
-        tag = f"{beta:g}".replace(".", "p")
-        for kind in propagator_kinds:
-            predict_fn, update_fn = closures[kind]
-            strategies.append(dict(
-                key=f"{kind}_route_b_b{tag}",
-                label=f"{label_of_kind.get(kind, kind.upper())} + Route B "
-                      f"(\u03b1={alpha_rb_fixed:g}, \u03b2={beta:g})",
-                kind="route_b", propagator=kind,
-                predict_fn=predict_fn, update_fn=update_fn,
-                Q0=Q_fine, alpha=float(alpha_rb_fixed), beta=float(beta),
-                n_quad=n_quad_rb,
-            ))
-
-    return strategies, loaded, N, t_star_window
-
-
-"""
-Run a Route B (modified additive) beta sweep, crossed with the
-propagators that expose a PDE residual (PI and/or Hybrid; "dd" is not
-eligible)
-
-Choosing `alpha_rb_fixed`
--------------------------
-    Route B's scale is `alpha + beta * ||rho||^2`. Two complementary
-    experiments are worth running, both supported by the same argument:
-
-    1. `alpha_rb_fixed = 0.0` -- isolates the flow-dependent term in pure
-       form: inflation comes ENTIRELY from `beta * ||rho||^2`. Useful to
-       see whether residual-scaling alone can substitute for a floor, but
-       it means zero inflation whenever the residual is small, which risks
-       under-dispersion in exactly those windows -- a diagnostic sweep,
-       not necessarily a deployable operating point.
-
-    2. `alpha_rb_fixed = <best alpha from run_add_inflation_sweep>` --
-       holds the floor at whatever already works in the beta=0 setting and
-       asks whether layering the flow-dependent term on top improves
-       things. This is the practically relevant question, and the reason
-       Route B exists as a *modification* of plain additive inflation.
-
-    Run this function twice, once at each, rather than folding both into a
-    2-D alpha x beta grid.
-
-Choosing `config.kf.route_b_beta_list`  (KS-specific!)
--------------------------------------------------------
-    Do NOT inherit L96's beta ~ 250 default. The KS residual
-    rho = v_tau - (L_op v_hat + N(v_hat)) is evaluated spectrally and
-    involves u_xxxx, and `residual_l2_norm_sq` sums it over all 256 grid
-    points, so ||rho||^2 lives on a completely different scale from L96's
-    40-variable O(1) residual.
-
-    Calibrate empirically instead of guessing:
-
-      1. Run this sweep once with a wide logarithmic grid, e.g.
-         `[0.0, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0]`.
-      2. Read `batch/strategies/<key>/route_b_scale_mean` out of the
-         results HDF5. That IS the realised `alpha + beta*||rho||^2` per
-         fine step, averaged over the ensemble and the ICs.
-      3. Keep the beta whose realised scale sits in the same ballpark as
-         the best pure-additive alpha found by `run_add_inflation_sweep`
-         -- that is the point at which the flow-dependent term is
-         contributing comparably to a well-tuned floor rather than
-         dominating or vanishing.
-      4. Re-run a finer sweep around it, e.g.
-         `np.linspace(best * 0.5, best * 1.5, 7)`.
-
-    A 0.0 entry is always worth keeping: it recovers whatever
-    `alpha_rb_fixed` alone gives, directly comparable to the additive
-    sweep's point at that alpha.
-"""
-
-
-def run_route_b_inflation_sweep(
-    config, workdir: str, alpha_rb_fixed: float | None = None,
-    test_h5_path: str | None = None, n_bins: int = 10,
-) -> str:
-    """
-    Runs the Route B beta sweep -- one calibration pass per value in
-    `config.kf.route_b_beta_list`, crossed with the configured propagators
-    (`config.kf.sweep_propagators_route_b`, default PI and Hybrid -- "dd"
-    has no PDE residual and is not eligible), with the constant floor
-    pinned at `alpha_rb_fixed` (falls back to `config.kf.route_b_alpha` if
-    None) -- and writes every comparison figure including the
-    equilibrium-variance diagnostic.
-
-    Returns the path of the `figures/comparisons_bulk` directory.
-    """
-    os.makedirs(workdir, exist_ok=True)
-
-    if test_h5_path is None:
-        test_h5_path = _default_test_path(config)
-    grid = _read_test_meta(test_h5_path)
-
-    N_ens = config.kf.get("N_ens", 50)
-    propagator_kinds = tuple(config.kf.get("sweep_propagators_route_b", ["pi", "hy"]))
-    if alpha_rb_fixed is None:
-        # Default 0.0: pure amplified residual error, no constant floor.
-        alpha_rb_fixed = config.kf.get("route_b_alpha", 0.0)
-    beta_list = list(config.kf.get(
-        "route_b_beta_list", [0.0, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0],
-    ))
-    if len(beta_list) == 0:
-        raise ValueError("config.kf.route_b_beta_list is empty.")
-    if not all(b >= 0 for b in beta_list):
-        raise ValueError(
-            f"config.kf.route_b_beta_list must be non-negative, got {beta_list}"
-        )
-
-    DT_WINDOW = float(config.get("dt_window", 1.0))
-    DT_FINE = float(config.kf.get("dt_fine", DT_WINDOW))
-    steps_per_window = steps_per_window_exact(DT_WINDOW, DT_FINE)
-
-    n_strategies = len(propagator_kinds) * len(beta_list)
-    logging.info(
-        f"Building Route B beta sweep: {list(propagator_kinds)} + Route B "
-        f"(alpha fixed at {alpha_rb_fixed:g}) x {len(beta_list)} beta "
-        f"value(s) ({beta_list}) -> {n_strategies} strategies ..."
-    )
-    if n_strategies > 12:
-        logging.warning(
-            f"{n_strategies} strategies overlaid on one bulk figure may get "
-            "crowded. Consider a shorter route_b_beta_list or fewer "
-            "propagators for a first pass."
-        )
-
-    strategies, propagators, N, t_star_window = build_route_b_sweep_strategies(
-        config, N_ens, beta_list, alpha_rb_fixed, steps_per_window, grid,
-        propagator_kinds,
-    )
+        collections = []
+        for name in defs:
+            stems = [j.stem for j in jobs if j.name == name]
+            swept = any(j.version is not None for j in jobs if j.name == name)
+            collections.append((name, stems, f"{name} (parameter sweep)" if swept else name))
+    else:
+        collections = _normalize_plot_groups(raw_groups, valid_names=list(defs))
+        if not collections:
+            logging.warning("config.eval.plot_groups is empty: only individual-trajectory "
+                            "plots will be written.")
 
     logging.info(
-        f"Stage 1/3: evaluate_filters — running {len(strategies)} propagator x "
-        "Route B beta strategies on shared data ..."
+        f"run_comparison: {len(defs)} strateg{'y' if len(defs) == 1 else 'ies'} -> "
+        f"{len(jobs)} evaluation file(s); {len(collections)} plot collection(s) "
+        f"({'sweep' if sweep_mode else 'plot_groups'} mode)."
     )
-    h5_path = evaluate_filters(
-        config=config, workdir=workdir, strategies=strategies,
-        propagators=propagators, t_star_window=t_star_window,
-        test_h5_path=test_h5_path,
-    )
-    logging.info(f"  wrote {h5_path}")
 
-    logging.info(f"Stage 2/3: plot_comparisons_bulk — reading {h5_path} ...")
-    save_dir = plot_comparisons_bulk(h5_path=h5_path, workdir=workdir, n_bins=n_bins)
-    logging.info(f"  wrote figures to {save_dir}")
+    # ── Stage 1: evaluation (only what is missing) ───────────────────────
+    _evaluate_pending(config, jobs, h5_path_of)
 
-    logging.info("Stage 3/3: plot_equilibrium_variance ...")
-    plot_equilibrium_variance(h5_path=h5_path, workdir=workdir)
-    logging.info(f"  wrote {os.path.join(save_dir, 'equilibrium_variance_all.pdf')}")
+    # ── Stage 2: individual-trajectory plots, one set per strategy file ──
+    indiv_dir = os.path.join(figures_dir, "individual_trajectories")
+    for job in jobs:
+        plot_individual_trajectories(h5_path_of[job.stem], indiv_dir)
 
-    return save_dir
+    # ── Stage 3: one collection of overlaid plots per group / sweep ──────
+    for folder, stems, tag in collections:
+        plot_group(
+            h5_paths=[h5_path_of[s] for s in stems],
+            save_dir=os.path.join(figures_dir, "comparisons", folder),
+            title_tag=tag, n_bins=n_bins,
+        )
+
+    logging.info(f"run_comparison: done. Figures in {figures_dir}")
+    return figures_dir
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -3949,8 +3209,8 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
     data-driven `KSUDON_DD`. The checkpoint comes from `config.wandb.name`.
     """
     # ── 1. Load the dense test dataset ──────────────────────────────────
-    data_dir = config.training.get("data_dir", "data")
-    test_file = os.path.join(data_dir, "ks_test_data.h5")
+    # Same lookup as the filtered pipeline: config.eval.test_data_name.
+    test_file = resolve_test_h5_path(config)
 
     logging.info(f"Loading test dataset from {test_file}...")
     max_ics = config.eval.get("num_ics", 100)
@@ -4071,5 +3331,3 @@ def evaluate(config: ml_collections.ConfigDict, workdir: str):
         overall_mean_l2=overall_mean_l2,
         save_path=batch_save_path,
     )
-
-    logging.info(f"Batch L2 error plot saved to: {batch_save_path}")
