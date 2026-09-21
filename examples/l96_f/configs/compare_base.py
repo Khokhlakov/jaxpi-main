@@ -126,9 +126,9 @@ def get_config():
 
     # Evaluation
     config.eval = eval = ml_collections.ConfigDict()
-    eval.windows            = 500
+    eval.windows            = 320
     eval.trajectory_windows = 200
-    eval.num_ics            = 300
+    eval.num_ics            = 500
     eval.dt_integration     = 0.005
 
     eval.test_data_name = "l96_forcing_test"
