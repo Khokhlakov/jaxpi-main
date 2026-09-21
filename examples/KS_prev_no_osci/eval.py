@@ -1854,7 +1854,6 @@ def _snapshot_window_indices(t_ax: np.ndarray, dt_window: float) -> np.ndarray:
     nearest each of those times.
     """
     t_ax = np.asarray(t_ax, dtype=float)
-    t_max = float(t_ax[0]), float(t_ax[-1])
     t_max = float(t_ax[-1])
     n_windows = int(round(t_max / dt_window))
  
@@ -1867,7 +1866,7 @@ def _snapshot_window_indices(t_ax: np.ndarray, dt_window: float) -> np.ndarray:
  
     win_idx.update(range(max(0, n_windows - 20), n_windows + 1))  # last 20 window limits
  
-    times = sorted(t_min + w * dt_window for w in win_idx if 0 <= w <= n_windows)
+    times = sorted(w * dt_window for w in win_idx if 0 <= w <= n_windows)
     idx = np.unique(np.array([int(np.argmin(np.abs(t_ax - t))) for t in times]))
     return idx
 
