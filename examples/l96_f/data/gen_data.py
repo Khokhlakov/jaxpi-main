@@ -116,7 +116,7 @@ M_pi        = 1 * M    # PI training windows
 window_size = 0.25     # Window duration [time units]
 L           = args.L   # Test trajectory length [in windows]
 
-burn_time   = 15.0
+burn_time   = 30.0
 dt          = 0.005
 
 SEED        = 42
