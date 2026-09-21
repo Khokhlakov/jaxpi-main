@@ -48,26 +48,8 @@ def main(argv):
     elif FLAGS.config.mode == "evaluate_enkf_pi_compare":
         eval.evaluate_enkf_pi_compare(FLAGS.config, FLAGS.workdir)
         
-    elif FLAGS.config.mode == "evaluate_enkf_3_way":
-        eval.run_3way_comparison(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "evaluate_enkf_4_way":
-        eval.run_4way_comparison(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "run_mult_inflation_sweep":
-            eval.run_mult_inflation_sweep(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "run_add_inflation_sweep":
-            eval.run_add_inflation_sweep(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "run_rtpp_inflation_sweep":
-            eval.run_rtpp_inflation_sweep(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "run_route_b_inflation_sweep":
-            eval.run_route_b_inflation_sweep(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "run_7way_comparison":
-        eval.run_7way_comparison(FLAGS.config, FLAGS.workdir)
+    elif FLAGS.config.mode == "run_comparison":
+        eval.run_comparison(FLAGS.config, FLAGS.workdir)
 
 if __name__ == "__main__":
     flags.mark_flags_as_required(["config", "workdir"])

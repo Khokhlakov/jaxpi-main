@@ -4,7 +4,7 @@ import jax.numpy as jnp
 def get_config():
     # Config 1 but init weights 10:1 and using causal training
     config = ml_collections.ConfigDict()
-    config.mode = "run_7way_comparison"
+    config.mode = "run_comparison"
 
     # Weights & Biases
     # Base for inflation tunning
@@ -130,6 +130,27 @@ def get_config():
     eval.trajectory_windows = 200
     eval.num_ics            = 300
     eval.dt_integration     = 0.005
+
+    eval.test_data_name = "l96_forcing_test"
+    eval.strategies = {"dd_mult_1075": dict(surrogate="DD", inflation="multiplicative", params=dict(inflation_factor=1.075)),
+                       "pi_mult_108": dict(surrogate="PI", inflation="multiplicative", params=dict(inflation_factor=1.08)),
+                       "pi_RB_full_1_50": dict(surrogate="PI", inflation="route_b", params=dict(alpha=1.0, beta=50.0)),
+                       "pi_RB_res_50": dict(surrogate="PI", inflation="route_b", params=dict(alpha=0.0, beta=50.0)),
+                       "pi_add_3": dict(surrogate="PI", inflation="additive", params=dict(alpha=3.0)),
+                       "pi_rtpp_0325": dict(surrogate="PI", inflation="additive", params=dict(alpha=0.325)),
+                       "dd_rtpp_035": dict(surrogate="DD", inflation="additive", params=dict(alpha=0.35)),
+                       }
+
+    eval.plot_groups = [["dd_mult_1075", "pi_mult_108"],
+                        ["pi_rtpp_0325", "dd_rtpp_035"],
+                        ["pi_mult_108", "pi_RB_full_1_50", "pi_RB_res_50", "pi_add_3", "pi_rtpp_0325"]
+                        ]
+
+    #Inflation	        Parameters
+    #multiplicative	    inflation_factor
+    #additive	        alpha
+    #route_b	        alpha(=0 for residual), beta(=0 for additive)
+    #rtpp	a           lpha_rtpp, optional alpha_fine
 
     # Input shape (t is the only input)
     config.input_dim = 41
