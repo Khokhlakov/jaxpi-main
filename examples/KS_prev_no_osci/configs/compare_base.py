@@ -131,7 +131,7 @@ def get_config():
     eval.num_ics            = 500
     eval.dt_integration     = 0.02
 
-    eval.test_data_name = "l96_forcing_test"
+    eval.test_data_name = "ks_test_data"
     eval.strategies = {"dd_mult_1075": dict(surrogate="DD", inflation="multiplicative", params=dict(inflation_factor=1.075)),
                         "pi_mult_108": dict(surrogate="PI", inflation="multiplicative", params=dict(inflation_factor=1.08)),
                         "pi_RB_full_1_50": dict(surrogate="PI", inflation="route_b", params=dict(alpha=1.0, beta=50.0)),
@@ -141,10 +141,7 @@ def get_config():
                         "dd_rtpp_035": dict(surrogate="DD", inflation="rtpp", params=dict(alpha_rtpp=0.35)),
                         }
 
-    eval.plot_groups = [["dd_mult_1075", "pi_mult_108"],
-                        ["pi_rtpp_0325", "dd_rtpp_035"],
-                        ["pi_mult_108", "pi_RB_full_1_50", "pi_RB_res_50", "pi_add_3", "pi_rtpp_0325"]
-                        ]
+    eval.plot_groups = []
 
     #Inflation	        Parameters
     #multiplicative	    inflation_factor
