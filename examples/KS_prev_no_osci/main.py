@@ -47,18 +47,9 @@ def main(argv):
 
     elif FLAGS.config.mode == "eval_hybrid":
             eval.evaluate(FLAGS.config, FLAGS.workdir)
-
-    elif FLAGS.config.mode == "eval_dd_vs_pi":
-        eval.evaluate_dd_vs_pi(FLAGS.config, FLAGS.workdir)
         
-    elif FLAGS.config.mode == "eval_enkf_dd_vs_pi":
-        eval.evaluate_enkf_dd_vs_pi(FLAGS.config, FLAGS.workdir)
-        
-    elif FLAGS.config.mode == "eval_enkf_dd_vs_pi_vs_num":
-        eval.evaluate_enkf_dd_vs_pi_vs_num(FLAGS.config, FLAGS.workdir)
-        
-    elif FLAGS.config.mode == "run_4way_comparison":
-        eval.run_4way_comparison(FLAGS.config, FLAGS.workdir)
+    elif FLAGS.config.mode == "run_comparison":
+        eval.run_comparison(FLAGS.config, FLAGS.workdir)
 
 
         
