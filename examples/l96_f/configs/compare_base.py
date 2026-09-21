@@ -137,8 +137,8 @@ def get_config():
                        "pi_RB_full_1_50": dict(surrogate="PI", inflation="route_b", params=dict(alpha=1.0, beta=50.0)),
                        "pi_RB_res_50": dict(surrogate="PI", inflation="route_b", params=dict(alpha=0.0, beta=50.0)),
                        "pi_add_3": dict(surrogate="PI", inflation="additive", params=dict(alpha=3.0)),
-                       "pi_rtpp_0325": dict(surrogate="PI", inflation="rtpp", params=dict(alpha=0.325)),
-                       "dd_rtpp_035": dict(surrogate="DD", inflation="rtpp", params=dict(alpha=0.35)),
+                       "pi_rtpp_0325": dict(surrogate="PI", inflation="rtpp", params=dict(alpha_rtpp=0.325)),
+                       "dd_rtpp_035": dict(surrogate="DD", inflation="rtpp", params=dict(alpha_rtpp=0.35)),
                        }
 
     eval.plot_groups = [["dd_mult_1075", "pi_mult_108"],
