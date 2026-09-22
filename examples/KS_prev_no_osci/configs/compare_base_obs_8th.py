@@ -181,6 +181,21 @@ def get_config():
                         params=dict(alpha_rtpp=[0.0, 0.2, 0.3, 0.5, 0.7, 0.9])),
     }
 
+    eval.strategies = {
+    
+            "hy_add_1":   dict(surrogate="HY", inflation="additive",
+                                            params=dict(alpha=[0.0, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0])),
+    
+            "dd_mult_sweep_1": dict(surrogate="DD", inflation="multiplicative",
+                            params=dict(inflation_factor=[1.0, 1.005, 1.03, 1.04, 1.05, 1.055])),
+    
+            "hy_mult_sweep_1": dict(surrogate="HY", inflation="multiplicative",
+                            params=dict(inflation_factor=[1.0, 1.005, 1.03, 1.04])),#, 1.05, 1.055])),
+    
+            "dd_rtpp_sweep_1": dict(surrogate="DD", inflation="rtpp",
+                                    params=dict(alpha_rtpp=[0.0, 0.2, 0.3, 0.5, 0.7, 0.9])),
+        }
+
     # Input shape (t is the only input)
     config.input_dim = 256 + 1
 
