@@ -176,7 +176,7 @@ def get_config():
                          "dd_mult_sweep_1_ver_1",
                          "pi_mult_sweep_1_ver_1",
                          "hy_mult_sweep_1_ver_1",
-                         "hy_rb_res_sweep_1_ver_4",
+                         "hy_rb_res_sweep_1_ver_1_4",
                          "dd_rtpp_sweep_1_ver_1",
                          "hy_rtpp_sweep_1_ver_1"]]
 
