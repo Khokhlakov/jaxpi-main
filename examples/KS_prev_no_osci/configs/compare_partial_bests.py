@@ -163,7 +163,7 @@ def get_config():
                 "hy_mult_sweep_1_ver_1": dict(surrogate="HY", inflation="multiplicative",
                                 params=dict(inflation_factor=1.02)),
         
-                "hy_rb_res_sweep_1_ver_4":   dict(surrogate="HY", inflation="route_b",
+                "hy_rb_res_sweep_1_ver_1_4":   dict(surrogate="HY", inflation="route_b",
                                         params=dict(alpha=0.0, beta=0.05)),
         
                 "dd_rtpp_sweep_1_ver_1": dict(surrogate="DD", inflation="rtpp",
