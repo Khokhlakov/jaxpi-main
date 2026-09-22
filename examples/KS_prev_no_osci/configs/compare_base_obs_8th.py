@@ -180,6 +180,29 @@ def get_config():
             "hy_rtpp_sweep_1": dict(surrogate="HY", inflation="rtpp",
                             params=dict(alpha_rtpp=[0.3, 0.4, 0.5, 0.6])),
         }
+    eval.strategies = {
+        
+                "hy_add_1":   dict(surrogate="HY", inflation="additive",
+                                                params=dict(alpha=[0.0, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0])),
+        
+                "dd_mult_sweep_1": dict(surrogate="DD", inflation="multiplicative",
+                                params=dict(inflation_factor=[1.02, 1.03, 1.04 , 1.05, 1.06])),
+        
+                "pi_mult_sweep_1": dict(surrogate="PI", inflation="multiplicative",
+                                        params=dict(inflation_factor=[1.02])),
+        
+                "hy_mult_sweep_1": dict(surrogate="HY", inflation="multiplicative",
+                                params=dict(inflation_factor=[1.02, 1.03, 1.04 ,1.05])),
+        
+                "hy_rb_res_sweep_1":   dict(surrogate="HY", inflation="route_b",
+                                        params=dict(alpha=0.0, beta=[0.02, 0.03, 0.04, 0.05])),
+        
+                "dd_rtpp_sweep_1": dict(surrogate="DD", inflation="rtpp",
+                                        params=dict(alpha_rtpp=[0.3, 0.4, 0.5, 0.6])),
+        
+                "hy_rtpp_sweep_1": dict(surrogate="HY", inflation="rtpp",
+                                params=dict(alpha_rtpp=[0.3, 0.4, 0.5, 0.6])),
+            }
 
     # Input shape (t is the only input)
     config.input_dim = 256 + 1
